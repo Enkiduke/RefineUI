@@ -2,5 +2,6 @@
     <Script file="AutoRepair.lua"/>
     <Script file="AutoSellJunk.lua"/>
     <Script file="AutoItemBar.lua"/>
-    <Script file="CancelBadBuffs.lua"/>
+    <Script file="AutoButton.lua"/>
+    <Script file="AutoPotion.lua"/>
 </Ui>

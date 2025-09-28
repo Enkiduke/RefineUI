@@ -21,6 +21,7 @@ local function CreatePlayerFrame(self)
     UF.CreateDebuffs(self)
     UF.CreateRaidTargetIndicator(self)
     UF.CreateExperienceBar(self)
+    -- Note: BuffWatch is ONLY for party/raid frames, not player frame
     return self
 end
 

@@ -5,19 +5,18 @@
     <Script file="Durability.lua"/>
     <Script file="Errors.lua"/>
     <Script file="Fixes.lua"/>
+    <Script file="CompactRaidFrames.lua"/>
     <Script file="Fonts.lua"/>
     <Script file="Mail.lua"/>
     <Script file="MirrorBars.lua"/>
-    <Script file="MoveBlizzFrames.lua"/>
     <Script file="PetBattle.lua"/>
     <Script file="TalkingHead.lua"/>
     <Script file="TimerTracker.lua"/>
     <Script file="UIWidget.lua"/>
     <Script file="Vehicle.lua"/>
-    <!-- <Script file="EditMode.lua"/> -->
-    <!-- <Script file="Loot.lua"/> -->
+    <Script file="EditMode.lua"/>
+    <Script file="Loot.lua"/>
     <Script file="Character.lua"/>
     <Script file="Container.lua"/>
     <Script file="Quest.lua"/>
-    
 </Ui>

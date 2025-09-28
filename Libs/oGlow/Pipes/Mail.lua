@@ -1,6 +1,7 @@
 local _E
 local hook
 local stack = {}
+local oGlow = rawget(_G, "oGlow")
 
 local send = function(self)
 	if not SendMailFrame:IsShown() then return end
@@ -53,12 +54,12 @@ local update = function(self)
 	letter()
 end
 
-local hookLetter = function(...)
-	if _E then return letter(...) end
+local hookLetter = function()
+    if _E then return letter() end
 end
 
-local hookInbox = function(...)
-	if _E then return inbox(...) end
+local hookInbox = function()
+    if _E then return inbox() end
 end
 
 local enable = function(self)

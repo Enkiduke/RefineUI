@@ -28,6 +28,9 @@ local version = C_AddOns.GetAddOnMetadata('RefineUI', 'Version') or ''
 -- 	end
 -- end)
 
+local _detalhes = rawget(_G, '_detalhes')
+local Details = rawget(_G, 'Details')
+if _detalhes then
 hooksecurefunc(_detalhes, "SetFontOutline", function(_, fontString)
 	local fonte, size = fontString:GetFont()
 	if fonte == "Interface\\AddOns\\RefineUI\\Media\\Fonts\\ITCAvantGardeStd-Demi.ttf" then
@@ -37,14 +40,17 @@ hooksecurefunc(_detalhes, "SetFontOutline", function(_, fontString)
 		end
 	end
 end)
+end
 
 
 local LSM = LibStub and LibStub:GetLibrary("LibSharedMedia-3.0", true)
-LSM:Register(LSM.MediaType.FONT, "ITCAvantGardeStd-Demi", [[Interface\AddOns\RefineUI\Media\Fonts\ITCAvantGardeStd-Demi.ttf]], LOCALE_MASK)
-LSM:Register(LSM.MediaType.FONT, "ITCAvantGardeStd-Bold", [[Interface\AddOns\RefineUI\Media\Fonts\ITCAvantGardeStd-Bold.ttf]], LOCALE_MASK)
+if LSM then
+LSM:Register(LSM.MediaType.FONT, "ITCAvantGardeStd-Demi", [[Interface\AddOns\RefineUI\Media\Fonts\ITCAvantGardeStd-Demi.ttf]])
+LSM:Register(LSM.MediaType.FONT, "ITCAvantGardeStd-Bold", [[Interface\AddOns\RefineUI\Media\Fonts\ITCAvantGardeStd-Bold.ttf]])
 LSM:Register(LSM.MediaType.STATUSBAR, 'RefineUIHeader', [[Interface\AddOns\RefineUI\Media\Textures\Details\Header.blp]])
 LSM:Register(LSM.MediaType.STATUSBAR, 'RefineUIBar', [[Interface\AddOns\RefineUI\Media\Textures\Details\Bar.blp]])
 LSM:Register(LSM.MediaType.STATUSBAR, 'RefineUIBG', [[Interface\AddOns\RefineUI\Media\Textures\Details\BG.blp]])
+end
 
 local function UpdateDetailsPosition()
 
@@ -149,7 +155,7 @@ local skinTable = {
                 ["texture"] = "Details BarBorder 2"
             },
             ["icon_file"] = "Interface\\AddOns\\RefineUI\\Media\\Textures\\Details\\Classes.blp",
-            start_after_icon = false, --
+            -- start_after_icon is duplicated; keep the keyed version above
             icon_offset = {-10, 0}, --
             --
             ["textL_show_number"] = true, --
@@ -297,7 +303,7 @@ local skinTable = {
         ["backdrop_texture"] = "Details Ground",
         ["hide_icon"] = true,
         ["bg_b"] = 0.0941176470588235,
-        ["toolbar_side"] = 1,
+        -- duplicate toolbar_side key below removed
         ["bg_g"] = 0.0941176470588235,
         ["desaturated_menu"] = false,
         ["wallpaper"] = {
@@ -324,12 +330,12 @@ local skinTable = {
     }
 }
 
-_detalhes.skins["RefineUI"] = skinTable
+if _detalhes then _detalhes.skins["RefineUI"] = skinTable end
 
-local lower_instance = _detalhes:GetLowerInstanceNumber()
+local lower_instance = _detalhes and _detalhes.GetLowerInstanceNumber and _detalhes:GetLowerInstanceNumber()
 if lower_instance then
 	for i = lower_instance, #_detalhes.tabela_instancias do
-		local instance = Details:GetInstance(i)
+		local instance = Details and Details.GetInstance and Details:GetInstance(i)
 		if instance and instance.rows_fit_in_window then
 			-- for j = 1, instance.rows_fit_in_window do
 			-- 	local bar = _G["DetailsBarra_Statusbar_"..i.."_"..j]
@@ -357,9 +363,11 @@ if lower_instance then
 	end
 end
 
+if Details then
 hooksecurefunc(Details, "ApplyProfile", function()
     C_Timer.After(1, UpdateDetailsPosition)
 end)
+end
 
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")

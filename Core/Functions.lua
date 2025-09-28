@@ -99,9 +99,13 @@ end
 ----------------------------------------------------------------------------------------
 
 R.RGBToHex = function(r, g, b)
-	r = tonumber(r) <= 1 and tonumber(r) >= 0 and tonumber(r) or 0
-	g = tonumber(g) <= tonumber(g) and tonumber(g) >= 0 and tonumber(g) or 0
-	b = tonumber(b) <= 1 and tonumber(b) >= 0 and tonumber(b) or 0
+	-- Clamp inputs to [0,1] and coerce to numbers safely
+	r = tonumber(r) or 0
+	g = tonumber(g) or 0
+	b = tonumber(b) or 0
+	r = math.max(0, math.min(1, r))
+	g = math.max(0, math.min(1, g))
+	b = math.max(0, math.min(1, b))
 	return string.format("|cff%02x%02x%02x", r * 255, g * 255, b * 255)
 end
 
@@ -121,10 +125,16 @@ end
 ----------------------------------------------------------------------------------------
 --	Fade in/out functions
 ----------------------------------------------------------------------------------------
-R.FadeIn = function(f)
-    UIFrameFadeIn(f, 0.4, f:GetAlpha(), 1)
+R.FadeIn = function(frame, duration, startAlpha, endAlpha)
+    duration = duration or 0.4
+    startAlpha = startAlpha or frame:GetAlpha()
+    endAlpha = endAlpha or 1
+    UIFrameFadeIn(frame, duration, startAlpha, endAlpha)
 end
 
-R.FadeOut = function(f)
-    UIFrameFadeOut(f, 0.8, f:GetAlpha(), 0)
+R.FadeOut = function(frame, duration, startAlpha, endAlpha)
+    duration = duration or 0.8
+    startAlpha = startAlpha or frame:GetAlpha()
+    endAlpha = endAlpha or 0
+    UIFrameFadeOut(frame, duration, startAlpha, endAlpha)
 end

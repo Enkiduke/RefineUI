@@ -45,7 +45,7 @@ function Private.UpdateUnits(frame, unit, realUnit)
 					resetRealUnit = true
 				end
 
-				local registered, unit1, unit2 = isEventRegistered(frame, event)
+                local registered, unit1, unit2 = isEventRegistered(frame, event)
 				-- we don't want to re-register unitless/shared events in case
 				-- someone added them by hand to the unitEvents table
 				if(not registered or unit1 and (unit1 ~= unit or unit2 ~= realUnit)) then
@@ -137,7 +137,8 @@ function frame_metatable.__index:RegisterEvent(event, func, unitless)
 
 			-- UpdateUnits will take care of unit event registration for header
 			-- units in case we don't have a valid unit yet
-			local unit1, unit2 = self.unit
+            local unit1 = self.unit
+            local unit2
 			if(unit1 and validateUnit(unit1)) then
 				if(secondaryUnits[event]) then
 					unit2 = secondaryUnits[event][unit1]

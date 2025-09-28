@@ -5,24 +5,34 @@ local R, C, L = unpack(RefineUI)
 ----------------------------------------------------------------------------------------
 local _G = _G
 local CreateFrame, Mixin, unpack, pairs, gsub, strmatch = CreateFrame, Mixin, unpack, pairs, string.gsub, string.match
-local rad, min, max = math.rad, math.min, math.max
-local UIFrameFadeIn, UIFrameFadeOut = UIFrameFadeIn, UIFrameFadeOut
+local strfind = string.find
+local ipairs = ipairs
+local max, abs = math.max, math.abs
 local BackdropTemplateMixin = BackdropTemplateMixin
 
 ----------------------------------------------------------------------------------------
 -- Local variables
 ----------------------------------------------------------------------------------------
-local backdropr, backdropg, backdropb, backdropa = unpack(C.media.backdropColor)
-local borderr, borderg, borderb, bordera = unpack(C.media.borderColor)
+R.dummy = R.dummy or function() end
 
-local Mult = R.screenHeight > 1200 and R.PixelPerfect(1) or R.mult
+-- Hoisted media/colors; refreshable via R.RefreshTheme()
+local BORDER_FILE, EDGE_SIZE
+local BR, BG, BB, BA
+local DR, DG, DB, DA
+
+function R.RefreshTheme()
+    BORDER_FILE = C.media.border
+    EDGE_SIZE = (C.media.edgeSize or 12)
+    BR, BG, BB, BA = unpack(C.media.borderColor)
+    DR, DG, DB, DA = unpack(C.media.backdropColor)
+end
+
+R.RefreshTheme()
 
 ----------------------------------------------------------------------------------------
 -- Utility functions
 ----------------------------------------------------------------------------------------
-local function SetColor(r, g, b, a)
-    return { r = r, g = g, b = b, a = a }
-end
+-- (none)
 
 ----------------------------------------------------------------------------------------
 -- Position functions
@@ -31,7 +41,7 @@ local function SetOutside(obj, anchor, xOffset, yOffset)
     xOffset, yOffset = xOffset or 2, yOffset or 2
     anchor = anchor or obj:GetParent()
 
-    if obj:GetPoint() then obj:ClearAllPoints() end
+    if obj.GetNumPoints and obj:GetNumPoints() > 0 then obj:ClearAllPoints() end
     obj:SetPoint("TOPLEFT", anchor, "TOPLEFT", -xOffset, yOffset)
     obj:SetPoint("BOTTOMRIGHT", anchor, "BOTTOMRIGHT", xOffset, -yOffset)
 end
@@ -40,7 +50,7 @@ local function SetInside(obj, anchor, xOffset, yOffset)
     xOffset, yOffset = xOffset or 2, yOffset or 2
     anchor = anchor or obj:GetParent()
 
-    if obj:GetPoint() then obj:ClearAllPoints() end
+    if obj.GetNumPoints and obj:GetNumPoints() > 0 then obj:ClearAllPoints() end
     obj:SetPoint("TOPLEFT", anchor, "TOPLEFT", xOffset, -yOffset)
     obj:SetPoint("BOTTOMRIGHT", anchor, "BOTTOMRIGHT", -xOffset, yOffset)
 end
@@ -74,99 +84,133 @@ local function CreateOverlay(f)
     f.overlay = overlay
 end
 
-local function CreateBorder(f, insetX, insetY)
-    insetX = insetX or 6  -- Default inset value for X
-    insetY = insetY or 6  -- Default inset value for Y
-    f.border = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    f.border:SetPoint("TOPLEFT", f, "TOPLEFT", -insetX, insetY)
-    f.border:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", insetX, -insetY)
-    f.border:SetBackdrop({
-        edgeFile = C.media.border,
-        edgeSize = 12,
-    })
-    f.border:SetBackdropBorderColor(unpack(C.media.borderColor))
-    f.border:SetFrameStrata("MEDIUM")
+-- Guard to avoid repeated BackdropTemplateMixin work
+local function ensureBackdrop(f)
+    if not f.__refine_has_backdrop then
+        Mixin(f, BackdropTemplateMixin)
+        f.__refine_has_backdrop = true
+    end
 end
 
-local function GetTemplate(t)
-    if t == "ClassColor" then
-        borderr, borderg, borderb, bordera = unpack(C.media.borderColor)
-    else
-        borderr, borderg, borderb, bordera = unpack(C.media.borderColor)
-    end
-    backdropr, backdropg, backdropb, backdropa = unpack(C.media.backdropColor)
+local function CreateBorder(f, insetX, insetY)
+		insetX = insetX or 6
+		insetY = insetY or 6
+		local edgeSize = (C.media and C.media.edgeSize) or 12
+		local b = f.border
+		if b and b.SetBackdrop then
+			local needsAnchor = (b.__ix ~= insetX) or (b.__iy ~= insetY)
+			local needsEdge = (b.__es ~= edgeSize)
+			if needsAnchor then
+				b:ClearAllPoints()
+				b:SetPoint("TOPLEFT", f, "TOPLEFT", -insetX, insetY)
+				b:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", insetX, -insetY)
+				b.__ix, b.__iy = insetX, insetY
+			end
+			if needsEdge or b.__edgeFile ~= BORDER_FILE then
+				b:SetBackdrop({ edgeFile = BORDER_FILE, edgeSize = edgeSize })
+				b.__es = edgeSize
+				b.__edgeFile = BORDER_FILE
+			end
+			local want = max(0, f:GetFrameLevel() + 1)
+			if b.GetFrameLevel and b:GetFrameLevel() ~= want then
+				b:SetFrameLevel(want)
+			end
+			return b
+		end
+
+		b = CreateFrame("Frame", nil, f, "BackdropTemplate")
+		b:SetPoint("TOPLEFT", f, "TOPLEFT", -insetX, insetY)
+		b:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", insetX, -insetY)
+		b:SetBackdrop({ edgeFile = BORDER_FILE, edgeSize = edgeSize })
+		b:SetBackdropBorderColor(BR, BG, BB, BA)
+		b:SetFrameLevel(max(0, f:GetFrameLevel() + 1))
+		b.__ix, b.__iy, b.__es = insetX, insetY, edgeSize
+		b.__edgeFile = BORDER_FILE
+		f.border = b
+		return b
+end
+
+local function GetTemplateColors(t)
+    return BR, BG, BB, BA, DR, DG, DB, DA
 end
 
 local function SetTemplate(f, t)
-    Mixin(f, BackdropTemplateMixin)
-    GetTemplate(t)
+    ensureBackdrop(f)
+    local br, bg, bb, ba, dr, dg, db, da = GetTemplateColors(t)
 
-    f:SetBackdrop({
-        bgFile = C.media.blank,
-        insets = { left = 0, right = 0, top = 0, bottom = 0 }
-    })
+	-- Cache backdrop spec to avoid redundant SetBackdrop
+	local wantBg = C.media.blank
+	if f.__bgFile ~= wantBg then
+		f:SetBackdrop({ bgFile = wantBg, insets = { left = 0, right = 0, top = 0, bottom = 0 } })
+		f.__bgFile = wantBg
+	end
 
+    local alpha = da
     if t == "Anchor" then
-        backdropa = 0
+        alpha = 0
     elseif t == "Icon" then
-        backdropa = 0
-        f:CreateBorder(5, 5)  -- Example of using smaller insets for transparent
+        alpha = 0
+        if not f.border then CreateBorder(f, 5, 5) end
     elseif t == "Aura" then
-        backdropa = 1
-        f:CreateBorder(4, 4)  -- Example of using smaller insets for transparent
+        alpha = 1
+        CreateBorder(f, 4, 4)
     elseif t == "Transparent" then
-        backdropa = .5
-        f:CreateBorder(4, 4)  -- Example of using smaller insets for transparent
+        alpha = C.media.backdropAlpha or 0.5
+        CreateBorder(f, 4, 4)
     elseif t == "Zero" then
-        backdropa = 0
-        f:CreateBorder(4, 4)  -- Example of using smaller insets for transparent
+        alpha = 0
+        CreateBorder(f, 4, 4)
     elseif t == "Overlay" then
-        backdropa = 1
-        f:CreateBorder(4, 4)  -- Example of using smaller insets for overlay
-        f:CreateOverlay()
+        alpha = 1
+        CreateBorder(f, 4, 4)
+        CreateOverlay(f)
     else
-        f:CreateBorder()  -- Default border
-        backdropa = C.media.backdropColor[4]
+        if not f.border then CreateBorder(f) end
     end
 
-    f:SetBackdropColor(backdropr, backdropg, backdropb, backdropa)
+    f:SetBackdropColor(dr, dg, db, alpha)
     if f.border then
-        f.border:SetBackdropBorderColor(borderr, borderg, borderb, bordera)
+        -- re-tint border with current theme colors
+        if not (f.border.__lr == br and f.border.__lg == bg and f.border.__lb == bb and f.border.__la == ba) then
+            f.border:SetBackdropBorderColor(br, bg, bb, ba)
+            f.border.__lr, f.border.__lg, f.border.__lb, f.border.__la = br, bg, bb, ba
+        end
     end
 end
 
 local function CreatePanel(f, t, w, h, a1, p, a2, x, y)
-    Mixin(f, BackdropTemplateMixin)
-    GetTemplate(t)
+    ensureBackdrop(f)
+
+    local br, bg, bb, ba, dr, dg, db, da = GetTemplateColors(t)
 
     f:SetSize(w, h)
     f:SetFrameLevel(3)
     f:SetFrameStrata("BACKGROUND")
     f:SetPoint(a1, p, a2, x, y)
-    f:SetBackdrop({ bgFile = C.media.blank })
+	if f.__bgFile ~= C.media.blank then
+		f:SetBackdrop({ bgFile = C.media.blank })
+		f.__bgFile = C.media.blank
+	end
 
-    f.border = CreateFrame("Frame", nil, f, "BackdropTemplate")
+	if not f.border then f.border = CreateFrame("Frame", nil, f, "BackdropTemplate") end
     f.border:SetPoint("TOPLEFT", f, "TOPLEFT", -4, 4)
     f.border:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 4, -4)
-    f.border:SetBackdrop({
-        edgeFile = C.media.border,
-        edgeSize = 12,
-    })
+    local edgeSize = (C.media and C.media.edgeSize) or 12
+    f.border:SetBackdrop({ edgeFile = C.media.border, edgeSize = edgeSize })
 
+    local alpha = da
+    local borderAlpha = ba
     if t == "Transparent" then
-        backdropa = C.media.backdrop_alpha
-        f:CreateBorder(true, true)
+        alpha = C.media.backdropAlpha or 0.5
     elseif t == "Overlay" then
-        backdropa = 1
-        f:CreateOverlay()
+        alpha = 1
+        CreateOverlay(f)
     elseif t == "Invisible" then
-        backdropa, bordera = 0, 0
-    else
-        backdropa = C.media.backdropColor[4]
+        alpha, borderAlpha = 0, 0
     end
 
-    f:SetBackdropColor(backdropr, backdropg, backdropb, backdropa)
-    f.border:SetBackdropBorderColor(borderr, borderg, borderb, bordera)
+    f:SetBackdropColor(dr, dg, db, alpha)
+    f.border:SetBackdropBorderColor(br, bg, bb, borderAlpha)
 end
 
 local function CreateBackdrop(f, t)
@@ -177,11 +221,7 @@ local function CreateBackdrop(f, t)
     b:SetOutside()
     b:SetTemplate(t)
 
-    if f:GetFrameLevel() - 1 >= 0 then
-        b:SetFrameLevel(f:GetFrameLevel() - 1)
-    else
-        b:SetFrameLevel(0)
-    end
+    b:SetFrameLevel(max(0, f:GetFrameLevel() - 1))
 
     f.backdrop = b
 end
@@ -196,24 +236,31 @@ local StripTexturesBlizzFrames = {
 }
 
 local function StripTextures(object, kill)
-    if object.GetNumRegions then
-        for _, region in next, { object:GetRegions() } do
+    if not object or object.__refine_stripped or not object.GetNumRegions then return end
+    object.__refine_stripped = true
+
+    local num = object:GetNumRegions()
+    if num and num > 0 then
+        local i = 1
+        while i <= num do
+            local region = select(i, object:GetRegions())
             if region and region.IsObjectType and region:IsObjectType("Texture") then
-                if kill then
+                if kill and region.Kill then
                     region:Kill()
                 else
-                    region:SetTexture("")
-                    region:SetAtlas("")
+                    if region.SetTexture then region:SetTexture("") end
+                    if region.SetAtlas then region:SetAtlas("") end
                 end
             end
+            i = i + 1
         end
     end
 
     local frameName = object.GetName and object:GetName()
-    for _, blizzard in pairs(StripTexturesBlizzFrames) do
-        local blizzFrame = object[blizzard] or frameName and _G[frameName .. blizzard]
-        if blizzFrame then
-            blizzFrame:StripTextures(kill)
+    for _, key in pairs(StripTexturesBlizzFrames) do
+        local sub = object[key] or (frameName and _G[frameName .. key])
+        if sub and sub ~= object then
+            StripTextures(sub, kill)
         end
     end
 end
@@ -238,7 +285,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Style functions
 ----------------------------------------------------------------------------------------
-local function StyleButton(button, t, size, setBackdrop)
+local function StyleButton(button, skipPushed, size, setBackdrop)
     size = size or 2
     if button.SetHighlightTexture and not button.hover then
         local hover = button:CreateTexture()
@@ -249,7 +296,7 @@ local function StyleButton(button, t, size, setBackdrop)
         button:SetHighlightTexture(hover)
     end
 
-    if not t and button.SetPushedTexture and not button.pushed then
+    if not skipPushed and button.SetPushedTexture and not button.pushed then
         local pushed = button:CreateTexture()
         pushed:SetColorTexture(0.9, 0.8, 0.1, 0.3)
         pushed:SetPoint("TOPLEFT", button, size, -size)
@@ -277,7 +324,8 @@ end
 
 local function SetModifiedBackdrop(self)
     if self:IsEnabled() then
-        self:SetBackdropBorderColor(unpack(C.media.borderColor))
+		local br, bg, bb, ba = unpack(C.media.borderColor)
+		self:SetBackdropBorderColor(br, bg, bb, ba)
         if self.overlay then
             self.overlay:SetVertexColor(C.media.borderColor[1] * 0.3, C.media.borderColor[2] * 0.3,
                 C.media.borderColor[3] * 0.3, 1)
@@ -286,13 +334,16 @@ local function SetModifiedBackdrop(self)
 end
 
 local function SetOriginalBackdrop(self)
-    self:SetBackdropBorderColor(unpack(C.media.borderColor))
+	local br, bg, bb, ba = unpack(C.media.borderColor)
+	self:SetBackdropBorderColor(br, bg, bb, ba)
     if self.overlay then
         self.overlay:SetVertexColor(0.1, 0.1, 0.1, 1)
     end
 end
 
 local function SkinButton(f, strip)
+    if f.__refine_skinned then return end
+    f.__refine_skinned = true
     if strip then f:StripTextures() end
 
     f:SetNormalTexture(0)
@@ -322,15 +373,43 @@ local function SkinButton(f, strip)
     f:HookScript("OnLeave", SetOriginalBackdrop)
 end
 
+-- Minimal, safe scrollbar skinner to avoid undefined global and provide consistent look
+local function SkinScrollBar(scrollBar)
+    if not scrollBar or type(scrollBar) ~= "table" then return end
+
+    -- Hide default track pieces if present
+    if scrollBar.Back and scrollBar.Back.SetAlpha then
+        scrollBar.Back:SetAlpha(0)
+    end
+    if scrollBar.Track and scrollBar.Track.SetAlpha then
+        scrollBar.Track:SetAlpha(0)
+    end
+
+    -- Style thumb texture
+    local thumb = scrollBar.Thumb or (scrollBar.GetThumbTexture and scrollBar:GetThumbTexture())
+    if thumb then
+        if thumb.SetTexture then thumb:SetTexture(C.media.blank) end
+        if thumb.SetVertexColor then thumb:SetVertexColor(unpack(C.media.borderColor)) end
+    end
+
+    -- Give the scrollbar a border/backdrop if supported via our API
+    if scrollBar.SetTemplate then
+        scrollBar:SetTemplate("Overlay")
+    end
+end
+
 local function SkinIcon(icon, t, parent)
+    if not icon or not icon.SetTexCoord then return end
     parent = parent or icon:GetParent()
 
     if t then
-        icon.b = CreateFrame("Frame", nil, parent)
-        icon.b:SetTemplate("Default")
-        icon.b:SetOutside(icon)
+        if not icon.b then
+            icon.b = CreateFrame("Frame", nil, parent)
+            icon.b:SetTemplate("Default")
+            icon.b:SetOutside(icon)
+        end
     else
-        parent:CreateBackdrop("Default")
+        if not parent.backdrop then parent:CreateBackdrop("Default") end
         parent.backdrop:SetOutside(icon)
     end
 
@@ -363,7 +442,7 @@ function R.SkinTab(tab, bg)
     end
 
     tab.backdrop = CreateFrame("Frame", nil, tab)
-    tab.backdrop:SetFrameLevel(tab:GetFrameLevel() - 1)
+    tab.backdrop:SetFrameLevel(max(0, tab:GetFrameLevel() - 1))
     if bg then
         tab.backdrop:SetTemplate("Overlay")
         tab.backdrop:SetPoint("TOPLEFT", 2, -9)
@@ -404,12 +483,20 @@ function R.SkinNextPrevButton(btn, left, scroll)
         end
     end
 
+    -- Compute derived textures first, then set
+    if normal and not pushed then pushed = normal:gsub("%-Up$", "-Down") end
+    if normal and not disabled then disabled = normal:gsub("%-Up$", "-Disabled") end
     btn:SetNormalTexture(normal)
-    btn:SetPushedTexture(pushed)
-    btn:SetDisabledTexture(disabled)
+    if pushed then btn:SetPushedTexture(pushed) end
+    if disabled then btn:SetDisabledTexture(disabled) end
 
     btn:SetTemplate("Overlay")
-    btn:SetSize(btn:GetWidth() - 7, btn:GetHeight() - 7)
+    local w, h = btn:GetWidth(), btn:GetHeight()
+    btn:SetSize(max(1, w - 7), max(1, h - 7))
+
+    -- Auto-derive pushed/disabled from normal if available so texcoords apply consistently
+    if normal and not pushed then pushed = normal:gsub("%-Up$", "-Down") end
+    if normal and not disabled then disabled = normal:gsub("%-Up$", "-Disabled") end
 
     if normal and pushed and disabled then
         btn:GetNormalTexture():SetTexCoord(0.3, 0.29, 0.3, 0.81, 0.65, 0.29, 0.65, 0.81)
@@ -440,14 +527,17 @@ end
 -- Add API to objects
 ----------------------------------------------------------------------------------------
 local function addAPI(object)
-    local mt = getmetatable(object).__index
-    for k, func in pairs({
+    if not object then return end
+    local mt = getmetatable(object)
+    mt = mt and mt.__index
+    if type(mt) ~= "table" then return end
+    local inject = {
         SetOutside = SetOutside,
         SetInside = SetInside,
         CreateOverlay = CreateOverlay,
         CreateBorder = CreateBorder,
         SetTemplate = SetTemplate,
-        FontString = R.FontString,
+        FontString = FontString,
         CreatePanel = CreatePanel,
         CreateBackdrop = CreateBackdrop,
         StripTextures = StripTextures,
@@ -457,66 +547,105 @@ local function addAPI(object)
         SkinIcon = SkinIcon,
         CropIcon = CropIcon,
         SkinTab = R.SkinTab,
-    }) do
-        if not object[k] then mt[k] = func end
+        FadeIn = R.FadeIn,
+        FadeOut = R.FadeOut,
+    }
+    for k, func in pairs(inject) do
+        if mt[k] == nil then mt[k] = func end
     end
 end
 
-SkinCloseButton = R.SkinCloseButton
+-- Avoid leaking globals; expose helpers on R only
 
 ----------------------------------------------------------------------------------------
--- Apply API to game objects
-----------------------------------------------------------------------------------------
-local handled = { ["Frame"] = true }
-local object = CreateFrame("Frame")
+-- Apply API to core widget types once (avoids EnumerateFrames taint/perf)
+if not R.__apiAugmented then
+    local parent = R.Hider or CreateFrame("Frame")
+    parent:Hide()
+    local base = CreateFrame("Frame", nil, parent)
+    addAPI(base)
+    addAPI(base:CreateTexture())
+    addAPI(base:CreateFontString())
 
-addAPI(object)
-addAPI(object:CreateTexture())
-addAPI(object:CreateFontString())
-
-object = EnumerateFrames()
-while object do
-    if not object:IsForbidden() and not handled[object:GetObjectType()] then
-        addAPI(object)
-        handled[object:GetObjectType()] = true
+    local widgetTypes = {
+        "Button",
+        "StatusBar",
+        "CheckButton",
+        "Slider",
+        "EditBox",
+        "ScrollFrame",
+    }
+    for _, wt in ipairs(widgetTypes) do
+        local ok, obj = pcall(CreateFrame, wt, nil, parent)
+        if ok and obj then
+            addAPI(obj)
+            if wt == "EditBox" then
+                if obj.SetAutoFocus then obj:SetAutoFocus(false) end
+                if obj.ClearFocus then obj:ClearFocus() end
+            end
+            if obj.Hide then obj:Hide() end
+        end
     end
-    object = EnumerateFrames(object)
-end
 
--- Fix for scroll frames
-local scrollFrame = CreateFrame("ScrollFrame")
-addAPI(scrollFrame)
+    R.__apiAugmented = true
+end
 
 ----------------------------------------------------------------------------------------
 -- Skin functions
 ----------------------------------------------------------------------------------------
-R.SkinFuncs = {}
-R.SkinFuncs["RefineUI"] = {}
+R.SkinFuncs = R.SkinFuncs or {}
+R.SkinFuncs["RefineUI"] = R.SkinFuncs["RefineUI"] or {}
 R.SkinScrollBar = SkinScrollBar
 R.FontString = FontString
+
+-- Thin border helper matching Nameplates' existing visuals (no style change)
+function R.CreateThinBorder(frame, insetX, insetY, edgeSize, frameLevelAdjust)
+    if not frame then return end
+    if frame.border and frame.border.GetObjectType and frame.border:GetObjectType() == "Frame" then
+        return frame.border
+    end
+
+    insetX = insetX or 3
+    insetY = insetY or 3
+    edgeSize = edgeSize or 7
+    local lvlAdjust = frameLevelAdjust or 1
+
+    local b = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+    b:SetPoint("TOPLEFT", frame, "TOPLEFT", -insetX, insetY)
+    b:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", insetX, -insetY)
+    b:SetBackdrop({ edgeFile = C.media.border, edgeSize = edgeSize })
+    b:SetBackdropBorderColor(unpack(C.media.borderColor))
+    b:SetFrameLevel(frame:GetFrameLevel() + lvlAdjust)
+    frame.border = b
+    return b
+end
+local function _safe_call(func)
+    return xpcall(func, function(err)
+        local msg = "|cffff5555RefineUI skin error:|r "..tostring(err)
+        if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage(msg) else print(msg) end
+    end)
+end
+
 local function LoadBlizzardSkin(_, event, addon)
     if event == "ADDON_LOADED" then
-        for _addon, skinfunc in pairs(R.SkinFuncs) do
-            if _addon == addon then
-                if type(skinfunc) == "function" then
-                    pcall(skinfunc)
-                elseif type(skinfunc) == "table" then
-                    for _, func in pairs(skinfunc) do
-                        pcall(func)
-                    end
-                end
+        local bucket = R.SkinFuncs[addon]
+        if bucket then
+            if type(bucket) == "function" then
+                _safe_call(bucket)
+            else
+                for _, func in pairs(bucket) do _safe_call(func) end
             end
+            R.SkinFuncs[addon] = nil
         end
     elseif event == "PLAYER_ENTERING_WORLD" then
-        for _addon, skinfunc in pairs(R.SkinFuncs) do
+        for _addon, bucket in pairs(R.SkinFuncs) do
             if C_AddOns.IsAddOnLoaded(_addon) then
-                if type(skinfunc) == "function" then
-                    pcall(skinfunc)
-                elseif type(skinfunc) == "table" then
-                    for _, func in pairs(skinfunc) do
-                        pcall(func)
-                    end
+                if type(bucket) == "function" then
+                    _safe_call(bucket)
+                else
+                    for _, func in pairs(bucket) do _safe_call(func) end
                 end
+                R.SkinFuncs[_addon] = nil
             end
         end
         R.SkinFuncs["RefineUI"] = nil
@@ -535,52 +664,84 @@ function R.ReplaceIconString(frame, text)
     if not text then text = frame:GetText() end
     if not text or text == "" then return end
 
+    if frame.__refine_lastIconString == text then return end
     local newText, count = gsub(text, "|T([^:]-):[%d+:]+|t", "|T%1:14:14:0:0:64:64:5:59:5:59|t")
-    if count > 0 then frame:SetFormattedText("%s", newText) end
+    if count > 0 then
+        frame:SetText(newText)
+        frame.__refine_lastIconString = newText
+    else
+        frame.__refine_lastIconString = text
+    end
 end
 
 ----------------------------------------------------------------------------------------
 -- Icon border coloring
 ----------------------------------------------------------------------------------------
-local iconColors = {
-    ["uncollected"] = { r = borderr, g = borderg, b = borderb },
-    ["gray"]        = { r = borderr, g = borderg, b = borderb },
-    ["white"]       = { r = borderr, g = borderg, b = borderb },
-    ["green"]       = BAG_ITEM_QUALITY_COLORS[2],
-    ["blue"]        = BAG_ITEM_QUALITY_COLORS[3],
-    ["purple"]      = BAG_ITEM_QUALITY_COLORS[4],
-    ["orange"]      = BAG_ITEM_QUALITY_COLORS[5],
-    ["artifact"]    = BAG_ITEM_QUALITY_COLORS[6],
-    ["account"]     = BAG_ITEM_QUALITY_COLORS[7]
-}
+local EPS = 1e-4
+local iconColors = (function()
+    local br, bg, bb = unpack(C.media.borderColor)
+    return {
+        ["uncollected"] = { r = br, g = bg, b = bb },
+        ["gray"]        = { r = br, g = bg, b = bb },
+        ["white"]       = { r = br, g = bg, b = bb },
+        ["green"]       = BAG_ITEM_QUALITY_COLORS[2],
+        ["blue"]        = BAG_ITEM_QUALITY_COLORS[3],
+        ["purple"]      = BAG_ITEM_QUALITY_COLORS[4],
+        ["orange"]      = BAG_ITEM_QUALITY_COLORS[5],
+        ["artifact"]    = BAG_ITEM_QUALITY_COLORS[6],
+        ["account"]     = BAG_ITEM_QUALITY_COLORS[7]
+    }
+end)()
+
+local ATLAS_COLOR_CACHE = {}
+
+local function _setBorderColorCached(border, r, g, b, a)
+    if not (border.__lr and abs(border.__lr - r) <= EPS) or
+       not (border.__lg and abs(border.__lg - g) <= EPS) or
+       not (border.__lb and abs(border.__lb - b) <= EPS) or
+       not (border.__la and abs(border.__la - a) <= EPS) then
+        border:SetBackdropBorderColor(r, g, b, a)
+        border.__lr, border.__lg, border.__lb, border.__la = r, g, b, a
+    end
+end
 
 function R.SkinIconBorder(frame, parent)
-    local border = parent or frame:GetParent().backdrop
-    frame:SetAlpha(0)
-    hooksecurefunc(frame, "SetVertexColor", function(self, r, g, b)
-        if r ~= BAG_ITEM_QUALITY_COLORS[1].r or g ~= BAG_ITEM_QUALITY_COLORS[1].g then
-            border:SetBackdropBorderColor(r, g, b)
+    if frame.__refine_skinIconBorder or frame.__refine_hooked then return end
+    frame.__refine_skinIconBorder = true
+    frame.__refine_hooked = true
+
+    local p = parent or frame:GetParent()
+    local border = p and (p.backdrop or p.border)
+    if not border or not border.SetBackdropBorderColor then return end
+    if frame.GetAlpha and (frame:GetAlpha() or 1) > 0.001 then frame:SetAlpha(0) end
+    local dr, dg, db, da = unpack(C.media.borderColor)
+    hooksecurefunc(frame, "SetVertexColor", function(_, r, g, b)
+        local q = BAG_ITEM_QUALITY_COLORS[1]
+        if r ~= q.r or g ~= q.g or b ~= q.b then
+            _setBorderColorCached(border, r, g, b, 1)
         else
-            border:SetBackdropBorderColor(unpack(C.media.borderColor))
+            _setBorderColorCached(border, dr, dg, db, da)
         end
     end)
 
-    hooksecurefunc(frame, "SetAtlas", function(self, atlas)
-        local atlasAbbr = atlas and strmatch(atlas, "%-(%w+)$")
-        local color = atlasAbbr and iconColors[atlasAbbr]
-        if color then
-            border:SetBackdropBorderColor(color.r, color.g, color.b)
+    hooksecurefunc(frame, "SetAtlas", function(_, atlas)
+        if frame.__refine_lastAtlas == atlas then return end
+        frame.__refine_lastAtlas = atlas
+        local c = atlas and ATLAS_COLOR_CACHE[atlas]
+        if c == nil and atlas then
+            local atlasAbbr = strmatch(atlas, "%-(%w+)$")
+            c = atlasAbbr and iconColors[atlasAbbr]
+            ATLAS_COLOR_CACHE[atlas] = c or false
         end
+        if c then _setBorderColorCached(border, c.r, c.g, c.b, 1) end
     end)
 
-    hooksecurefunc(frame, "Hide", function(self)
-        border:SetBackdropBorderColor(unpack(C.media.borderColor))
+    hooksecurefunc(frame, "Hide", function()
+        _setBorderColorCached(border, dr, dg, db, da)
     end)
 
-    hooksecurefunc(frame, "SetShown", function(self, show)
-        if not show then
-            border:SetBackdropBorderColor(unpack(C.media.borderColor))
-        end
+    hooksecurefunc(frame, "SetShown", function(_, show)
+        if not show then _setBorderColorCached(border, dr, dg, db, da) end
     end)
 end
 

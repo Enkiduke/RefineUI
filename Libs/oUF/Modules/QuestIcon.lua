@@ -5,8 +5,8 @@ local R, C, L = unpack(RefineUI)
 --	Show quest icon on nameplates (based on code from ElvUI)
 ----------------------------------------------------------------------------------------
 local _, ns = ...
-local oUF = ns.oUF or oUF
-assert(oUF, "oUF not loaded")
+local oUF = (ns and ns.oUF) or rawget(_G, "oUF")
+if not oUF then return end
 
 local QuestIcon = {
 	indexByID = {}, --[questID] = questIndex

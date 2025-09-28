@@ -6,8 +6,29 @@
 local a, t = ...
 local f = CreateFrame("frame", a)
 local DB, CF, cfid, hook = {}, {}, {}, {}
-TKUIChatHistory = TKUIChatHistory or {}
+RefineUIChatHistoryDB = RefineUIChatHistoryDB or {}
 local PLAYER_TEXT = "|TInterface\\GossipFrame\\WorkOrderGossipIcon.blp:0:0:1:-2:0:0:0:0:0:0:0:0:0|t "
+
+-- Locals for speed
+local _G = _G
+local type = type
+local ipairs = ipairs
+local tonumber = tonumber
+local tinsert = table.insert
+local tremove = table.remove
+local CreateFrame = CreateFrame
+local hooksecurefunc = hooksecurefunc
+
+-- Config gate
+if not (C.chat and C.chat.history) then return end
+
+-- Clamp headroom to avoid tight-loop clamping; clamp once when needed
+local CLAMP_HEADROOM = 5
+
+-- Cheap DB sanity check
+local function isValidHistory(db)
+	return type(db) == "table" and next(db) ~= nil
+end
 
 local function prnt(frame, message)
     local historyMessage = message
@@ -28,10 +49,14 @@ function t.pushfront(frame)
     if not hook[frame] then
         hook[frame] = true                          -- hook only once, hook doesn't go away when temporary frames are closed (11+)
         hooksecurefunc(frame.historyBuffer, "PushFront", function(frame)
-            while #frame.elements > frame.maxElements - 5 do -- minimum of 2 less than max is needed, 5 to provide some buffer
-                table.remove(frame.elements, 1)
+            -- Clamp only when significantly over max; avoid tight loops
+            local max = frame.maxElements or #frame.elements or 0
+            if #frame.elements > (max + CLAMP_HEADROOM) then
+                while #frame.elements > (max - CLAMP_HEADROOM) do
+                    table.remove(frame.elements, 1)
+                end
+                frame.headIndex = #frame.elements
             end
-            frame.headIndex = #frame.elements
         end)
     end
 end
@@ -48,7 +73,7 @@ end
 
 function t.ADDON_LOADED(addon)
     if addon == a then
-        DB = TKUIChatHistory
+    DB = RefineUIChatHistoryDB
         for frame, elements in next, DB do
             for element = #elements, 1, -1 do
                 if elements[element].extraData then
@@ -105,6 +130,13 @@ function t.PLAYER_ENTERING_WORLD()
             t.timestamps(cfid[id])	
             if id <= NUM_CHAT_WINDOWS and DB[id] and #DB[id] > 0 then
                 cfid[id].historyBuffer:ReplaceElements(DB[id])
+                -- Single clamp after restore to keep headroom
+                local elements = cfid[id].historyBuffer.elements
+                local max = cfid[id].historyBuffer.maxElements or #elements or 0
+                while #elements > (max - CLAMP_HEADROOM) do
+                    table.remove(elements, 1)
+                end
+                cfid[id].historyBuffer.headIndex = #elements
             end -- restore any history for ChatFrame1-10 (excluding Combat Log)
             prnt(cfid[id], "|cFFFF5C00-----------------------------------|r |cFFFFFFFFChat History|r |cFFFF5C00-----------------------------------|r")
         end

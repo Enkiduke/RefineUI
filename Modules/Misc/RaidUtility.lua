@@ -1,5 +1,4 @@
-﻿----------------------------------------------------------------------------------------
---	Raid Utility for TKUI (by Elv22)
+﻿--	Raid Utility for RefineUI (original by Elv22)
 --	This module provides a panel with various raid management tools.
 ----------------------------------------------------------------------------------------
 

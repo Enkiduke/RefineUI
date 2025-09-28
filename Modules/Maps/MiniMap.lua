@@ -150,7 +150,7 @@ frame:SetScript("OnEvent", function(self, event)
 			self:SetPoint("BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", -2, 4)
 		end
 	end)
-	MiniMapMailIcon:SetTexture("Interface\\AddOns\\TKUI\\Media\\Textures\\Mail")
+	-- Use the default mailbox texture; remove legacy path override
 	MiniMapMailIcon:SetSize(20, 18)
 
 	-- Move crafting order icon
@@ -172,8 +172,10 @@ MinimapCompassTexture:Hide()
 MinimapCluster.BorderTop:StripTextures()
 
 -- Hide Zoom Buttons
-Minimap.ZoomIn:Kill()
-Minimap.ZoomOut:Kill()
+    local zoomInBtn = rawget(Minimap, 'ZoomIn')
+    if zoomInBtn and zoomInBtn.Kill then zoomInBtn:Kill() end
+    local zoomOutBtn = rawget(Minimap, 'ZoomOut')
+    if zoomOutBtn and zoomOutBtn.Kill then zoomOutBtn:Kill() end
 
 -- Set up the addon's frame
 if C.minimap.zoomReset then
@@ -234,10 +236,13 @@ ExpansionLandingPageMinimapButton:SetAlpha(0)
 
 
 -- Feedback icon
-if FeedbackUIButton then
-	FeedbackUIButton:ClearAllPoints()
-	FeedbackUIButton:SetPoint("BOTTOM", Minimap, "BOTTOM", 0, 0)
-	FeedbackUIButton:SetScale(0.8)
+do
+    local f = rawget(_G, 'FeedbackUIButton')
+    if f then
+        f:ClearAllPoints()
+        f:SetPoint("BOTTOM", Minimap, "BOTTOM", 0, 0)
+        f:SetScale(0.8)
+    end
 end
 
 -- Streaming icon
@@ -265,9 +270,11 @@ GhostFrameContentsFrame.backdrop:SetPoint("BOTTOMRIGHT", GhostFrameContentsFrame
 Minimap:EnableMouseWheel(true)
 Minimap:SetScript("OnMouseWheel", function(_, d)
 	if d > 0 then
-		_G.Minimap.ZoomIn:Click()
+    local zi = _G.Minimap and rawget(_G.Minimap, 'ZoomIn')
+        if zi and zi.Click then zi:Click() end
 	elseif d < 0 then
-		_G.Minimap.ZoomOut:Click()
+    local zo = _G.Minimap and rawget(_G.Minimap, 'ZoomOut')
+        if zo and zo.Click then zo:Click() end
 	end
 end)
 
@@ -296,7 +303,8 @@ Minimap:SetScript("OnMouseUp", function(self, button)
 		MinimapCluster.Tracking.Button.menu:ClearAllPoints()
 		MinimapCluster.Tracking.Button.menu:SetPoint("TOPRIGHT", Minimap, "LEFT", -4, 0)
 	elseif button == "LeftButton" then
-		Minimap.OnClick(self)
+        local onClick = Minimap and rawget(Minimap, 'OnClick')
+        if type(onClick) == 'function' then onClick(self) end
 	end
 end)
 
@@ -340,21 +348,24 @@ Minimap:SetScript("OnMouseUp", function(self, button)
 			menu:ClearAllPoints()
 			menu:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", cursorX / scale, cursorY / scale)
 		end
-	elseif button == "LeftButton" then
-		Minimap.OnClick(self)
-	end
+    elseif button == "LeftButton" then
+        local onClick = Minimap and rawget(Minimap, 'OnClick')
+        if type(onClick) == 'function' then onClick(self) end
+    end
 end)
 
 ----------------------------------------------------------------------------------------
 -- Show who clicked the minimap
 ----------------------------------------------------------------------------------------
-local whoClickedFrame = CreateFrame("Frame", "TKUIWhoClickedFrame", Minimap)
+local whoClickedFrame = CreateFrame("Frame", "RefineUIWhoClickedFrame", Minimap)
 whoClickedFrame:SetPoint("BOTTOM", Minimap, "BOTTOM", 0, 0)
 whoClickedFrame:SetSize(1, 1)
 
 local whoClickedText = whoClickedFrame:CreateFontString(nil, "OVERLAY")
 whoClickedText:SetFont(C.media.normalFont, 16, "OUTLINE")
 whoClickedText:SetPoint("BOTTOM", Minimap, "BOTTOM", 0, 6)
+
+local whoClickedTimer
 
 local function OnMinimapPing(self, event, unit)
 	local name = UnitName(unit)
@@ -364,8 +375,8 @@ local function OnMinimapPing(self, event, unit)
 	UIFrameFadeRemoveFrame(whoClickedText)
 	whoClickedText:SetAlpha(1)
 	whoClickedText:Show()
-	if whoClickedText.fadeTimer then whoClickedText.fadeTimer:Cancel() end
-	whoClickedText.fadeTimer = C_Timer.NewTimer(5, function() FadeOutWhoClicked(whoClickedText) end)
+if whoClickedTimer then whoClickedTimer:Cancel() end
+    whoClickedTimer = C_Timer.NewTimer(5, function() FadeOutWhoClicked(whoClickedText) end)
 end
 
 whoClickedFrame:RegisterEvent("MINIMAP_PING")

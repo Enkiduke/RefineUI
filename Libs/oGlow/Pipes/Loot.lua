@@ -1,4 +1,5 @@
 local R, C, L = unpack(RefineUI)
+local oGlow = rawget(_G, "oGlow")
 
 local hook
 local _E

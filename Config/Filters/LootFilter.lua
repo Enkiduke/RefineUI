@@ -65,25 +65,23 @@ R.LootFilterCustom = R.LootFilterCustom or {}
 
 -- Merge saved custom filter with R.LootFilterCustom
 local function SaveCustomFilters()
-    TKUILootFilter = TKUILootFilter or {}
-    wipe(TKUILootFilter)
+    RefineUILootFilterDB = RefineUILootFilterDB or {}
+    wipe(RefineUILootFilterDB)
     for itemID, value in pairs(R.LootFilterCustom) do
-        TKUILootFilter[itemID] = value
+        RefineUILootFilterDB[itemID] = value
     end
 end
 
--- Make these functions available to other parts of your addon if needed
-R.AddToCustomFilter = AddToCustomFilter
-R.RemoveFromCustomFilter = RemoveFromCustomFilter
+-- These helpers are implemented and exposed by `Modules/Loot/LootFilter.lua` via slash commands.
 
--- Register a event to ensure TKUILootFilter is properly initialized
+-- Register an event to ensure RefineUILootFilterDB is properly initialized
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:SetScript("OnEvent", function(self, event)
     if event == "PLAYER_LOGIN" then
-        TKUILootFilter = TKUILootFilter or {}
+    RefineUILootFilterDB = RefineUILootFilterDB or {}
         -- Re-merge saved filters in case they weren't available when this file first loaded
-        for itemID, value in pairs(TKUILootFilter) do
+    for itemID, value in pairs(RefineUILootFilterDB) do
             R.LootFilterCustom[itemID] = value
         end
         self:UnregisterEvent("PLAYER_LOGIN")

@@ -1,18 +1,22 @@
 local R, C, L = unpack(RefineUI)
 
+-- Upvalues and constants for clarity and micro-optimizations
+local UIParent = UIParent
+local DEFAULT_COLOR = { 0.8, 0.8, 0.8 }
+local TIMER_DEFAULT_Y = -96
+
 ----------------------------------------------------------------------------------------
 --	Mirror Timers (Underwater Breath, etc.) [from ElvUI]
 ----------------------------------------------------------------------------------------
-local position = {
+local position = (C and C.position and C.position.mirrorTimers) or {
 	BREATH = -96;
 	EXHAUSTION = -116;
 	FEIGNDEATH = -142;
 }
 
-local loadPosition = function(self, timer)
-	local y = position[timer] or -96
-
-	return self:SetPoint("TOP", UIParent, "TOP", 0, y)
+local function loadPosition(frame, timer)
+	local y = position[timer] or TIMER_DEFAULT_Y
+	frame:SetPoint("TOP", UIParent, "TOP", 0, y)
 end
 
 local colors = {
@@ -33,7 +37,6 @@ local function SetupTimer(container, timer)
 
 		bar.StatusBar:SetParent(bar.atlasHolder)
 		bar.StatusBar:ClearAllPoints()
-		bar.StatusBar:SetSize(281, 16)
 		bar.StatusBar:SetAllPoints()
 
 		bar.Text:SetFont(C.media.normalFont, C.media.normalFontSize, C.media.normalFontStyle)
@@ -52,9 +55,12 @@ local function SetupTimer(container, timer)
 		loadPosition(bar, timer)
 	end
 
-	local r, g, b = unpack(colors[timer])
+	local color = colors[timer] or DEFAULT_COLOR
 	bar.StatusBar:SetStatusBarTexture(C.media.texture)
-	bar.StatusBar:SetStatusBarColor(r, g, b)
+	bar.StatusBar:SetStatusBarColor(color[1], color[2], color[3])
 end
 
-hooksecurefunc(_G.MirrorTimerContainer, "SetupTimer", SetupTimer)
+local mirrorContainer = _G and _G["MirrorTimerContainer"]
+if mirrorContainer then
+	hooksecurefunc(mirrorContainer, "SetupTimer", SetupTimer)
+end

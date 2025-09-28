@@ -10,6 +10,12 @@ local button, button2, waitForMail, openAll, openAllCash, openMail, lastopened, 
 local baseInboxFrame_OnClick
 -- local profit = 0
 
+-- Localize frequently used globals for micro-optimizations
+local GetInboxNumItems = GetInboxNumItems
+local GetInboxHeaderInfo = GetInboxHeaderInfo
+local TakeInboxMoney = TakeInboxMoney
+local TakeInboxItem = TakeInboxItem
+
 function openAll()
 	if GetInboxNumItems() == 0 then return end
 	button:SetScript("OnClick", nil)
@@ -32,13 +38,13 @@ function openMail(index)
 		return stopOpening(L_MAIL_COMPLETE)
 	end
 	local _, _, _, _, money, COD, _, numItems = GetInboxHeaderInfo(index)
-	if money > 0 then
+	if money and money > 0 then
 		TakeInboxMoney(index)
 		needsToWait = true
 		if total_cash then total_cash = total_cash - money end
 		-- profit = profit + money
-	elseif (not takingOnlyCash) and (numItems and numItems > 0) and COD <= 0 then
-		TakeInboxItem(index)
+	elseif (not takingOnlyCash) and (numItems and numItems > 0) and (COD or 0) <= 0 then
+    TakeInboxItem(index, 1)
 		needsToWait = true
 	end
 	local items = GetInboxNumItems()
@@ -58,7 +64,7 @@ function waitForMail(_, elapsed)
 		needsToWait = false
 		button:SetScript("OnUpdate", nil)
 		local _, _, _, _, money, COD, _, numItems = GetInboxHeaderInfo(lastopened)
-		if money > 0 or ((not takingOnlyCash) and COD <= 0 and numItems and (numItems > 0)) then
+		if (money and money > 0) or ((not takingOnlyCash) and (COD or 0) <= 0 and numItems and (numItems > 0)) then
 			openMail(lastopened)
 		else
 			openMail(lastopened - 1)
@@ -88,7 +94,7 @@ function stopOpening(msg)
 	button:UnregisterEvent("UI_ERROR_MESSAGE")
 	takingOnlyCash = false
 	total_cash = nil
-	if msg then print("|cffffff00" .. msg .. "|r") end
+	if msg then DEFAULT_CHAT_FRAME:AddMessage("|cFFFFD200Mail:|r " .. msg, 255, 255, 255) end
 	-- if profit > 0 then print(format("|cff66C6FF%s |cffFFFFFF%s", AMOUNT_RECEIVED_COLON, copper_to_pretty_money(profit))) profit = 0 end
 end
 
@@ -115,8 +121,8 @@ button = makeButton("OpenAllButton", ALL, 70, 25, -65, -398)
 button:SetScript("OnClick", openAll)
 button:SetScript("OnEvent", onEvent)
 button:SetScript("OnEnter", function()
-	GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
-	GameTooltip:AddLine(string.format("%d " .. L_MAIL_MESSAGES, GetInboxNumItems()), 1, 1, 1)
+    GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(string.format("%d " .. L_MAIL_MESSAGES, GetInboxNumItems()), 1, 1, 1)
 	GameTooltip:Show()
 end)
 button:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -126,18 +132,18 @@ button2:SetScript("OnClick", openAllCash)
 button2:SetScript("OnEnter", function()
 	if not total_cash then
 		total_cash = 0
-		for index = 0, GetInboxNumItems() do
+		for index = 1, GetInboxNumItems() do
 			local _, _, _, _, money = GetInboxHeaderInfo(index)
-			total_cash = total_cash + money
+			total_cash = total_cash + (money or 0)
 		end
 	end
-	GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+	GameTooltip:SetOwner(button2, "ANCHOR_RIGHT")
 	GameTooltip:AddLine(copper_to_pretty_money(total_cash), 1, 1, 1)
 	GameTooltip:Show()
 end)
 button2:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-OpenAllButton:SkinButton()
-OpenAllButton2:SkinButton()
-
-OpenAllMail:Hide() -- 7.2 new button
+do
+    local openAllMail = rawget(_G, 'OpenAllMail')
+    if openAllMail and openAllMail.Hide then openAllMail:Hide() end -- 7.2 new button
+end

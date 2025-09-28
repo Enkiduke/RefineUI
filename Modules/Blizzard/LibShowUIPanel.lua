@@ -5,7 +5,10 @@
 --
 local MAJOR, MINOR = 'LibShowUIPanel-1.0', 6
 
-local Lib, oldminor = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
+local Lib, oldminor = nil, nil
+if LibStub and LibStub.NewLibrary then
+    Lib, oldminor = LibStub:NewLibrary(MAJOR, MINOR)
+end
 if not Lib then
 	return
 end
@@ -15,10 +18,15 @@ local HideUIPanel = HideUIPanel
 
 local InCombatLockdown = InCombatLockdown
 
+local function HasFrameMethod(f, key)
+    local ok, val = pcall(function() return f[key] end)
+    return ok and val ~= nil
+end
+
 Lib.Delegate = Lib.Delegate or (function()
 	local frame = EnumerateFrames()
 	while frame do
-		if frame.SetUIPanel and issecurevariable(frame, 'SetUIPanel') then
+        if HasFrameMethod(frame, 'SetUIPanel') and issecurevariable(frame, 'SetUIPanel') then
 			return frame
 		end
 		frame = EnumerateFrames(frame)

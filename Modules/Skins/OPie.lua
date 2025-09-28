@@ -169,7 +169,7 @@ end
 
 local function CreateIndicator(name, parent, size, ghost)
 	id = id + 1
-	name = name or "OPieSliceButton"..id
+	name = name or ("OPieSliceButton"..id)
 	parent = parent or UIParent
 	size = size or 36
 
@@ -242,4 +242,7 @@ local function onParentAlphaChanged(button, alpha)
 button:SetAlpha(alpha)
 end
 
-OPie.UI:RegisterIndicatorConstructor("OpieMasque", {CreateIndicator=CreateIndicator, name="OpieMasque", apiLevel=3, onParentAlphaChanged=onParentAlphaChanged})
+local OPie = rawget(_G, 'OPie')
+if OPie and OPie.UI and OPie.UI.RegisterIndicatorConstructor then
+    OPie.UI:RegisterIndicatorConstructor("OpieMasque", {CreateIndicator=CreateIndicator, name="OpieMasque", apiLevel=3, onParentAlphaChanged=onParentAlphaChanged})
+end

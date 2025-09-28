@@ -8,7 +8,8 @@ R.class = select(2, UnitClass("player"))
 R.level = UnitLevel("player")
 R.client = GetLocale()
 R.realm = GetRealmName()
-R.color = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[R.class]
+local classColors = rawget(_G, "CUSTOM_CLASS_COLORS") or RAID_CLASS_COLORS or {}
+R.color = classColors[R.class] or { r = 1, g = 1, b = 1 }
 -- R.version = C_AddOns.GetAddOnRefineUIdata("RefineUI", "Version")
 R.screenWidth, R.screenHeight = GetPhysicalScreenSize()
 R.newPatch = select(4, GetBuildInfo()) >= 110000
@@ -29,7 +30,7 @@ local isCaster = {
 	SHAMAN = {true},				-- Elemental
 	WARLOCK = {true, true, true},
 	WARRIOR = {nil, nil, nil},
-	EVOKER = {true}
+	EVOKER = {true, true, true}
 }
 
 local function CheckRoleAndLevel(_, _, level)
@@ -42,7 +43,7 @@ local function CheckRoleAndLevel(_, _, level)
 	elseif role == "HEALER" then
 		R.Role = "Healer"
 	elseif role == "DAMAGER" then
-		if isCaster[R.class][spec] then
+		if isCaster[R.class] and spec and isCaster[R.class][spec] then
 			R.Role = "Caster"
 		else
 			R.Role = "Melee"
@@ -85,6 +86,8 @@ GetSpellInfo = function(data)
 	end
 end
 
+-- Only define EasyMenu if not already present to avoid clobbering Blizzard's implementation (or other addons)
+if not EasyMenu then
 local function EasyMenu_Initialize( frame, level, menuList )
 	for index = 1, #menuList do
 		local value = menuList[index]
@@ -101,4 +104,5 @@ function EasyMenu(menuList, menuFrame, anchor, x, y, displayMode, autoHideDelay 
 	end
 	UIDropDownMenu_Initialize(menuFrame, EasyMenu_Initialize, displayMode, nil, menuList);
 	ToggleDropDownMenu(1, nil, menuFrame, anchor, x, y, menuList, nil, autoHideDelay);
+end
 end

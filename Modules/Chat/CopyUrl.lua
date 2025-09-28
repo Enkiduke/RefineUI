@@ -3,6 +3,7 @@ local R, C, L = unpack(RefineUI)
 ----------------------------------------------------------------------------------------
 --	Copy url from chat(module from Gibberish by p3lim)
 ----------------------------------------------------------------------------------------
+local HAS_URL1, HAS_URL2 = "://", "www."
 local patterns = {
 	"(https://%S+%.%S+)",
 	"(http://%S+%.%S+)",
@@ -30,10 +31,16 @@ for _, event in next, {
 	"CHAT_MSG_SYSTEM"
 } do
 	ChatFrame_AddMessageEventFilter(event, function(_, event, str, ...)
-		for _, pattern in pairs(patterns) do
-			local result, match = string.gsub(str, pattern, "|cff00FF00|Hurl:%1|h[%1]|h|r")
-			if match > 0 then
-				return false, result, ...
+		if not str or (not string.find(str, HAS_URL1, 1, true) and not string.find(str, HAS_URL2, 1, true)) then
+			return
+		end
+		for i = 1, #patterns do
+			local pattern = patterns[i]
+			if pattern then
+				local result, match = string.gsub(str, pattern, "|cff00FF00|Hurl:%1|h[%1]|h|r")
+				if match > 0 then
+					return false, result, ...
+				end
 			end
 		end
 	end)

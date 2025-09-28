@@ -68,14 +68,15 @@ local function Update(frame, _, unit)
     end
 
     for i = 1, 40 do
-        local name, _, count, _, duration, remaining, caster, _, _, spellID = UnitAura(unit, i)
+        local name, _, count, _, duration, expirationTime, caster, _, _, spellID = UnitAura(unit, i)
         if not name then break end
         
         local key = watch.strictMatching and spellID or name
         local icon = icons[key]
         
         if icon and not R.RaidBuffsIgnore[spellID] and (icon.anyUnit or (caster and icon.fromUnits and icon.fromUnits[caster])) then
-            resetIcon(icon, count, duration, remaining)
+            local remaining = expirationTime and (expirationTime - GetTime()) or 0
+            resetIcon(icon, count or 0, duration or 0, remaining)
             guidTable[key] = true
         end
     end
@@ -100,7 +101,6 @@ local function setupIcons(self)
 
             if not icon.cd and not (watch.hideCooldown or icon.hideCooldown) then
                 local cd = CreateFrame("Cooldown", nil, icon, "CooldownFrameTemplate")
-                cd:SetSwipeTexture("Interface\\AddOns\\RefineUI\\Media\\Textures\\CDAura.blp")
                 cd:SetAllPoints(icon)
                 cd:SetDrawEdge(false)
                 cd:SetReverse(true)

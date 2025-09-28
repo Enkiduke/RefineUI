@@ -1,8 +1,10 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
-   <Script file="DynamicPortrait.lua"/>
+	<Script file="DynamicPortrait.lua"/>
 	<Script file="ArcaneCharge.lua"/>
 	<!-- <Script file="AuraTracker.lua"/> -->
 	<Script file="AuraWatch.lua"/>
+	<Script file="BuffWatch.lua"/>
+	<Script file="CrowdControl.lua"/>
 	<Script file="AutoResurrect.lua"/>
 	<Script file="ComboPoints.lua"/>
 	<Script file="DebuffHighlight.lua"/>
@@ -11,7 +13,7 @@
 	<Script file="Fader.lua"/>
 	<Script file="HarmonyOrbs.lua"/>
 	<Script file="HolyPower.lua"/>
-	<Script file="QuestIcon.lua"/>
+	<!-- <Script file="QuestIcon.lua"/> -->
 	<Script file="RaidDebuffs.lua"/>
 	<!-- <Script file="Reputation.lua"/> -->
 	<Script file="Smooth.lua"/>

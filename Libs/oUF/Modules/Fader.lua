@@ -52,7 +52,7 @@ local conditions = setmetatable({
 	Stealth = IsStealthed,
 	Flying = IsFlying,
 	Resting = IsResting,
-	Combat = InCombatLockdown,
+  Combat = function() return InCombatLockdown() end,
 	PlayerNotMaxHealth = function(_, unit) return unit and UnitHealth("player") ~= UnitHealthMax("player") end,
 	PlayerNotMaxMana = function(_, unit)
 		local _, powerTypeString = UnitPowerType("player")

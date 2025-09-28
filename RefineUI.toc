@@ -3,7 +3,7 @@
 ## Notes: A refined UI replacement for World of Warcraft
 ## Author: Teekey
 ## Version: 1.0
-## SavedVariables: RefineUISettings, RefineUIBindings, RefineUICurrency, RefineUIPositions, RefineUIChatHistoryDB
+## SavedVariables: RefineUISettings, RefineUIBindings, RefineUICurrency, RefineUIPositions, RefineUIChatHistoryDB, RefineUI_FilgerManagedSpells, RefineUI_FilgerFrameSettings, RefineUI_FilgerClassProfiles, RefineUI_SelfBuffsClassProfiles, RefineUI_BuffWatchClassProfiles, RefineUI_BuffWatchGlobal, RefineUIAutoSellDB, ObjectiveTrackerCollapseSettings, RefineUILootFilterDB
 ## SavedVariablesPerCharacter: RefineUICharDB
 ## X-oUF: RefineUI_oUF
 ## IconTexture: Interface\AddOns\RefineUI\Media\Textures\Logo.blp

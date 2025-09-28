@@ -1,8 +1,9 @@
 local _E
 local hook
+local oGlow = rawget(_G, "oGlow")
 
 local pipe = function()
-	local tab = GetCurrentGuildBankTab()
+    local tab = GetCurrentGuildBankTab() or 1
 	for i = 1, 98 do
 		local index = math.fmod(i, 14)
 		if index == 0 then
@@ -19,18 +20,20 @@ end
 
 local doHook = function()
 	if(not hook) then
-		hook = function(...)
-			if(_E) then return pipe(...) end
+        hook = function()
+            if(_E) then return pipe() end
 		end
 
-		hooksecurefunc(GuildBankFrame, "Update", hook)
+        if GuildBankFrame and GuildBankFrame.Update then
+            hooksecurefunc(GuildBankFrame, "Update", hook)
+        end
 	end
 end
 
 local function ADDON_LOADED(self, event, addon)
 	if(addon == "Blizzard_GuildBankUI") then
-		doHook()
-		self:UnregisterEvent(event, ADDON_LOADED)
+        doHook()
+        self:UnregisterEvent(event)
 	end
 end
 

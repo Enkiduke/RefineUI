@@ -80,7 +80,8 @@ local function Enable(self)
 		self:RegisterEvent('GROUP_ROSTER_UPDATE', Path, true)
 
 		if(element:IsObjectType('Texture') and not element:GetTexture()) then
-			element:SetTexture([[Interface\AddOns\TKUI\Media\Textures\Leader.tga]])
+			-- No dedicated Assistant texture present; fall back to Leader icon for visibility
+			element:SetTexture([[Interface\AddOns\RefineUI\Media\Textures\Leader.tga]])
 		end
 
 		return true

@@ -1,4 +1,5 @@
 local R, C, L = unpack(RefineUI)
+local oGlow = rawget(_G, "oGlow")
 
 local _E
 
@@ -7,7 +8,10 @@ local update = function(self)
 		local slotFrame = _G["BankFrameItem"..i]
 		local slotLink = C_Container.GetContainerItemLink(-1, i)
 
-		self:CallFilters("bank", slotFrame, _E and slotLink)
+		-- Only call filters when the frame exists; some indices may not be spawned yet
+		if slotFrame then
+			self:CallFilters("bank", slotFrame, _E and slotLink)
+		end
 	end
 end
 

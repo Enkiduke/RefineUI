@@ -1,7 +1,4 @@
-----------------------------------------------------------------------------------------
---	Scrolling Combat Text (SCT) for RefineUI
---	This module provides a customizable scrolling combat text system for World of Warcraft.
---	It displays damage, misses, and other combat events with various animation options.
+-- LibEasing no longer used
 --	Features include customizable text size, colors, animations, and filtering options.
 ----------------------------------------------------------------------------------------
 
@@ -10,7 +7,7 @@ local R, C, L = unpack(RefineUI)
 ----------------------------------------------------------------------------------------
 --	Libraries
 ----------------------------------------------------------------------------------------
-local LibEasing = LibStub("LibEasing-1.0")
+-- LibEasing removed; no libraries required here
 
 ----------------------------------------------------------------------------------------
 --	Addon Initialization
@@ -28,17 +25,55 @@ SetCVar("floatingCombatTextCombatHealing", 0)
 local playerGUID
 local unitToGuid = {}
 local guidToUnit = {}
-local animating = {}
+-- Active animations tracked in an indexed array for cache-friendly iteration
+local animList = {}
+local animIndex = {}
+
+-- Forward declaration for local function defined later
+local recycleFontString
+
+local function addAnimating(fs)
+    if not animIndex[fs] then
+        tinsert(animList, fs)
+        animIndex[fs] = #animList
+    end
+end
+
+local function removeAnimating(fs, doRecycle)
+    local idx = animIndex[fs]
+    if not idx then
+        if doRecycle then recycleFontString(fs) end
+        return
+    end
+    local lastIndex = #animList
+    local last = animList[lastIndex]
+    animList[idx] = last
+    animIndex[last] = idx
+    animList[lastIndex] = nil
+    animIndex[fs] = nil
+    if doRecycle then recycleFontString(fs) end
+end
+
+-- Constants
+local MINIMUM_TEXT_SIZE = 5
+local SHADOW_OFFSET_X = 1
+local SHADOW_OFFSET_Y = -1
 
 -- Cache frequently used functions
 local GetTime = GetTime
 local math_random = math.random
 local math_max = math.max
 local math_min = math.min
+local math_abs = math.abs
 local string_format = string.format
-local string_find = string.find
-local strconcat = table.concat
 local string_match = string.match
+local bit_band = bit.band
+local UnitExists = UnitExists
+local UnitIsUnit = UnitIsUnit
+local GetNamePlateForUnit = C_NamePlate.GetNamePlateForUnit
+local GetSpellTexture = C_Spell.GetSpellTexture
+local GetSpellInfo = C_Spell.GetSpellInfo
+local tinsert, tremove = table.insert, table.remove
 
 -- Lookup table for power of 10 calculations
 local POW10 = setmetatable({ [0] = 1 }, {
@@ -48,7 +83,7 @@ local POW10 = setmetatable({ [0] = 1 }, {
             t[k] = v
             return v
         end
-        return 1 / POW10[-k]
+        return 1 / t[-k]
     end
 })
 
@@ -85,13 +120,18 @@ local function getRecycledTable(poolName)
         pool = {}
         tablePools[poolName] = pool
     end
-    return table.remove(pool) or {}
+    return tremove(pool) or {}
 end
 
 local function recycleTable(t, poolName)
     if type(t) ~= "table" then return end
     for k in pairs(t) do t[k] = nil end
-    table.insert(tablePools[poolName] or {}, t)
+    local pool = tablePools[poolName]
+    if not pool then
+        pool = {}
+        tablePools[poolName] = pool
+    end
+    tinsert(pool, t)
 end
 
 -- Animation constants
@@ -131,6 +171,25 @@ local INVERSE_POSITIONS = {
     ["BOTTOMRIGHT"] = "TOPLEFT",
     ["CENTER"] = "CENTER"
 }
+
+-- Cache for spell icon textures
+local SPELL_ICON_CACHE = {}
+local SPELL_ICON_CACHE_ORDER = {}
+local ICON_CACHE_MAX = 512
+
+local function cacheSpellIcon(key, texture)
+    if not key or not texture then return end
+    if SPELL_ICON_CACHE[key] == nil then
+        tinsert(SPELL_ICON_CACHE_ORDER, key)
+        SPELL_ICON_CACHE[key] = texture
+        if #SPELL_ICON_CACHE_ORDER > ICON_CACHE_MAX then
+            local old = tremove(SPELL_ICON_CACHE_ORDER, 1)
+            SPELL_ICON_CACHE[old] = nil
+        end
+    else
+        SPELL_ICON_CACHE[key] = texture
+    end
+end
 
 -- Damage school masks (for 9.1 PTR Support)
 if not SCHOOL_MASK_PHYSICAL then
@@ -197,11 +256,36 @@ end
 ----------------------------------------------------------------------------------------
 --	FontString Management
 ----------------------------------------------------------------------------------------
+---@class SCTFontString: FontString
+---@field distance number
+---@field arcTop number
+---@field arcBottom number
+---@field arcXDist number
+---@field deflection number
+---@field numShakes number
+---@field animation string
+---@field animatingDuration number
+---@field animatingStartTime number
+---@field anchorFrame Frame
+---@field unit string
+---@field guid string
+---@field pow boolean
+---@field startHeight number
+---@field startAlpha number
+---@field icon Texture
+---@field rainfallX number
+---@field rainfallStartY number
+---@field scttext string
+---@field baseX number
+---@field baseY number
+---@field invDuration number
+---@field _lastAlpha number
 local fontStringCache = {}
 local frameCounter = 0
 
+---@return SCTFontString
 local function getFontString()
-    local fontString = table.remove(fontStringCache)
+    local fontString = tremove(fontStringCache)
     if not fontString then
         frameCounter = frameCounter + 1
         local fontStringFrame = CreateFrame("Frame", nil, UIParent)
@@ -211,8 +295,10 @@ local function getFontString()
         fontString:SetParent(fontStringFrame)
     end
 
+    ---@cast fontString SCTFontString
+    --- Keep base styling here; avoid resetting on every display
     fontString:SetFont(unpack(C.font.sct))
-    fontString:SetShadowOffset(1, -1)
+    fontString:SetShadowOffset(SHADOW_OFFSET_X, SHADOW_OFFSET_Y)
     fontString:SetAlpha(1)
     fontString:SetDrawLayer("BACKGROUND")
     fontString:SetText("")
@@ -220,24 +306,21 @@ local function getFontString()
 
     if C.sct.icon_enable then
         if not fontString.icon then
-            fontString.icon = RefineUI_SCT.frame:CreateTexture(nil, "BACKGROUND")
+            fontString.icon = fontString:GetParent():CreateTexture(nil, "BACKGROUND")
         end
         fontString.icon:SetAlpha(1)
         fontString.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
         fontString.icon:Hide()
-        if fontString.icon.button then
-            fontString.icon.button:Show()
-        end
     end
 
     return fontString
 end
 
-local function recycleFontString(fontString)
+---@param fontString SCTFontString
+function recycleFontString(fontString)
     fontString:SetAlpha(0)
     fontString:Hide()
 
-    animating[fontString] = nil
 
     -- Reset properties
     fontString.distance = nil
@@ -254,32 +337,28 @@ local function recycleFontString(fontString)
     fontString.guid = nil
     fontString.pow = nil
     fontString.startHeight = nil
+    fontString.invDuration = nil
+    fontString._lastAlpha = nil
 
     if fontString.icon then
         fontString.icon:ClearAllPoints()
         fontString.icon:SetAlpha(0)
         fontString.icon:Hide()
-        if fontString.icon.button then
-            fontString.icon.button:Hide()
-            fontString.icon.button:ClearAllPoints()
-        end
-        fontString.icon.anchorFrame = nil
-        fontString.icon.unit = nil
-        fontString.icon.guid = nil
     end
 
-    fontString:SetFont(unpack(C.font.sct))
-    fontString:SetShadowOffset(1, -1)
+    -- Do not reset font and shadow here to avoid redundant work
     fontString:ClearAllPoints()
 
-    table.insert(fontStringCache, fontString)
+    tinsert(fontStringCache, fontString)
 end
 
 ----------------------------------------------------------------------------------------
 --	Animation Functions
 ----------------------------------------------------------------------------------------
 local function verticalPath(elapsed, duration, distance)
-    return 0, LibEasing.InQuad(elapsed, 0, distance, duration)
+    -- Inline InQuad easing: y = distance * (elapsed / duration)^2
+    local p = elapsed / duration
+    return 0, distance * p * p
 end
 
 local function arcPath(elapsed, duration, xDist, yStart, yTop, yBottom)
@@ -294,15 +373,7 @@ local function arcPath(elapsed, duration, xDist, yStart, yTop, yBottom)
     return x, y
 end
 
-local function powSizing(elapsed, duration, start, middle, finish)
-    if elapsed >= duration then return finish end
-
-    if elapsed / duration < 0.5 then
-        return LibEasing.OutQuint(elapsed, start, middle - start, duration / 2)
-    else
-        return LibEasing.InQuint(elapsed - duration / 2, middle, finish - middle, duration / 2)
-    end
-end
+-- powSizing is unused; remove to reduce bytecode and hot path size
 
 local function calculateOffset(fontString, elapsed)
     local xOffset, yOffset = 0, 0
@@ -323,59 +394,67 @@ end
 
 local function updateFontStringPosition(fontString, elapsed)
     local xOffset, yOffset = calculateOffset(fontString, elapsed)
-
-    if not UnitExists(fontString.unit) then
-        return false
-    end
-
-    local anchorFrame = fontString.unit == "player" and UIParent or C_NamePlate.GetNamePlateForUnit(fontString.unit)
+    local anchorFrame = fontString.anchorFrame
     if not anchorFrame then
         return false
     end
 
-    local baseX = fontString.unit == "player" and C.sct.personal_x_offset or C.sct.x_offset
-    local baseY = fontString.unit == "player" and C.sct.personal_y_offset or C.sct.y_offset
+    local baseX = fontString.baseX or 0
+    local baseY = fontString.baseY or 0
     fontString:SetPoint("CENTER", anchorFrame, "CENTER", baseX + xOffset, baseY + yOffset)
 
     return true
 end
 
 local function AnimationOnUpdate()
-    local currentTime = GetTime()
-    local toRemove = {}
+    local currentTime = GetTime() -- Cache time
+    local cfg = C.sct
+    local defaultAlpha = cfg.alpha -- Cache default alpha
 
-    for fontString in pairs(animating) do
-        if not fontString.animatingDuration or not fontString.animatingStartTime or not fontString.unit then
-            table.insert(toRemove, fontString)
+    local i = 1
+    while i <= #animList do
+        local fontString = animList[i]
+        local remove = false
+        if not fontString or not fontString.animatingDuration or not fontString.animatingStartTime or not fontString.unit then
+            remove = true
         elseif not UnitExists(fontString.unit) then
-            table.insert(toRemove, fontString)
+            remove = true
         else
             local elapsed = currentTime - fontString.animatingStartTime
             if elapsed > fontString.animatingDuration then
-                recycleFontString(fontString)
-                table.insert(toRemove, fontString)
+                remove = true
             else
                 if not updateFontStringPosition(fontString, elapsed) then
-                    table.insert(toRemove, fontString)
+                    remove = true
                 else
                     -- Update alpha
-                    local progress = elapsed / fontString.animatingDuration
-                    local startAlpha = fontString.startAlpha or C.sct.alpha
+                    local inv = fontString.invDuration or (1 / fontString.animatingDuration)
+                    local progress = elapsed * inv
+                    local startAlpha = fontString.startAlpha or defaultAlpha -- Use cached alpha
                     local endAlpha = 0
                     local currentAlpha = startAlpha + (endAlpha - startAlpha) * progress
-                    fontString:SetAlpha(currentAlpha)
-                    if fontString.icon then
-                        fontString.icon:SetAlpha(currentAlpha)
+                    if not fontString._lastAlpha or math_abs(fontString._lastAlpha - currentAlpha) > 0.01 then
+                        fontString:SetAlpha(currentAlpha)
+                        fontString._lastAlpha = currentAlpha
+                        if fontString.icon then
+                            fontString.icon:SetAlpha(currentAlpha)
+                        end
                     end
                 end
             end
         end
+
+        if remove then
+            removeAnimating(fontString, true)
+            -- do not increment i; swapped element needs processing
+        else
+            i = i + 1
+        end
     end
 
-    -- Remove invalid entries
-    for _, fontString in ipairs(toRemove) do
-        animating[fontString] = nil
-        recycleFontString(fontString)
+    -- stop OnUpdate when there is nothing to animate
+    if #animList == 0 then
+        RefineUI_SCT.frame:SetScript("OnUpdate", nil)
     end
 end
 
@@ -384,7 +463,11 @@ function RefineUI_SCT:Animate(fontString, anchorFrame, duration, animation)
     fontString.animation = animation
     fontString.animatingDuration = duration
     fontString.animatingStartTime = GetTime()
-    fontString.anchorFrame = anchorFrame == "player" and UIParent or anchorFrame
+    fontString.invDuration = 1 / duration
+    fontString.anchorFrame = anchorFrame
+    local isPersonal = fontString.guid == playerGUID
+    fontString.baseX = isPersonal and C.sct.personal_x_offset or C.sct.x_offset
+    fontString.baseY = isPersonal and C.sct.personal_y_offset or C.sct.y_offset
 
     if animation == "verticalUp" or animation == "verticalDown" then
         fontString.distance = ANIMATION.VERTICAL_DISTANCE
@@ -399,7 +482,7 @@ function RefineUI_SCT:Animate(fontString, anchorFrame, duration, animation)
         fontString.rainfallStartY = -math_random(ANIMATION.RAINFALL_Y_START_MIN, ANIMATION.RAINFALL_Y_START_MAX)
     end
 
-    animating[fontString] = true
+    addAnimating(fontString)
 
     if not RefineUI_SCT.frame:GetScript("OnUpdate") then
         RefineUI_SCT.frame:SetScript("OnUpdate", AnimationOnUpdate)
@@ -410,21 +493,25 @@ end
 --	Event Handlers
 ----------------------------------------------------------------------------------------
 function RefineUI_SCT:NAME_PLATE_UNIT_ADDED(_, unitID)
-    local guid = UnitGUID(unitID)
-    unitToGuid[unitID] = guid
-    guidToUnit[guid] = unitID
+	local guid = UnitGUID(unitID)
+	unitToGuid[unitID] = guid
+	if guid then
+		guidToUnit[guid] = unitID
+	end
 end
 
 function RefineUI_SCT:NAME_PLATE_UNIT_REMOVED(_, unitID)
-    local guid = unitToGuid[unitID]
-    unitToGuid[unitID] = nil
-    guidToUnit[guid] = nil
+	local guid = unitToGuid[unitID]
+	unitToGuid[unitID] = nil
+	if guid then
+		guidToUnit[guid] = nil
+	end
 
     -- Recycle any fontStrings attached to this unit
-    for fontString in pairs(animating) do
+    for i = #animList, 1, -1 do
+        local fontString = animList[i]
         if fontString.unit == unitID then
-            recycleFontString(fontString)
-            animating[fontString] = nil -- Ensure it's removed from the animating table
+            removeAnimating(fontString, true)
         end
     end
 end
@@ -435,9 +522,9 @@ local function shouldProcessEvent(sourceGUID, sourceFlags, destGUID)
     end
 
     local isPlayerEvent = (playerGUID == sourceGUID or (C.sct.personal_enable and playerGUID == destGUID))
-    local isPetEvent = (bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_GUARDIAN) > 0 or
-            bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_PET) > 0) and
-        bit.band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) > 0
+    local isPetEvent = (bit_band(sourceFlags, COMBATLOG_OBJECT_TYPE_GUARDIAN) > 0 or
+            bit_band(sourceFlags, COMBATLOG_OBJECT_TYPE_PET) > 0) and
+        bit_band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) > 0
 
     return isPlayerEvent or isPetEvent
 end
@@ -446,60 +533,25 @@ end
 local eventHandlers = {
     SWING_DAMAGE = function(self, sourceGUID, _, sourceFlags, destGUID, _, _, amount, overkill, school, _, _, _, critical)
         if shouldProcessEvent(sourceGUID, sourceFlags, destGUID) then
-            local eventData = getRecycledTable("damageEvent")
-            eventData.destGUID = destGUID
-            eventData.spellName = "melee"
-            eventData.amount = amount
-            eventData.overkill = overkill
-            eventData.school = school or "physical"
-            eventData.critical = critical
-            self:DamageEvent(eventData)
-            recycleTable(eventData, "damageEvent")
+            self:DamageEvent(destGUID, nil, "melee", amount, overkill, school or "physical", critical)
         end
     end,
     RANGE_DAMAGE = function(self, sourceGUID, _, sourceFlags, destGUID, _, _, spellId, spellName, _, amount, overkill,
                             school, _, _, _, critical)
         if shouldProcessEvent(sourceGUID, sourceFlags, destGUID) then
-            local eventData = getRecycledTable("damageEvent")
-            eventData.destGUID = destGUID
-            eventData.spellName = spellName
-            eventData.amount = amount
-            eventData.overkill = overkill
-            eventData.school = school
-            eventData.critical = critical
-            eventData.spellId = spellId
-            self:DamageEvent(eventData)
-            recycleTable(eventData, "damageEvent")
+            self:DamageEvent(destGUID, spellId, spellName, amount, overkill, school, critical)
         end
     end,
     SPELL_DAMAGE = function(self, sourceGUID, _, sourceFlags, destGUID, _, _, spellId, spellName, _, amount, overkill,
                             school, _, _, _, critical)
         if shouldProcessEvent(sourceGUID, sourceFlags, destGUID) then
-            local eventData = getRecycledTable("damageEvent")
-            eventData.destGUID = destGUID
-            eventData.spellName = spellName
-            eventData.amount = amount
-            eventData.overkill = overkill
-            eventData.school = school
-            eventData.critical = critical
-            eventData.spellId = spellId
-            self:DamageEvent(eventData)
-            recycleTable(eventData, "damageEvent")
+            self:DamageEvent(destGUID, spellId, spellName, amount, overkill, school, critical)
         end
     end,
     SPELL_PERIODIC_DAMAGE = function(self, sourceGUID, _, sourceFlags, destGUID, _, _, spellId, spellName, _, amount,
                                      overkill, school, _, _, _, critical)
         if shouldProcessEvent(sourceGUID, sourceFlags, destGUID) then
-            local eventData = getRecycledTable("damageEvent")
-            eventData.destGUID = destGUID
-            eventData.spellName = spellName
-            eventData.amount = amount
-            eventData.overkill = overkill
-            eventData.school = school
-            eventData.critical = critical
-            eventData.spellId = spellId
-            self:DamageEvent(eventData)
-            recycleTable(eventData, "damageEvent")
+            self:DamageEvent(destGUID, spellId, spellName, amount, overkill, school, critical)
         end
     end,
     SWING_MISSED = function(self, sourceGUID, _, sourceFlags, destGUID, _, _, missType)
@@ -519,27 +571,19 @@ local eventHandlers = {
     end
 }
 
-function RefineUI_SCT:ShouldProcessEvent(sourceGUID, sourceFlags, destGUID)
-    if C.sct.personal_only and C.sct.personal_enable and playerGUID ~= destGUID then
-        return false
-    end
-
-    local isPlayerEvent = (playerGUID == sourceGUID or (C.sct.personal_enable and playerGUID == destGUID))
-    local isPetEvent = (bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_GUARDIAN) > 0 or
-            bit.band(sourceFlags, COMBATLOG_OBJECT_TYPE_PET) > 0) and
-        bit.band(sourceFlags, COMBATLOG_OBJECT_AFFILIATION_MINE) > 0
-
-    return isPlayerEvent or isPetEvent
-end
-
 function RefineUI_SCT:COMBAT_LOG_EVENT_UNFILTERED()
-    local timestamp, eventType, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags, destGUID, destName, destFlags, destRaidFlags =
-        CombatLogGetCurrentEventInfo()
+    -- Parse CLEU payload directly to avoid per-event table allocations
+    local _, eventType, _,
+        sourceGUID, sourceName, sourceFlags, sourceFlags2,
+    destGUID, destName, destFlags, destFlags2,
+    a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 = CombatLogGetCurrentEventInfo()
 
     local handler = eventHandlers[eventType]
     if handler then
+        -- Preserve the original parameter ordering expected by handlers
+        -- (self, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags, <extras...>)
         handler(self, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags,
-            select(12, CombatLogGetCurrentEventInfo()))
+            a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
     end
 end
 
@@ -550,69 +594,80 @@ local numDamageEvents = 0
 local lastDamageEventTime
 local runningAverageDamageEvents = 0
 
-function RefineUI_SCT:DamageEvent(eventData)
+function RefineUI_SCT:DamageEvent(destGUID, spellId, spellName, amount, overkill, school, critical)
+    -- Cache config values
+    local cfg = C.sct
+    local fontInfo = C.font.sct
+    local offTargetEnable = cfg.offtarget_enable
+    local offTargetSize = cfg.offtarget_size
+    local offTargetAlpha = cfg.offtarget_alpha
+    local defaultFontSize = fontInfo[2]
+    local defaultAlpha = cfg.alpha
+    local handleSmallHits = cfg.size_small_hits
+    local hideSmallHits = cfg.size_small_hits_hide
+    local handleCrits = cfg.size_crits
+    local showOverkill = cfg.overkill
+
     local text, animation, pow, size, alpha
-    local autoattack = eventData.spellName == "melee" or eventData.spellName == "pet"
-    local isPersonal = eventData.destGUID == playerGUID
+    local autoattack = spellName == "melee" or spellName == "pet"
+    local isPersonal = destGUID == playerGUID
 
     -- Select animation using lookup table
     if isPersonal then
-        animation = eventData.critical and ANIMATION_TYPES.personal.crit or ANIMATION_TYPES.personal.normal
+    animation = critical and ANIMATION_TYPES.personal.crit or ANIMATION_TYPES.personal.normal
     else
         if autoattack then
-            animation = eventData.critical and ANIMATION_TYPES.autoattack.crit or ANIMATION_TYPES.autoattack.normal
+        animation = critical and ANIMATION_TYPES.autoattack.crit or ANIMATION_TYPES.autoattack.normal
         else
-            animation = eventData.critical and ANIMATION_TYPES.ability.crit or ANIMATION_TYPES.ability.normal
+        animation = critical and ANIMATION_TYPES.ability.crit or ANIMATION_TYPES.ability.normal
         end
     end
 
-    pow = eventData.critical
+    pow = critical
 
     -- Skip if this damage event is disabled
     if animation == "disabled" then return end
 
-    local unit = guidToUnit[eventData.destGUID]
+    local unit = guidToUnit[destGUID]
     local isTarget = unit and UnitIsUnit(unit, "target")
 
     -- Determine size and alpha
-    if C.sct.offtarget_enable and not isTarget and not isPersonal then
-        size = C.sct.offtarget_size
-        alpha = C.sct.offtarget_alpha
+    if offTargetEnable and not isTarget and not isPersonal then -- Use cached config
+        size = offTargetSize -- Use cached config
+        alpha = offTargetAlpha -- Use cached config
     else
-        size = C.font.sct[2]
-        alpha = C.sct.alpha
+        size = defaultFontSize -- Use cached config
+        alpha = defaultAlpha -- Use cached config
     end
 
-    -- Truncate and format text
-    text = self:FormatDamageText(eventData.amount)
-
-    -- Color text
-    text = self:ColorText(text, eventData.destGUID, playerGUID, eventData.school, eventData.spellName)
+    -- Truncate and compose text (append Overkill here if enabled), then color once
+    local baseText = self:FormatDamageText(amount)
+    if overkill > 0 and showOverkill then -- Use cached config
+        baseText = baseText .. string_format(" Overkill(%d)", overkill)
+    end
+    text = self:ColorText(baseText, destGUID, school, spellName)
 
     -- Handle small hits
-    if (C.sct.size_small_hits or C.sct.size_small_hits_hide) and not isPersonal then
-        size = self:HandleSmallHits(eventData.amount, eventData.critical, size)
+    if (handleSmallHits or hideSmallHits) and not isPersonal then -- Use cached config
+        size = self:HandleSmallHits(amount, critical, size)
         if not size then return end -- Skip this damage event, it's too small
     end
 
     -- Adjust crit size using lookup table
-    if C.sct.size_crits and eventData.critical and not isPersonal then
-        if not (autoattack and not C.sct.size_crits) then
+    if handleCrits and critical and not isPersonal then -- Use cached config
+        if not (autoattack and not handleCrits) then -- Use cached config
             size = size * SIZE_MULTIPLIERS.crits
         end
     end
 
     -- Ensure minimum size
-    size = math_max(size, 5)
+    size = math_max(size, MINIMUM_TEXT_SIZE)
 
     -- Handle overkill
-    if eventData.overkill > 0 and C.sct.overkill then
-        local overkillText = string_format(" Overkill(%d)", eventData.overkill)
-        text = self:ColorText(strconcat({ text, overkillText }), eventData.destGUID, playerGUID, eventData.school,
-            eventData.spellName)
-        self:DisplayTextOverkill(eventData.destGUID, text, size, animation, eventData.spellId, pow, eventData.spellName)
+    if overkill > 0 and showOverkill then -- Use cached config
+        self:DisplayTextOverkill(destGUID, text, size, animation, spellId, pow)
     else
-        self:DisplayText(eventData.destGUID, text, size, animation, eventData.spellId, pow, eventData.spellName)
+        self:DisplayText(destGUID, text, size, animation, spellId, pow)
     end
 end
 
@@ -654,11 +709,23 @@ function RefineUI_SCT:HandleSmallHits(amount, crit, size)
 end
 
 function RefineUI_SCT:MissEvent(guid, spellName, missType, spellId)
+    -- Cache config values
+    local cfg = C.sct
+    local fontInfo = C.font.sct
+    local personalDefaultColor = cfg.personal_default_color
+    local defaultColor = cfg.default_color
+    local offTargetEnable = cfg.offtarget_enable
+    local offTargetSize = cfg.offtarget_size
+    local offTargetAlpha = cfg.offtarget_alpha
+    local defaultFontSize = fontInfo[2]
+    local defaultAlpha = cfg.alpha
+    local handleMissSize = cfg.size_miss
+
     local text, animation, pow, size, alpha, color
     local isPersonal = guid == playerGUID
 
     animation = isPersonal and ANIMATION_TYPES.personal.miss or ANIMATION_TYPES.miss
-    color = isPersonal and C.sct.personal_default_color or C.sct.default_color
+    color = isPersonal and personalDefaultColor or defaultColor -- Use cached config
 
     -- No animation set, cancel out
     if animation == "disabled" then return end
@@ -666,20 +733,20 @@ function RefineUI_SCT:MissEvent(guid, spellName, missType, spellId)
     local unit = guidToUnit[guid]
     local isTarget = unit and UnitIsUnit(unit, "target")
 
-    if C.sct.offtarget_enable and not isTarget and not isPersonal then
-        size = C.sct.offtarget_size
-        alpha = C.sct.offtarget_alpha
+    if offTargetEnable and not isTarget and not isPersonal then -- Use cached config
+        size = offTargetSize -- Use cached config
+        alpha = offTargetAlpha -- Use cached config
     else
-        size = C.font.sct[2]
-        alpha = C.sct.alpha
+        size = defaultFontSize -- Use cached config
+        alpha = defaultAlpha -- Use cached config
     end
 
     -- Ensure size is a number and has a minimum value
-    size = tonumber(size) or C.font.sct[2]
-    size = math.max(size, 5)
+    size = tonumber(size) or defaultFontSize -- Use cached config
+    size = math.max(size, MINIMUM_TEXT_SIZE)
 
     -- Adjust miss size using lookup table
-    if C.sct.size_miss and not isPersonal then
+    if handleMissSize and not isPersonal then -- Use cached config
         size = size * (SIZE_MULTIPLIERS.miss or 1)
     end
 
@@ -692,52 +759,78 @@ function RefineUI_SCT:MissEvent(guid, spellName, missType, spellId)
 end
 
 function RefineUI_SCT:DisplayText(guid, text, size, animation, spellId, pow, spellName)
+    -- Cache config values
+    local cfg = C.sct
+    local fontInfo = C.font.sct
+    local offTargetEnable = cfg.offtarget_enable
+    local offTargetAlpha = cfg.offtarget_alpha
+    local defaultAlpha = cfg.alpha
+    local iconEnable = cfg.icon_enable
+    local iconScale = cfg.icon_scale
+    local iconPosition = cfg.icon_position
+    local iconXOffset = cfg.icon_x_offset
+    local iconYOffset = cfg.icon_y_offset
+    local animationSpeed = cfg.animations_speed
+
     local fontString = getFontString()
+    ---@cast fontString SCTFontString
     local unit = guidToUnit[guid]
-    local nameplate = unit and C_NamePlate.GetNamePlateForUnit(unit) or (playerGUID == guid and "player")
+    local nameplate = unit and GetNamePlateForUnit(unit) or (playerGUID == guid and UIParent)
 
     if not nameplate then return end
 
-    fontString.scttext = text
     fontString:SetText(text)
-
-    fontString:SetFont(unpack(C.font.sct))
-    fontString:SetShadowOffset(1, -1)
-    fontString.startHeight = math_max(fontString:GetStringHeight(), 5)
+    -- Avoid redundant SetFont/SetShadowOffset; already set on acquire
+    fontString.startHeight = math_max(fontString:GetStringHeight(), MINIMUM_TEXT_SIZE)
     fontString.pow = pow
-
     fontString.unit = unit
     fontString.guid = guid
+
+    -- unit/guid kept externally via animating table keys; use local variables here
 
     -- Calculate and apply alpha
     local isTarget = unit and UnitIsUnit(unit, "target")
     local alpha
-    if C.sct.offtarget_enable and not isTarget and guid ~= playerGUID then
-        alpha = C.sct.offtarget_alpha
+    if offTargetEnable and not isTarget and guid ~= playerGUID then -- Use cached config
+        alpha = offTargetAlpha -- Use cached config
     else
-        alpha = C.sct.alpha
+        alpha = defaultAlpha -- Use cached config
     end
     fontString:SetAlpha(alpha)
     fontString.startAlpha = alpha
 
-    if C.sct.icon_enable then
+    if iconEnable then -- Use cached config
         local texture
+        local cacheKey
         if type(spellId) == "number" then
-            texture = C_Spell.GetSpellTexture(spellId)
+            cacheKey = spellId
         elseif type(spellName) == "string" then
-            local spellID = select(7, C_Spell.GetSpellInfo(spellName))
-            if spellID then
-                texture = C_Spell.GetSpellTexture(spellID)
-            end
+            cacheKey = spellName
         end
-        
+
+        if cacheKey ~= nil then
+            texture = SPELL_ICON_CACHE[cacheKey]
+        end
+
+        if texture == nil then
+            if type(spellId) == "number" then
+                texture = GetSpellTexture(spellId)
+            elseif type(spellName) == "string" then
+                local spellID = select(7, GetSpellInfo(spellName))
+                if spellID then
+                    texture = GetSpellTexture(spellID)
+                end
+            end
+            cacheSpellIcon(cacheKey, texture)
+        end
+
         if texture then
-            local icon = fontString.icon or RefineUI_SCT.frame:CreateTexture(nil, "BACKGROUND")
+            local icon = fontString.icon or fontString:GetParent():CreateTexture(nil, "BACKGROUND")
             icon:Show()
             icon:SetTexture(texture)
-            icon:SetSize(size * C.sct.icon_scale, size * C.sct.icon_scale)
-            icon:SetPoint(INVERSE_POSITIONS[C.sct.icon_position], fontString, C.sct.icon_position,
-                C.sct.icon_x_offset, C.sct.icon_y_offset)
+            icon:SetSize(size * iconScale, size * iconScale) -- Use cached config
+            icon:SetPoint(INVERSE_POSITIONS[iconPosition], fontString, iconPosition, -- Use cached config
+                iconXOffset, iconYOffset) -- Use cached config
             icon:SetAlpha(alpha) -- Also apply alpha to the icon
             fontString.icon = icon
         elseif fontString.icon then
@@ -745,54 +838,76 @@ function RefineUI_SCT:DisplayText(guid, text, size, animation, spellId, pow, spe
         end
     end
     
-    self:Animate(fontString, nameplate, C.sct.animations_speed, animation)
-    end
-    
-    function RefineUI_SCT:DisplayTextOverkill(guid, text, size, animation, spellId, pow, spellName)
-        self:DisplayText(guid, text, size, animation, spellId, pow, spellName)
-    end
-    
-    local function getColor(guid, school, spellName)
-        return (guid ~= playerGUID and DAMAGE_TYPE_COLORS[school]) or
-            DAMAGE_TYPE_COLORS[spellName] or
-            "ffffff"
-    end
-    
-    function RefineUI_SCT:ColorText(startingText, guid, school, spellName)
-        return string_format("|Cff%s%s|r", getColor(guid, school, spellName), startingText)
-    end
-    
-    ----------------------------------------------------------------------------------------
-    --	Initialization
-    ----------------------------------------------------------------------------------------
-    function RefineUI_SCT:Init()
-        -- Setup db
-        RefineUI_SCTDB = RefineUI_SCTDB or {}
-        self.db = RefineUI_SCTDB
-    
-        -- If the addon is turned off in db, turn it off
-        if C.sct.enable == false then
-            self:Disable()
-            self.frame:UnregisterAllEvents()
-            for fontString in pairs(animating) do
-                recycleFontString(fontString)
-            end
-        else
-            playerGUID = UnitGUID("player")
-            self.frame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
-            self.frame:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
-            self.frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-            self.frame:SetScript("OnEvent", function(_, event, ...)
-                if self[event] then
-                    self[event](self, event, ...)
-                end
-            end)
+    self:Animate(fontString, nameplate, animationSpeed, animation) -- Use cached config
+end
+
+function RefineUI_SCT:DisplayTextOverkill(guid, text, size, animation, spellId, pow, spellName)
+    self:DisplayText(guid, text, size, animation, spellId, pow, spellName)
+end
+
+local function getColor(guid, school, spellName)
+    return (guid ~= playerGUID and DAMAGE_TYPE_COLORS[school]) or
+        DAMAGE_TYPE_COLORS[spellName] or
+        "ffffff"
+end
+
+function RefineUI_SCT:ColorText(startingText, guid, school, spellName)
+    return string_format("|Cff%s%s|r", getColor(guid, school, spellName), startingText)
+end
+
+----------------------------------------------------------------------------------------
+--	Initialization
+----------------------------------------------------------------------------------------
+function RefineUI_SCT:Init()
+    -- Setup db
+    RefineUI_SCTDB = RefineUI_SCTDB or {}
+    self.db = RefineUI_SCTDB
+
+    -- If the addon is turned off in db, turn it off
+    if C.sct.enable == false then
+        self:Disable()
+        self.frame:UnregisterAllEvents()
+        while #animList > 0 do
+            local fontString = tremove(animList)
+            animIndex[fontString] = nil
+            recycleFontString(fontString)
         end
+    else
+        playerGUID = UnitGUID("player")
+        self.frame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+        self.frame:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
+        self.frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+        self.frame:SetScript("OnEvent", function(_, event, ...)
+            if self[event] then
+                self[event](self, event, ...)
+            end
+        end)
     end
-    
-    function RefineUI_SCT:Disable()
-        -- Implement disable logic here
+end
+
+function RefineUI_SCT:Disable()
+    -- Unregister events
+    self.frame:UnregisterEvent("NAME_PLATE_UNIT_ADDED")
+    self.frame:UnregisterEvent("NAME_PLATE_UNIT_REMOVED")
+    self.frame:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+
+    -- Remove scripts
+    self.frame:SetScript("OnEvent", nil)
+    self.frame:SetScript("OnUpdate", nil) -- Stop animation loop
+
+    -- Recycle any active font strings
+    while #animList > 0 do
+        local fontString = tremove(animList)
+        animIndex[fontString] = nil
+        recycleFontString(fontString)
     end
-    
-    -- Initialize the addon
-    RefineUI_SCT:Init()
+
+    -- Optional: Clear caches if memory becomes an issue
+    -- wipe(fontStringCache)
+    -- for poolName in pairs(tablePools) do
+    --     wipe(tablePools[poolName])
+    -- end
+end
+
+-- Initialize the addon
+RefineUI_SCT:Init()

@@ -52,27 +52,34 @@ end)
 -- Mover for all widgets
 for _, frame in pairs({ top, below }) do
 	local anchor = frame == top and topAnchor or frame == below and belowAnchor
-	anchor:SetMovable(true)
-	anchor:SetClampedToScreen(true)
-	frame:SetClampedToScreen(true)
+	if anchor then
+		anchor:SetMovable(true)
+		anchor:SetClampedToScreen(true)
+	end
+	if frame and frame.SetClampedToScreen then
+		frame:SetClampedToScreen(true)
+	end
 	frame:SetScript("OnMouseDown", function(_, button)
 		if IsAltKeyDown() or IsShiftKeyDown() then
-			anchor:ClearAllPoints()
-			anchor:StartMoving()
-		elseif IsControlKeyDown() and button == "RightButton" then
-			anchor:ClearAllPoints()
-			if frame == top then
-				anchor:SetPoint(unpack(C.position.uiwidgetTop))
-			elseif frame == below then
-				anchor:SetPoint(unpack(C.position.uiwidgetBelow))
-			else
-				anchor:SetPoint("TOPRIGHT", BuffsAnchor, "BOTTOMRIGHT", 0, -3)
+			if anchor then
+				anchor:ClearAllPoints()
+				anchor:StartMoving()
 			end
-			anchor:SetUserPlaced(false)
+		elseif IsControlKeyDown() and button == "RightButton" then
+			if anchor then anchor:ClearAllPoints() end
+			if frame == top then
+				if anchor then anchor:SetPoint(unpack(C.position.uiwidgetTop)) end
+			elseif frame == below then
+				if anchor then anchor:SetPoint(unpack(C.position.uiwidgetBelow)) end
+            else
+				local buffsAnchor = rawget(_G, 'RefineUI_Buffs')
+				if buffsAnchor and anchor then anchor:SetPoint("TOPRIGHT", buffsAnchor, "BOTTOMRIGHT", 0, -3) end
+			end
+			if anchor and anchor.SetUserPlaced then anchor:SetUserPlaced(false) end
 		end
 	end)
 	frame:SetScript("OnMouseUp", function()
-		anchor:StopMovingOrSizing()
+		if anchor and anchor.StopMovingOrSizing then anchor:StopMovingOrSizing() end
 	end)
 end
 

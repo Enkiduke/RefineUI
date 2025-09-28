@@ -95,8 +95,8 @@ local _, ns = ...
 local oUF = ns.oUF
 
 local FALLBACK_ICON = 136243 -- Interface\ICONS\Trade_Engineering
-local FAILED = _G.FAILED or 'Failed'
-local INTERRUPTED = _G.INTERRUPTED or 'Interrupted'
+local FAILED = (rawget(_G, 'FAILED')) or 'Failed'
+local INTERRUPTED = (rawget(_G, 'INTERRUPTED')) or 'Interrupted'
 local CASTBAR_STAGE_DURATION_INVALID = -1 -- defined in FrameXML/CastingBarFrame.lua
 
 local function resetAttributes(self)
@@ -116,9 +116,9 @@ local function resetAttributes(self)
 	end
 end
 
-local function CreatePip(element)
-	return CreateFrame('Frame', nil, element, 'CastingBarFrameStagePipTemplate')
-end
+    local function CreatePip(element)
+        return CreateFrame('Frame', nil, element, 'CastingBarFrameStagePipTemplate')
+    end
 
 local function UpdatePips(element, numStages)
 	local stageTotalDuration = 0
@@ -154,7 +154,7 @@ local function UpdatePips(element, numStages)
 
 				* pip - a frame used to depict an empowered stage boundary, typically with a line texture (frame)
 				--]]
-				pip = (element.CreatePip or CreatePip) (element, stage)
+                pip = (element.CreatePip or CreatePip) (element)
 				element.Pips[stage] = pip
 			end
 
@@ -432,21 +432,40 @@ local function CastInterruptible(self, event, unit)
 	if(not (element.ShouldShow or ShouldShow) (element, unit)) then
 		return
 	end
-
 	if(not element:IsShown()) then return end
 
-	element.notInterruptible = event == 'UNIT_SPELLCAST_NOT_INTERRUPTIBLE'
+	-- Race-condition guard: Blizzard may fire *_INTERRUPTIBLE events for a previous
+	-- cast after a new one has already started (especially on rapid chaining / lag).
+	-- Re-query the current cast/channel data and ensure it matches the element's
+	-- active spell before trusting the event payload.
+	local curName, _, _, _, _, _, curCastID, curNotInterruptible, curSpellID = UnitCastingInfo(unit)
+	if(not curName) then
+		curName, _, _, _, _, _, curNotInterruptible, curSpellID = UnitChannelInfo(unit)
+		-- Channels often don't return castID consistently; keep existing element.castID
+		curCastID = element.castID
+	end
 
-	if(element.Shield) then element.Shield:SetShown(element.notInterruptible) end
+	-- If there is no active spell, ignore the event (stale for a finished cast)
+	if(not curSpellID) then return end
 
-	--[[ Callback: Castbar:PostCastInterruptible(unit)
-	Called after the element has been updated when a spell cast has become interruptible or uninterruptible.
+	-- If element thinks it's tracking a different spell, ignore this state change
+	if(element.spellID and curSpellID ~= element.spellID) then return end
 
-	* self - the Castbar widget
-	* unit - the unit for which the update has been triggered (string)
-	--]]
-	if(element.PostCastInterruptible) then
-		return element:PostCastInterruptible(unit)
+	-- Prefer the authoritative notInterruptible flag from the fresh query when available
+	local newFlag
+	if(curNotInterruptible ~= nil) then
+		newFlag = curNotInterruptible
+	else
+		newFlag = (event == 'UNIT_SPELLCAST_NOT_INTERRUPTIBLE')
+	end
+
+	-- Only propagate if the value actually changed
+	if(element.notInterruptible ~= newFlag) then
+		element.notInterruptible = newFlag
+		if(element.Shield) then element.Shield:SetShown(newFlag) end
+		if(element.PostCastInterruptible) then
+			return element:PostCastInterruptible(unit)
+		end
 	end
 end
 

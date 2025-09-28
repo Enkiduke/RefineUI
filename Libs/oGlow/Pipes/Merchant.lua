@@ -1,5 +1,6 @@
 local _E
 local hook
+local oGlow = rawget(_G, "oGlow")
 
 local update = function()
 	if MerchantFrame:IsShown() then
@@ -29,11 +30,11 @@ local enable = function(self)
 	_E = true
 
 	if not hook then
-		hook = function(...)
-			if _E then return update(...) end
+        hook = function()
+            if _E then return update() end
 		end
 
-		hooksecurefunc("MerchantFrame_Update", hook)
+        hooksecurefunc("MerchantFrame_Update", hook)
 	end
 end
 

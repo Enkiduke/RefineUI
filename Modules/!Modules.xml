@@ -6,7 +6,8 @@
     <Include file="Modules\Auras\Auras.xml"/>
     <Include file="Modules\Chat\!Chat.xml"/>
     <Include file="Modules\Skins\!Skins.xml"/>
-    <Include file="Modules\Databar\!Databar.xml"/>
+    <Include file="Modules\MicroMenu\!MicroMenu.xml"/>
+    <Include file="Modules\Bags\!Bags.xml"/>
     <Include file="Modules\Automation\!Automation.xml"/>
     <Include file="Modules\Quests\!Quests.xml"/>
     <Include file="Modules\Loot\!Loot.xml"/>

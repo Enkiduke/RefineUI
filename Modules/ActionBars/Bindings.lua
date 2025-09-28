@@ -73,8 +73,14 @@ SlashCmdList.MOUSEOVERBIND = function()
 			ShoppingTooltip1:Hide()
 
 			if spellmacro == "SPELL" then
-				self.button.id = SpellBook_GetSpellBookSlot(self.button)
-				self.button.name = GetSpellBookItemName(self.button.id, SpellBookFrame.bookType)
+                local SpellBook_GetSpellBookSlot = rawget(_G, 'SpellBook_GetSpellBookSlot') or C_SpellBook and C_SpellBook.GetSpellBookItemIndex
+                local GetSpellBookItemName = rawget(_G, 'GetSpellBookItemName') or C_SpellBook and C_SpellBook.GetSpellBookItemName
+                local sbf = rawget(_G, 'SpellBookFrame')
+                local bookType = (sbf and sbf.bookType) or (Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player)
+                if SpellBook_GetSpellBookSlot and GetSpellBookItemName then
+                    self.button.id = SpellBook_GetSpellBookSlot(self.button)
+                    self.button.name = GetSpellBookItemName(self.button.id, bookType)
+                end
 
 				GameTooltip:Show()
 				GameTooltip:SetScript("OnHide", function(self)
@@ -232,24 +238,24 @@ SlashCmdList.MOUSEOVERBIND = function()
 		function bind:Activate()
 			self.enabled = true
 			self:RegisterEvent("PLAYER_REGEN_DISABLED")
-			if C.actionbars.enable then
+            if C.actionbars.enable then
 				if C.actionbars.bottombars_mouseover == true then
-					BottomBarMouseOver(1)
+                    local fn = rawget(_G, 'BottomBarMouseOver'); if fn then fn(1) end
 				end
 				if C.actionbars.rightbars_mouseover == true then
-					RightBarMouseOver(1)
+                    local fn = rawget(_G, 'RightBarMouseOver'); if fn then fn(1) end
 				end
 				if C.actionbars.stancebar_mouseover == true then
-					StanceBarMouseOver(1)
+                    local fn = rawget(_G, 'StanceBarMouseOver'); if fn then fn(1) end
 				end
 				if C.actionbars.petbar_mouseover == true and C.actionbars.petbar_horizontal == true then
-					PetBarMouseOver(1)
+                    local fn = rawget(_G, 'PetBarMouseOver'); if fn then fn(1) end
 				end
 				if C.actionbars.bar7_enable and C.actionbars.bar7_mouseover then
-					Bar7MouseOver(1)
+                    local fn = rawget(_G, 'Bar7MouseOver'); if fn then fn(1) end
 				end
 				if C.actionbars.bar8_enable and C.actionbars.bar8_mouseover then
-					Bar8MouseOver(1)
+                    local fn = rawget(_G, 'Bar8MouseOver'); if fn then fn(1) end
 				end
 			end
 		end
@@ -267,24 +273,24 @@ SlashCmdList.MOUSEOVERBIND = function()
 			self:HideFrame()
 			self:UnregisterEvent("PLAYER_REGEN_DISABLED")
 			StaticPopup_Hide("KEYBIND_MODE")
-			if C.actionbars.enable then
+            if C.actionbars.enable then
 				if C.actionbars.bottombars_mouseover == true then
-					BottomBarMouseOver(0)
+                    local fn = rawget(_G, 'BottomBarMouseOver'); if fn then fn(0) end
 				end
 				if C.actionbars.rightbars_mouseover == true then
-					RightBarMouseOver(0)
+                    local fn = rawget(_G, 'RightBarMouseOver'); if fn then fn(0) end
 				end
 				if C.actionbars.stancebar_mouseover == true and C.actionbars.stancebar_horizontal == true and C.actionbars.stancebar_hide ~= true then
-					StanceBarMouseOver(C.actionbars.stancebar_mouseover_alpha)
+                    local fn = rawget(_G, 'StanceBarMouseOver'); if fn then fn(C.actionbars.stancebar_mouseover_alpha) end
 				end
 				if C.actionbars.petbar_mouseover == true and C.actionbars.petbar_horizontal == true then
-					PetBarMouseOver(0)
+                    local fn = rawget(_G, 'PetBarMouseOver'); if fn then fn(0) end
 				end
 				if C.actionbars.bar7_enable and C.actionbars.bar7_mouseover then
-					Bar7MouseOver(0)
+                    local fn = rawget(_G, 'Bar7MouseOver'); if fn then fn(0) end
 				end
 				if C.actionbars.bar8_enable and C.actionbars.bar8_mouseover then
-					Bar8MouseOver(0)
+                    local fn = rawget(_G, 'Bar8MouseOver'); if fn then fn(0) end
 				end
 			end
 		end
@@ -361,16 +367,50 @@ SlashCmdList.MOUSEOVERBIND = function()
 		ExtraActionButton1:HookScript("OnEnter", function(self) bind:Update(self) end)
 
         local function registermacro()
-            hooksecurefunc(MacroFrame, "Update", function(frame)
-                for _, button in next, { frame.MacroSelector.ScrollBox.ScrollTarget:GetChildren() } do
-                    if button and not button.hook then
-                        button:HookScript("OnEnter", function(self) bind:Update(button, "MACRO") end)
-                        button.hook = true
-                    end
+            if bind._macroHooksInstalled then return end
+            if not MacroFrame then
+                -- Defer until Macro UI loads
+                if not bind._macroHookFrame then
+                    local f = CreateFrame("Frame")
+                    f:RegisterEvent("ADDON_LOADED")
+                    f:SetScript("OnEvent", function(_, ev, addon)
+                        if addon == "Blizzard_MacroUI" then
+                            registermacro()
+                            f:UnregisterAllEvents()
+                            bind._macroHookFrame = nil
+                        end
+                    end)
+                    bind._macroHookFrame = f
                 end
-            end)
-            MacroFrameTab1:HookScript("OnMouseUp", function() localmacros = 0 end)
-            MacroFrameTab2:HookScript("OnMouseUp", function() localmacros = 1 end)
+                return
+            end
+
+            -- Safely hook MacroFrame update to wire hover binding over macro list entries
+            if type(MacroFrame.Update) == "function" then
+                hooksecurefunc(MacroFrame, "Update", function(frame)
+                    local list = frame and frame.MacroSelector and frame.MacroSelector.ScrollBox and frame.MacroSelector.ScrollBox.ScrollTarget
+                    if not list then return end
+                    if list.EnumerateChildren then
+                        for child in list:EnumerateChildren() do
+                            local button = child
+                            if button and not button.hook then
+                                button:HookScript("OnEnter", function(self) bind:Update(button, "MACRO") end)
+                                button.hook = true
+                            end
+                        end
+                    else
+                        for _, button in next, { list:GetChildren() } do
+                            if button and not button.hook then
+                                button:HookScript("OnEnter", function(self) bind:Update(button, "MACRO") end)
+                                button.hook = true
+                            end
+                        end
+                    end
+                end)
+            end
+            if MacroFrameTab1 then MacroFrameTab1:HookScript("OnMouseUp", function() localmacros = 0 end) end
+            if MacroFrameTab2 then MacroFrameTab2:HookScript("OnMouseUp", function() localmacros = 1 end) end
+            bind._macroHooksInstalled = true
         end
 
         registermacro()

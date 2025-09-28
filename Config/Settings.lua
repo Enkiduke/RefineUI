@@ -38,6 +38,28 @@ media.highlight = [[Interface\AddOns\RefineUI\Media\Textures\Highlight.tga]]    
 media.whispSound = [[Interface\AddOns\RefineUI\Media\Sounds\Whisper.ogg]]              -- Sound for whispers
 media.warningSound = [[Interface\AddOns\RefineUI\Media\Sounds\Warning.ogg]]            -- Sound for warning
 media.procSound = [[Interface\AddOns\RefineUI\Media\Sounds\Proc.ogg]]                  -- Sound for procs
+
+-- Unit Frame Textures
+-- Use exact files that exist in Media/Textures. Prefer .blp if available.
+media.healthBar = C.media.path .. "Textures/Health3"       -- extensionless to let client resolve .tga/.blp variants
+media.healthBackground = C.media.path .. "Textures/HealthBG" -- extensionless path
+media.portraitBorder = C.media.path .. "Textures/PortraitBorder.blp"
+media.portraitMask = C.media.path .. "Textures/PortraitMask.blp"
+media.portraitBackground = C.media.path .. "Textures/PortraitBG.blp"
+media.portraitGlow = C.media.path .. "Textures/PortraitGlow.blp"
+media.auraCooldown = C.media.path .. "Textures/CDAura.blp"      -- Aura/Cooldown swipe texture
+media.experienceBar = C.media.path .. "Textures/Statusbar.blp" -- Experience bar texture
+
+
+media.actionbarCooldown = C.media.path .. "Textures/CDBig.blp"
+media.auraCooldown = C.media.path .. "Textures/CDBig.blp"
+-- Nameplate Textures
+media.nameplateHealthMask = C.media.path .. "Textures/MaskTest2.blp"
+media.nameplateGlow = C.media.path .. "Textures/RefineGlow.blp"
+media.castbarTexture = C.media.path .. "Textures/Castbar3.blp"
+media.targetIndicatorRight = C.media.path .. "Textures/RTargetArrow2.blp"
+media.targetIndicatorLeft = C.media.path .. "Textures/LTargetArrow2.blp"
+
 media.classBorderColor = { R.color.r, R.color.g, R.color.b, 1 }                        -- Color for class borders
 media.borderColor = { 0.5, 0.5, 0.5, 1 }                                               -- Color for borders
 media.backdropColor = { 0.094, 0.094, 0.094, .75 }                                     -- Color for borders backdrop
@@ -59,6 +81,19 @@ unitframes.barColorValue = true  -- Health bar color by current health remaining
 unitframes.unitCastbar = true    -- Show castbars
 unitframes.castbarLatency = true -- Castbar latency
 unitframes.castbarTicks = true   -- Castbar ticks
+
+-- Smooth statusbar settings (HP/Power smoothing)
+unitframes.smoothSpeedUp = 14            -- Heal smoothing speed (higher = faster)
+unitframes.smoothSpeedDown = 20          -- Damage smoothing speed (higher = faster)
+unitframes.smoothSnapAbs = 0.5           -- Absolute snap threshold (bar units)
+unitframes.smoothElapsedMax = 0.20       -- Max elapsed per frame used by driver
+unitframes.smoothSkipHidden = true       -- Skip smoothing when bars are hidden (snap instantly)
+unitframes.smoothOnlyInCombat = true     -- Only smooth when in combat
+unitframes.smoothSnapOnDeath = true      -- Instant snap on death/ghost
+unitframes.smoothSnapOnResurrect = true  -- Instant snap on resurrect
+unitframes.smoothSnapOnDisconnect = true -- Instant snap on disconnect
+unitframes.smoothSnapOnInvisible = true  -- Instant snap on invisible
+unitframes.smoothBigJumpFrac = 0         -- Big-jump fraction threshold (0 to disable)
 
 ----------------------------------------------------------------------------------------
 -- Auras/Buffs/Debuffs options
@@ -98,6 +133,8 @@ local actionbars = CreateSection("actionbars")
 actionbars.hotkey = false  -- Show hotkey on buttons
 actionbars.buttonSize = 36 -- Buttons size
 actionbars.buttonSpace = 8 -- Buttons space
+-- Cooldown number font size for action buttons (overrides Fonts.lua cooldownTimers size)
+actionbars.cooldownFontSize = 20
 
 ----------------------------------------------------------------------------------------
 -- AutoBar options
@@ -107,8 +144,8 @@ local autoitembar = CreateSection("autoitembar")
 autoitembar.enable = true                  -- Enable actionbars
 autoitembar.buttonSize = 36                -- Buttons size
 autoitembar.buttonSpace = 8                -- Buttons space
-autoitembar.consumable_mouseover = true    -- Set to false to always show the bar
-autoitembar.min_consumable_item_level = 70 -- Set the minimum item level for consumables
+autoitembar.consumable_mouseover = true   -- Set to false to always show the bar (changed for debugging)
+autoitembar.min_consumable_item_level = 70  -- Set the minimum item level for consumables (lowered for debugging)
 
 ----------------------------------------------------------------------------------------
 -- Chat options
@@ -122,6 +159,11 @@ chat.combatLog = true    -- Show CombatLog tab
 chat.lootIcons = true    -- Icons for loot
 chat.roleIcons = true    -- Role Icons
 chat.history = true      -- Chat history
+
+-- Timestamp options
+chat.timestamps = true           -- Enable timestamps on all chat messages
+chat.timestampFormat = "HHMM_24HR"    -- Format: "HHMM", "HHMMSS", "HHMM_24HR", "HHMMSS_24HR", "HHMM_AMPM", "HHMMSS_AMPM"
+chat.timestampColor = true       -- Color timestamps based on message age
 
 ----------------------------------------------------------------------------------------
 -- Tooltip options
@@ -154,6 +196,15 @@ local loot = CreateSection("loot")
 loot.autoConfirmDE = true -- Auto confirm disenchant and take BoP loot
 
 ----------------------------------------------------------------------------------------
+-- AutoSell options
+----------------------------------------------------------------------------------------
+local autosell = CreateSection("autosell")
+
+autosell.enable = true        -- Enable the auto-sell feature
+autosell.ilvlThreshold = 500   -- Sell items strictly *below* this item level
+autosell.sellOnlyEquipment = true -- If true, only sell items of type Armor or Weapon
+
+----------------------------------------------------------------------------------------
 -- Loot Filter options
 ----------------------------------------------------------------------------------------
 local lootfilter = CreateSection("lootfilter")
@@ -169,6 +220,13 @@ lootfilter.gearMinQuality = 2                           -- Minimum quality of Bo
 lootfilter.gearUnknown = true                           -- Override other gear settings to loot unknown appearances
 lootfilter.gearPriceOverride = 20                       -- Minimum vendor price (in gold) to loot gear regardless of other criteria
 
+-- New merged loot settings
+lootfilter.delay = 0.0                                  -- Throttle between auto-loot executions (seconds)
+lootfilter.closeAfterLoot = true                        -- Close loot window after auto-looting
+lootfilter.forceDisableAutoLoot = false                 -- If true, force SetCVar("autoLootDefault", "0") on load
+lootfilter.debug = true                                -- Enable debug prints for filtered items
+lootfilter.respectAutoLootToggle = false               -- If true, only autoloot when Blizzard's autoloot condition is met
+lootfilter.keepOpenModifier = "CTRL"                    -- Hold this key to keep the loot window open ("NONE","CTRL","SHIFT","ALT")
 
 ----------------------------------------------------------------------------------------
 -- Skins options
@@ -227,6 +285,7 @@ nameplate.height = 9                                     -- Nameplate height
 nameplate.adWidth = 0                                    -- Additional width for selected nameplate
 nameplate.adHeight = 0                                   -- Additional height for selected nameplate
 nameplate.alpha = .75                                    -- Non-target nameplate alpha
+nameplate.noTargetAlpha = 1                              -- Non-target alpha to use when nothing is targeted
 nameplate.combat = true                                  -- Automatically hide nameplates in combat
 nameplate.healthValue = true                             -- Numeral health value
 nameplate.showCastbarName = true                         -- Show castbar name
@@ -236,14 +295,17 @@ nameplate.shortName = true                               -- Replace names with s
 nameplate.clamp = true                                   -- Clamp nameplates to the top of the screen when outside of view
 nameplate.trackDebuffs = true                            -- Show your debuffs (from the list)
 nameplate.trackBuffs = false                             -- Show dispellable enemy buffs and buffs from the list
-nameplate.aurasSize = 14                                 -- Auras size
-nameplate.auraTimer = true                               -- Show cooldown timer on aura icons
+nameplate.aurasSize = 16                                 -- Auras size
+nameplate.auraTimer = false                              -- Show cooldown timer on aura icons (OFF by default)
+nameplate.cooldownSwipe = true                           -- Show cooldown swipe on aura icons (performance toggle)
 nameplate.healerIcon = false                             -- Show icon above enemy healers nameplate in battlegrounds
 nameplate.totemIcons = false                             -- Show icon above enemy totems nameplate
 nameplate.targetGlow = false                             -- Show glow texture for target
 nameplate.targetIndicator = true                         -- Show target arrows for target
 nameplate.onlyName = true                                -- Show only name for friendly units
 nameplate.quests = true                                  -- Show quest icon
+nameplate.use_api_quests = true                          -- Prefer API-only quest matching (no tooltip scans)
+nameplate.questCacheTTL = 1                              -- Quest cache TTL in seconds (small values = more responsive)
 nameplate.lowHealth = false                              -- Show red border when low health
 nameplate.lowHealthValue = 0.2                           -- Value for low health (between 0.1 and 1)
 nameplate.lowHealthColor = { 0.8, 0, 0 }                 -- Color for low health border
@@ -251,8 +313,13 @@ nameplate.targetBorder = true                            -- Color for low health
 nameplate.targetBorderColor = { .8, .8, .8 }             -- Color for low health border
 nameplate.castColor = false                              -- Show color border for casting important spells
 nameplate.kickColor = false                              -- Change cast color if interrupt on cd
+nameplate.interruptColor = true                          -- Color interrupted text by the player who interrupted
+-- Crowd Control bar options
+nameplate.ccbarText = "PLAYER"                           -- Left text: SPELL | PLAYER | NONE
+nameplate.ccbarFillUp = false                            -- If true, bar fills up; if false, bar empties
 -- Threat
 nameplate.enhanceThreat = true                           -- Enable threat feature, automatically changes by your role
+	nameplate.offtankScanThrottle = 0.5                      -- Seconds between off-tank scans per unit (lower = more responsive, higher = better performance)
 nameplate.goodColor = { 0.2, 0.8, 0.2 }                  -- Good threat color
 nameplate.nearColor = { 1, 1, 0 }                        -- Near threat color
 nameplate.badColor = { 1, 0, 0 }                         -- Bad threat color
@@ -264,6 +331,20 @@ nameplate.offtankColorbg = { 0 * .2, 0.5 * .2, 1 * .2 }  -- Offtank threat color
 nameplate.extraColor = { 1, 0.3, 0 }                     -- Explosive and Spiteful affix color
 nameplate.mobColorEnable = false                         -- Change color for important mobs in dungeons
 nameplate.mobColor = { 0, 0.5, 0.8 }                     -- Color for mobs
+
+-- Friendly nameplate performance gating
+-- If you never use friendly plates for health, cast, or auras, disable their elements entirely.
+nameplate.disableFriendlyHealth = true                   -- Disable Health element for friendly units (still shows name text)
+nameplate.disableFriendlyCastbar = true                  -- Disable Castbar element for friendly units
+nameplate.disableFriendlyAuras = true                    -- Disable Auras element for friendly units
+nameplate.disableFriendlyPower = true                    -- Disable Power element for friendly units (kept only on personal plate)
+
+-- BigWigs integration
+nameplate.bigwigsSkinning = true                         -- Enable BigWigs nameplate icon skinning
+nameplate.bigwigsIconSize = 20                           -- Size of BigWigs nameplate icons
+nameplate.bigwigsShowCooldown = true                     -- Show cooldown swipe on BigWigs icons
+nameplate.bigwigsShowCount = true                        -- Show count text on BigWigs icons
+nameplate.bigwigsDebug = false                           -- Enable debug messages for BigWigs skinning
 
 ----------------------------------------------------------------------------------------
 -- Automation options
@@ -277,12 +358,19 @@ automation.autoZoneTrack = true       -- Auto-Track Quests by Zone
 automation.autoCollapse = "NONE"      -- Auto collapse Objective Tracker (RAID, RELOAD, SCENARIO, NONE)
 automation.autoSkipCinematic = true   -- Auto skip cinematics/movies that have been seen (disabled if hold Ctrl)
 automation.autoSetRole = false        -- Auto set your role
-automation.autoCancelBadBuffs = false -- Auto cancel annoying holiday buffs (from the list)
 automation.autoResurrection = false   -- Auto confirm resurrection
 automation.autoWhisperInvite = false  -- Auto invite when whisper keyword
 automation.inviteKeyword = "inv +"    -- List of keyword (separated by space)
 automation.autoRepair = true          -- Auto repair
 automation.autoGuildRepair = true     -- Auto repair with guild funds first (if able)
+automation.autoButton = true          -- Enable AutoButton for quest items
+
+-- AutoPotion settings
+automation.autoPotion = true          -- Enable AutoPotion macro management
+automation.autoPotionMacroName = "AutoPotion"  -- Name of the macro to create/update
+automation.autoPotionStopCast = false -- Add /stopcasting to the macro
+automation.autoPotionRaidStone = false -- If true, healthstones have lower priority than potions
+automation.autoPotionCrimsonVial = false -- Enable Crimson Vial (Rogue ability) - disabled by default
 
 ----------------------------------------------------------------------------------------
 -- Filger options
@@ -292,6 +380,7 @@ local filger = CreateSection("filger")
 filger.enable = true           -- Enable Filger
 filger.show_tooltip = false    -- Show tooltip
 filger.expiration = true       -- Sort cooldowns by expiration time
+filger.missing_flash = true    -- Flash Missing type buffs for attention
 -- Elements
 filger.show_buff = true        -- Player buffs
 filger.show_proc = true        -- Player procs
@@ -383,7 +472,7 @@ sct.personalanimations_miss = "verticalUp"   -- Animation for personal misses
 local misc = CreateSection("misc")
 
 misc.afk = true             -- Spin camera while afk
-misc.stickyTargeting = true -- Sticky targeting in combat
+misc.combatTargeting = true -- Sticky targeting in combat
 misc.disableRightClickCombat = true -- Disable right click in combat
 
 ----------------------------------------------------------------------------------------
@@ -394,9 +483,14 @@ local combatcrosshair = CreateSection("combatcrosshair")
 combatcrosshair.enable = true                                                        -- Enable combat crosshair
 combatcrosshair.texture = [[Interface\AddOns\RefineUI\Media\Textures\Crosshair.tga]] -- Crosshair texture
 combatcrosshair.color = { 1, 1, 1 }                                                  -- Crosshair color (RGB)
-combatcrosshair.size = 20                                                            -- Crosshair size
-combatcrosshair.offsetx = 0                                                          -- Horizontal offset
-combatcrosshair.offsety = -25                                                        -- Vertical offset
+combatcrosshair.size = 32                                                            -- Crosshair size (default used by module if not set)
+combatcrosshair.offsetx = 0                                                          -- Horizontal offset from screen center
+combatcrosshair.offsety = -32                                                          -- Vertical offset from screen center
+combatcrosshair.alpha = 0.6                                                          -- Baseline alpha when shown
+combatcrosshair.strata = "TOOLTIP"                                                  -- Frame strata to use (sits above most UI)
+combatcrosshair.blend = "ADD"                                                     -- Blend mode for texture ("ADD" for glowy)
+combatcrosshair.visibility = "[combat]show; hide"                                  -- Visibility state driver string
+combatcrosshair.pulseOnEnter = true                                                  -- Play small pop-in animation when shown
 
 ----------------------------------------------------------------------------------------
 -- Combat Cursor options
@@ -415,8 +509,27 @@ local bwtimeline = CreateSection("bwtimeline")
 bwtimeline.enable = true           -- Enable BigWigs Timeline
 bwtimeline.refresh_rate = 0.05     -- Refresh rate for the timeline
 bwtimeline.smooth_queueing = true  -- Enable smooth queueing
-bwtimeline.bw_alerts = true        -- Enable BigWigs alerts
-bwtimeline.invisible_queue = false -- Enable BigWigs alerts
+bwtimeline.bw_alerts = true        -- Keep BigWigs bars present but invisible (alpha 0)
+bwtimeline.invisible_queue = true  -- Keep queued icons hidden until visible window
+bwtimeline.show_bigwigs_bars = false -- Show native BigWigs bars (useful for comparison/debug)
+
+-- Driver and smoothing settings
+bwtimeline.max_queue_icons = 6      -- Max number of queued (future) icons shown above the bar
+bwtimeline.smoothing = 0.15         -- Smoothing factor for icon movement (0.1–0.3 typical)
+bwtimeline.snap_eps = 0.25          -- Pixel snapping threshold to avoid SetPoint churn
+bwtimeline.hz = 120                 -- Target update rate (Hz) for the timeline driver
+
+-- Nameplate bridge settings
+bwtimeline.nameplates_to_timeline = true   -- Enable nameplate -> timeline bridge inside instances
+bwtimeline.np_target_only        = false    -- Only add icons for current target (default ON)
+bwtimeline.np_dedupe_window      = 0.25    -- Seconds to dedupe quick-repeat abilities
+bwtimeline.np_max_concurrent     = 6       -- Limit number of mob icons shown on the bar concurrently
+bwtimeline.mob_alpha             = 0.95    -- Slight transparency for mob icons
+bwtimeline.mob_desaturate        = false   -- Desaturate mob icons
+bwtimeline.np_show_mob_name      = false   -- Prefix NP labels with mob name
+bwtimeline.marker_icon_size      = 14      -- Inline raid marker icon size near the text
+bwtimeline.hide_bw_nameplate_icons = true -- Suppress BigWigs Nameplates visuals (emit events only)
+bwtimeline.np_debug = false    -- Debug prints for Nameplate -> Timeline bridge
 
 -- Bar settings
 bwtimeline.bar = {}
@@ -457,11 +570,11 @@ bwtimeline.emphasized_color = {1, .5, 0, 1} -- Color of emphasized icons
 ----------------------------------------------------------------------------------------
 local mrtreminder = CreateSection("mrtreminder")
 
-mrtreminder.enable = true           -- Enable MRTReminder
+mrtreminder.enable = false           -- Enable MRTReminder
 mrtreminder.barColor = {0, 1, 0}  -- Default to orange (R, G, B values from 0 to 1)
 mrtreminder.autoHide = 5            -- Time in seconds after icon hide (0 = never)
 mrtreminder.autoShow = 20            -- Time in seconds before time's up to show icon
-mrtreminder.speech = true           -- Use voice for notifications
+mrtreminder.speech = false           -- Use voice for notifications
 mrtreminder.sound = [[Interface\AddOns\RefineUI\Media\Sounds\Alert.ogg]]  -- Sound for next cast
 
 -- UI settings
@@ -478,3 +591,24 @@ local trade = CreateSection("trade")
 trade.profession_tabs = true -- Professions tabs on TradeSkill frames
 trade.already_known = true   -- Colorizes recipes/mounts/pets/toys that is already known
 trade.sum_buyouts = true     -- Sum up all current auctions
+
+----------------------------------------------------------------------------------------
+-- AdvCombatLog options
+----------------------------------------------------------------------------------------
+local advcombatlog = CreateSection("advcombatlog")
+
+advcombatlog.enableTaunt = true
+advcombatlog.enableInterrupt = true
+advcombatlog.enableDispel = true
+advcombatlog.enableCrowdControl = true
+advcombatlog.enableDeath = true
+advcombatlog.enableResurrect = true
+advcombatlog.filterPlayers = true     -- Whether to filter events involving players (Currently unused, filtering based on relevance)
+advcombatlog.filterPets = true        -- Whether to filter events involving pets (Currently unused, filtering based on relevance)
+advcombatlog.outputLocal = true       -- Whether to output messages to the local chat frame
+advcombatlog.outputChat = false       -- Whether to output messages to a specific chat channel
+advcombatlog.chatChannel = "SAY"      -- The chat channel to output messages to (if outputChat is true)
+advcombatlog.iconSize = 14            -- Size of inline icons in messages
+advcombatlog.showTimestamps = true    -- Whether to show timestamps in messages
+advcombatlog.groupMembersOnly = true -- Only process events for player/party/raid (and their pets)
+advcombatlog.debug = false            -- Debug prints for Advanced Combat Log

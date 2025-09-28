@@ -1,7 +1,8 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
 	<Script file="Status.lua"/>
-	<Script file="Cooldowns.lua"/>
+	<!-- <Script file="Cooldowns.lua"/> -->
 	<Script file="ExtraBar.lua"/>
 	<!-- <Script file="Mouseover.lua"/> -->
 	<Script file="ActionBars.lua"/>
+	<Script file="ButtonGlow.lua"/>
 </Ui>

@@ -1,7 +1,8 @@
 local R, C, L = unpack(RefineUI)
 local _, ns = ...
 local oUF = ns.oUF
-local UF = R.UF
+-- Use existing UF table if present; otherwise create a new one we assign back at the end
+local UF = R.UF or {}
 
 ----------------------------------------------------------------------------------------
 -- Upvalues and Constants
@@ -14,11 +15,10 @@ local UnitIsFriend, UnitFactionGroup, UnitIsPVPFreeForAll, UnitIsPVP =
     UnitIsFriend, UnitFactionGroup, UnitIsPVPFreeForAll, UnitIsPVP
 local floor, abs, string, math, pairs, ipairs, next, unpack =
     floor, abs, string, math, pairs, ipairs, next, unpack
-local UnitPower, UnitPowerMax, UnitPowerType = UnitPower, UnitPowerMax, UnitPowerType
-local UnitIsConnected, UnitIsDead, UnitIsGhost = UnitIsConnected, UnitIsDead, UnitIsGhost
 local floor, format, min = math.floor, string.format, math.min
 
 local PLAYER = "player"
+local VEHICLE = "vehicle"
 local MAGIC = "Magic"
 
 ----------------------------------------------------------------------------------------
@@ -44,10 +44,7 @@ UF.UpdateAllElements = function(frame)
     end
 end
 
-----------------------------------------------------------------------------------------
--- Local Variables
-----------------------------------------------------------------------------------------
-local UF = {}
+-- (no-op) UF table already defined above
 
 local playerUnits = {
     player = true,
@@ -55,7 +52,7 @@ local playerUnits = {
     vehicle = true
 }
 
-local ticks = {}
+-- per-castbar ticks will be stored on the Castbar instance (Castbar.ticks)
 
 local TIME_UNITS = {
     {86400, "%dd"},
@@ -63,6 +60,73 @@ local TIME_UNITS = {
     {60, "%dm"},
     {1, "%d"},
 }
+
+----------------------------------------------------------------------------------------
+-- Centralized styling helpers
+----------------------------------------------------------------------------------------
+function UF.ApplyFrameTemplate(frame, template, opts)
+    if not frame or not frame.SetTemplate then return end
+    opts = opts or {}
+
+    frame:SetTemplate(template or "Default")
+
+    if opts.frameStrata then frame:SetFrameStrata(opts.frameStrata) end
+    if opts.frameLevel ~= nil then
+        frame:SetFrameLevel(opts.frameLevel)
+    elseif opts.levelOffset then
+        local lvl = frame:GetFrameLevel() + opts.levelOffset
+        if lvl < 0 then lvl = 0 end
+        frame:SetFrameLevel(lvl)
+    end
+
+    local border = frame.border
+    if border and border.SetFrameLevel then
+        local borderLvl = frame:GetFrameLevel() + (opts.borderLevelOffset or 1)
+        if borderLvl < 0 then borderLvl = 0 end
+        border:SetFrameLevel(borderLvl)
+    end
+    if border and opts.borderStrata then
+        border:SetFrameStrata(opts.borderStrata)
+    end
+end
+
+function UF.ApplyBackdrop(frame, template, opts)
+    if not frame or not frame.CreateBackdrop then return end
+    opts = opts or {}
+
+    if not frame.backdrop then
+        frame:CreateBackdrop(template or "Default")
+    else
+        if template and frame.backdrop.SetTemplate then
+            frame.backdrop:SetTemplate(template)
+        end
+    end
+
+    local b = frame.backdrop
+    if not b then return end
+    -- Make backdrop follow parent strata by default
+    if opts.backdropStrata then
+        b:SetFrameStrata(opts.backdropStrata)
+    else
+        b:SetFrameStrata(frame:GetFrameStrata())
+    end
+    if opts.backdropLevel ~= nil then
+        b:SetFrameLevel(opts.backdropLevel)
+    elseif opts.backdropLevelOffset then
+        local lvl = frame:GetFrameLevel() + opts.backdropLevelOffset
+        if lvl < 0 then lvl = 0 end
+        b:SetFrameLevel(lvl)
+    end
+    -- Normalize border layering
+    if b.border and b.border.SetFrameLevel then
+        local bl = b:GetFrameLevel() + (opts.borderLevelOffsetOnBackdrop or 0)
+        if bl < 0 then bl = 0 end
+        b.border:SetFrameLevel(bl)
+    end
+    if b.border and opts.borderStrata then
+        b.border:SetFrameStrata(opts.borderStrata)
+    end
+end
 
 local function FormatTime(s)
     for i = 1, #TIME_UNITS do
@@ -72,6 +136,8 @@ local function FormatTime(s)
     end
     return format("%.1f", s)
 end
+
+
 
 ----------------------------------------------------------------------------------------
 --	Unit Categorization Function
@@ -154,10 +220,25 @@ local function FormatHealthText(min, max, r, g, b)
 end
 
 local function SetCastbarColor(Castbar, r, g, b)
+    -- Skip if color unchanged
+    if Castbar._lastR == r and Castbar._lastG == g and Castbar._lastB == b then return end
+
     Castbar:SetStatusBarColor(r, g, b)
-    Castbar.bg:SetVertexColor(C.media.backdropColor[1], C.media.backdropColor[2], C.media.backdropColor[3], 1)
-    Castbar.border:SetBackdropBorderColor(r, g, b)
-    Castbar.Button.border:SetBackdropBorderColor(r, g, b)
+
+    -- Single strategy: tint background to the same hue at low alpha
+    if Castbar.bg and Castbar.bg.SetVertexColor then
+        Castbar.bg:SetVertexColor(r, g, b, 0.1)
+    end
+
+    -- Match border tint with bar color
+    if Castbar.border and Castbar.border.SetBackdropBorderColor then
+        Castbar.border:SetBackdropBorderColor(r, g, b)
+    end
+    if Castbar.Button and Castbar.Button.border and Castbar.Button.border.SetBackdropBorderColor then
+        Castbar.Button.border:SetBackdropBorderColor(r, g, b)
+    end
+
+    Castbar._lastR, Castbar._lastG, Castbar._lastB = r, g, b
 end
 
 local function SetButtonColor(button, r, g, b)
@@ -167,56 +248,44 @@ local function SetButtonColor(button, r, g, b)
     end
 end
 
-local function CreateAuraTimer(self, elapsed)
-    if self.timeLeft then
-        self.elapsed = (self.elapsed or 0) + elapsed
-        if self.elapsed >= 0.1 then
-            if not self.first then
-                self.timeLeft = self.timeLeft - self.elapsed
-            else
-                self.timeLeft = self.timeLeft - GetTime()
-                self.first = false
-            end
-            if self.timeLeft > 0 then
-                self.remaining:Show()
-                local time = FormatTime(self.timeLeft)
-                self.remaining:SetText(time)
-            else
-                self.remaining:Hide()
-                self:SetScript("OnUpdate", nil)
-            end
-            self.elapsed = 0
-        end
-    end
+-- duplicate removed; using canonical UF.CreateAuraTimer below
+
+-- removed older tick helper; canonical version lives in Cast Bar Functions section below
+
+----------------------------------------------------------------------------------------
+-- Portrait helpers (lazy creation to avoid unused high-strata textures)
+----------------------------------------------------------------------------------------
+function UF.EnsurePortraitRadial(self)
+    if not self then return end
+    if self.PortraitRadialStatusbar then return self.PortraitRadialStatusbar end
+    if not self.PortraitFrame or type(R.CreateRadialStatusBar) ~= "function" then return end
+
+    local radial = R.CreateRadialStatusBar(self.PortraitFrame)
+    radial:SetAllPoints(self.PortraitFrame)
+    radial:SetTexture("Interface\\AddOns\\RefineUI\\Media\\Textures\\PortraitBorder.blp")
+    radial:SetVertexColor(0, 0.8, 0.8, 0.75)
+    -- Follow parent strata to keep layering predictable; keep hidden until needed
+    radial:SetFrameStrata(self.PortraitFrame:GetFrameStrata())
+    radial:Hide()
+
+    self.PortraitRadialStatusbar = radial
+    return radial
 end
 
-local function setBarTicks(Castbar, numTicks)
-    local width = Castbar:GetWidth()
-    local height = Castbar:GetHeight()
+function UF.EnsurePortraitGlow(self)
+    if not self then return end
+    if self.PortraitGlow then return self.PortraitGlow end
+    if not self.PortraitFrame or not self.BorderTexture then return end
 
-    for i = 1, #ticks do
-        ticks[i]:Hide()
-    end
+    local glow = self.PortraitFrame:CreateTexture(nil, 'BACKGROUND')
+    glow:SetAllPoints(self.BorderTexture)
+    glow:SetTexture(C.media.portraitGlow)
+    glow:SetVertexColor(1, 1, 1, .6)
+    glow:SetDrawLayer("OVERLAY", 1)
+    glow:Hide()
 
-    if numTicks and numTicks > 0 then
-        local delta = width / numTicks
-
-        for i = 1, numTicks do
-            local tick = ticks[i]
-            if not tick then
-                tick = Castbar:CreateTexture(nil, "ARTWORK")
-                tick:SetTexture(C.media.texture)
-                tick:SetVertexColor(0, 0, 0, 0.5)
-                tick:SetWidth(2)
-                tick:SetDrawLayer("ARTWORK", 1)
-                ticks[i] = tick
-            end
-
-            tick:SetHeight(height)
-            tick:SetPoint("CENTER", Castbar, "RIGHT", -delta * i, 0)
-            tick:Show()
-        end
-    end
+    self.PortraitGlow = glow
+    return glow
 end
 
 ----------------------------------------------------------------------------------------
@@ -225,6 +294,15 @@ end
 -- Update Health
 UF.PostUpdateHealth = function(health, unit, min, max)
     if unit and unit:find("arena%dtarget") then return end
+    -- If the underlying unit (GUID) changed, clear cached text/colors so we don't show stale values
+    local guid = unit and UnitGUID and UnitGUID(unit)
+    if health._lastGUID ~= guid then
+        health._lastGUID = guid
+        health._lastTextPercent = nil
+        health._lastStatusKey = nil
+        health._lastTextR, health._lastTextG, health._lastTextB = nil, nil, nil
+        health._lastR, health._lastG, health._lastB = nil, nil, nil
+    end
     
     local disconnected = not UnitIsConnected(unit)
     local dead = UnitIsDead(unit)
@@ -232,7 +310,11 @@ UF.PostUpdateHealth = function(health, unit, min, max)
     
     if disconnected or dead or ghost then
         health:SetValue(0)
-        health.value:SetText("|cffD7BEA5" .. (disconnected and L_UF_OFFLINE or (dead and L_UF_DEAD or L_UF_GHOST)) .. "|r")
+        local statusKey = disconnected and "OFFLINE" or (dead and "DEAD" or "GHOST")
+        if health._lastStatusKey ~= statusKey then
+            health.value:SetText("|cffD7BEA5" .. (disconnected and L_UF_OFFLINE or (dead and L_UF_DEAD or L_UF_GHOST)) .. "|r")
+            health._lastStatusKey = statusKey
+        end
         return
     end
     
@@ -243,7 +325,9 @@ UF.PostUpdateHealth = function(health, unit, min, max)
             local color = R.oUF_colors.class[class]
             if color then
                 r, g, b = color[1], color[2], color[3]
-                health:SetStatusBarColor(r, g, b)
+                if health._lastR ~= r or health._lastG ~= g or health._lastB ~= b then
+                    health:SetStatusBarColor(r, g, b)
+                end
             end
         end
     else
@@ -252,7 +336,9 @@ UF.PostUpdateHealth = function(health, unit, min, max)
             local color = R.oUF_colors.reaction[reaction]
             if color then
                 r, g, b = color[1], color[2], color[3]
-                health:SetStatusBarColor(r, g, b)
+                if health._lastR ~= r or health._lastG ~= g or health._lastB ~= b then
+                    health:SetStatusBarColor(r, g, b)
+                end
             end
         end
     end
@@ -260,10 +346,12 @@ UF.PostUpdateHealth = function(health, unit, min, max)
     if unit == "pet" then
         local _, class = UnitClass("player")
         r, g, b = unpack(R.oUF_colors.class[class])
-        health:SetStatusBarColor(r, g, b)
-        if health.bg and health.bg.multiplier then
-            local mu = health.bg.multiplier
-            health.bg:SetVertexColor(r * mu, g * mu, b * mu)
+        if health._lastR ~= r or health._lastG ~= g or health._lastB ~= b then
+            health:SetStatusBarColor(r, g, b)
+            if health.bg and health.bg.multiplier then
+                local mu = health.bg.multiplier
+                health.bg:SetVertexColor(r * mu, g * mu, b * mu)
+            end
         end
     end
     
@@ -271,27 +359,50 @@ UF.PostUpdateHealth = function(health, unit, min, max)
         r, g, b = health:GetStatusBarColor()
         local newr, newg, newb = oUF:ColorGradient(min, max, 1, 0, 0, 1, 1, 0, r, g, b)
         
-        health:SetStatusBarColor(newr, newg, newb)
-        if health.bg and health.bg.multiplier then
-            local mu = health.bg.multiplier
-            health.bg:SetVertexColor(newr * mu, newg * mu, newb * mu)
+        local colorChanged = (health._lastR ~= newr or health._lastG ~= newg or health._lastB ~= newb)
+        if colorChanged then
+            health:SetStatusBarColor(newr, newg, newb)
+            if health.bg and health.bg.multiplier then
+                local mu = health.bg.multiplier
+                health.bg:SetVertexColor(newr * mu, newg * mu, newb * mu)
+            end
         end
+        r, g, b = newr, newg, newb
     end
     
     if min ~= max then
         local percent = floor(min / max * 100)
-        r, g, b = oUF:ColorGradient(min, max, 0.69, 0.31, 0.31, 0.65, 0.63, 0.35, 0.33, 0.59, 0.33)
+        local tr, tg, tb = oUF:ColorGradient(min, max, 0.69, 0.31, 0.31, 0.65, 0.63, 0.35, 0.33, 0.59, 0.33)
         if C.unitframes.colorValue == true then
-            health.value:SetFormattedText("|cff%02x%02x%02x%d|r", r * 255, g * 255, b * 255, percent)
+            if percent ~= health._lastTextPercent or tr ~= (health._lastTextR or -1) or tg ~= (health._lastTextG or -1) or tb ~= (health._lastTextB or -1) then
+                health.value:SetFormattedText("|cff%02x%02x%02x%d|r", tr * 255, tg * 255, tb * 255, percent)
+                health._lastTextPercent, health._lastTextR, health._lastTextG, health._lastTextB = percent, tr, tg, tb
+            end
         else
-            health.value:SetFormattedText("|cffffffff%d|r", percent)
+            if percent ~= health._lastTextPercent then
+                health.value:SetFormattedText("|cffffffff%d|r", percent)
+                health._lastTextPercent = percent
+                health._lastTextR, health._lastTextG, health._lastTextB = nil, nil, nil
+            end
         end
     else
         if C.unitframes.colorValue == true then
-            health.value:SetFormattedText("|cff559655%d|r", 100)
+            if health._lastTextPercent ~= 100 or health._lastTextR ~= 0.33 or health._lastTextG ~= 0.59 or health._lastTextB ~= 0.33 then
+                health.value:SetFormattedText("|cff559655%d|r", 100)
+                health._lastTextPercent, health._lastTextR, health._lastTextG, health._lastTextB = 100, 0.33, 0.59, 0.33
+            end
         else
-            health.value:SetFormattedText("|cffffffff%d|r", 100)
+            if health._lastTextPercent ~= 100 then
+                health.value:SetFormattedText("|cffffffff%d|r", 100)
+                health._lastTextPercent = 100
+                health._lastTextR, health._lastTextG, health._lastTextB = nil, nil, nil
+            end
         end
+    end
+
+    -- Cache last applied bar color for future comparisons
+    if r and g and b then
+        health._lastR, health._lastG, health._lastB = r, g, b
     end
 end
 
@@ -301,49 +412,46 @@ UF.PostUpdateRaidHealth = function(health, unit, min, max)
     local border = self.backdrop
     if not UnitIsConnected(unit) or UnitIsDead(unit) or UnitIsGhost(unit) then
         health:SetValue(0)
-        if not UnitIsConnected(unit) then
-            health.value:SetText("|cffD7BEA5" .. L_UF_OFFLINE .. "|r")
-        elseif UnitIsDead(unit) then
-            health.value:SetText("|cffD7BEA5" .. L_UF_DEAD .. "|r")
-        elseif UnitIsGhost(unit) then
-            health.value:SetText("|cffD7BEA5" .. L_UF_GHOST .. "|r")
+        local key = not UnitIsConnected(unit) and "OFFLINE" or (UnitIsDead(unit) and "DEAD" or "GHOST")
+        if health._lastStatusKey ~= key then
+            local text = (key == "OFFLINE" and L_UF_OFFLINE) or (key == "DEAD" and L_UF_DEAD) or L_UF_GHOST
+            health.value:SetText("|cffD7BEA5" .. text .. "|r")
+            health._lastStatusKey = key
         end
     else
         local r, g, b
-        if not UnitIsPlayer(unit) and UnitIsFriend(unit, "player") and C.unitframes.own_color ~= true then
+    if not UnitIsPlayer(unit) and UnitIsFriend(unit, "player") then
             local c = R.oUF_colors.reaction[5]
             if c then
                 r, g, b = c[1], c[2], c[3]
-                health:SetStatusBarColor(r, g, b)
-                if health.bg and health.bg.multiplier then
-                    local mu = health.bg.multiplier
-                    health.bg:SetVertexColor(r * mu, g * mu, b * mu)
+                if health._lastR ~= r or health._lastG ~= g or health._lastB ~= b then
+                    health:SetStatusBarColor(r, g, b)
+                    if health.bg and health.bg.multiplier then
+                        local mu = health.bg.multiplier
+                        health.bg:SetVertexColor(r * mu, g * mu, b * mu)
+                    end
                 end
             end
         end
-        if C.unitframes.bar_color_value == true and not UnitIsTapDenied(unit) then
-            if C.unitframes.own_color == true then
-                r, g, b = C.unitframes.uf_color[1], C.unitframes.uf_color[2], C.unitframes.uf_color[3]
-            else
-                r, g, b = health:GetStatusBarColor()
-            end
+        if C.unitframes.barColorValue == true and not UnitIsTapDenied(unit) then
+            r, g, b = health:GetStatusBarColor()
             local newr, newg, newb = oUF:ColorGradient(min, max, 1, 0, 0, 1, 1, 0, r, g, b)
-
-            health:SetStatusBarColor(newr, newg, newb)
-            if health.bg and health.bg.multiplier then
-                local mu = health.bg.multiplier
-                health.bg:SetVertexColor(newr * mu, newg * mu, newb * mu)
+            local changed = (health._lastR ~= newr or health._lastG ~= newg or health._lastB ~= newb)
+            if changed then
+                health:SetStatusBarColor(newr, newg, newb)
+                if health.bg and health.bg.multiplier then
+                    local mu = health.bg.multiplier
+                    health.bg:SetVertexColor(newr * mu, newg * mu, newb * mu)
+                end
             end
         end
-        health.value:SetText("|cffffffff" .. math.floor(min / max * 100 + .5) .. "|r")
+        local pct = math.floor(min / max * 100 + .5)
+        if health._lastTextPercent ~= pct then
+            health.value:SetText("|cffffffff" .. pct .. "|r")
+            health._lastTextPercent = pct
+        end
     end
-    local _, class = UnitClass(unit)
-    local color = R.oUF_colors.class[class]
-    if color then
-        self.GroupRoleIndicator:SetVertexColor(color[1], color[2], color[3])
-        self.LeaderIndicator:SetVertexColor(color[1], color[2], color[3])
-        self.AssistantIndicator:SetVertexColor(color[1], color[2], color[3])
-    end
+    -- Prefer oUF elements' own visuals/updates for indicators; avoid extra per-update color work here.
 end
 
 ----------------------------------------------------------------------------------------
@@ -365,7 +473,11 @@ UF.PostUpdatePower = function(power, unit, cur, _, max)
     local color = R.oUF_colors.power[pToken]
 
     if color then
-        power.value:SetTextColor(color[1], color[2], color[3])
+        local r, g, b = color[1], color[2], color[3]
+        if power._lastTextR ~= r or power._lastTextG ~= g or power._lastTextB ~= b then
+            power.value:SetTextColor(r, g, b)
+            power._lastTextR, power._lastTextG, power._lastTextB = r, g, b
+        end
     end
 
     if not UnitIsConnected(unit) or UnitIsDead(unit) or UnitIsGhost(unit) then
@@ -373,97 +485,16 @@ UF.PostUpdatePower = function(power, unit, cur, _, max)
     end
 
     if unit == "focus" or unit == "focustarget" or unit == "targettarget" or (self:GetParent():GetName():match("oUF_RaidDPS")) then return end
-
-    if not UnitIsConnected(unit) then
-        power.value:SetText()
-    elseif UnitIsDead(unit) or UnitIsGhost(unit) or max == 0 then
-        power.value:SetText()
-    end
 end
 
 ----------------------------------------------------------------------------------------
---	Mana Level Functions
+--\tMana Level Functions (see canonical helpers in Flash Animations section)
 ----------------------------------------------------------------------------------------
-local SetUpAnimGroup = function(self)
-    self.anim = self:CreateAnimationGroup()
-    self.anim:SetLooping("BOUNCE")
-    self.anim.fade = self.anim:CreateAnimation("Alpha")
-    self.anim.fade:SetFromAlpha(1)
-    self.anim.fade:SetToAlpha(0)
-    self.anim.fade:SetDuration(0.6)
-    self.anim.fade:SetSmoothing("IN_OUT")
-end
-
-local Flash = function(self)
-    if not self.anim then
-        SetUpAnimGroup(self)
-    end
-
-    if not self.anim:IsPlaying() then
-        self.anim:Play()
-    end
-end
-
-local StopFlash = function(self)
-    if self.anim then
-        self.anim:Finish()
-    end
-end
-
-UF.UpdateManaLevel = function(self, elapsed)
-    self.elapsed = (self.elapsed or 0) + elapsed
-    if self.elapsed < 0.2 then return end
-    self.elapsed = 0
-
-    if UnitPowerType("player") == 0 then
-        local cur = UnitPower("player", 0)
-        local max = UnitPowerMax("player", 0)
-        local percMana = max > 0 and (cur / max * 100) or 100
-        if percMana <= 20 and not UnitIsDeadOrGhost("player") then
-            self.ManaLevel:SetText("|cffaf5050" .. MANA_LOW:upper() .. "|r")
-            Flash(self)
-        else
-            self.ManaLevel:SetText()
-            StopFlash(self)
-        end
-    elseif R.class ~= "DRUID" and R.class ~= "PRIEST" and R.class ~= "SHAMAN" then
-        self.ManaLevel:SetText()
-        StopFlash(self)
-    end
-end
-
-UF.UpdateClassMana = function(self)
-    if self.unit ~= "player" then return end
-
-    -- Ensure FlashInfo is initialized
-    if not self.FlashInfo then
-        self.FlashInfo = {} -- Initialize FlashInfo if it doesn't exist
-    end
-
-    if UnitPowerType("player") ~= 0 then
-        local min = UnitPower("player", 0)
-        local max = UnitPowerMax("player", 0)
-        local percMana = max > 0 and (min / max * 100) or 100
-        if percMana <= 20 and not UnitIsDeadOrGhost("player") then
-            if not self.FlashInfo.ManaLevel then
-                self.FlashInfo.ManaLevel = self:CreateFontString(nil, "OVERLAY")       -- Create ManaLevel if it doesn't exist
-                self.FlashInfo.ManaLevel:SetPoint("CENTER", self, "CENTER")            -- Set position as needed
-                self.FlashInfo.ManaLevel:SetFont("Fonts\\FRIZQT__.TTF", 12, "OUTLINE") -- Set font as needed
-            end
-            self.FlashInfo.ManaLevel:SetText("|cffaf5050" .. MANA_LOW .. "|r")
-            Flash(self.FlashInfo)
-        else
-            if self.FlashInfo.ManaLevel then
-                self.FlashInfo.ManaLevel:SetText()
-            end
-            StopFlash(self.FlashInfo)
-        end
-    end
-end
 
 ----------------------------------------------------------------------------------------
 --	PvP Status Functions
 ----------------------------------------------------------------------------------------
+-- keep a single definition; remove duplicate below
 UF.UpdatePvPStatus = function(self)
     local unit = self.unit
 
@@ -482,27 +513,45 @@ end
 ----------------------------------------------------------------------------------------
 --	Cast Bar Functions
 ----------------------------------------------------------------------------------------
-local ticks = {}
+-- per-castbar ticks for overlay variant
 local setBarTicks = function(Castbar, numTicks)
-    for _, v in pairs(ticks) do
+    Castbar.ticks = Castbar.ticks or {}
+
+    local width = Castbar:GetWidth() or 0
+    local height = Castbar:GetHeight() or 0
+    if numTicks == (Castbar._lastTicks or 0) and math.floor(width) == math.floor(Castbar._lastTickWidth or -1) then
+        -- Nothing changed; keep current layout
+        return
+    end
+
+    -- Hide any existing ticks by default; we'll re-show the needed ones
+    for _, v in pairs(Castbar.ticks) do
         v:Hide()
     end
+
     if numTicks and numTicks > 0 then
-        local delta = Castbar:GetWidth() / numTicks
+        local delta = width / numTicks
         for i = 1, numTicks do
-            if not ticks[i] then
-                ticks[i] = Castbar:CreateTexture(nil, "OVERLAY")
-                ticks[i]:SetTexture(C.media.texture)
-                ticks[i]:SetVertexColor(unpack(C.media.borderColor))
-                ticks[i]:SetWidth(1)
-                ticks[i]:SetHeight(Castbar:GetHeight())
-                ticks[i]:SetDrawLayer("OVERLAY", 7)
+            if not Castbar.ticks[i] then
+                local t = Castbar:CreateTexture(nil, "OVERLAY")
+                t:SetTexture(C.media.texture)
+                t:SetVertexColor(unpack(C.media.borderColor))
+                t:SetWidth(1)
+                t:SetDrawLayer("OVERLAY", 7)
+                Castbar.ticks[i] = t
             end
-            ticks[i]:ClearAllPoints()
-            ticks[i]:SetPoint("CENTER", Castbar, "RIGHT", -delta * i, 0)
-            ticks[i]:Show()
+            local tick = Castbar.ticks[i]
+            if tick:GetHeight() ~= height then
+                tick:SetHeight(height)
+            end
+            tick:ClearAllPoints()
+            tick:SetPoint("CENTER", Castbar, "RIGHT", -delta * i, 0)
+            tick:Show()
         end
     end
+
+    Castbar._lastTicks = numTicks or 0
+    Castbar._lastTickWidth = width
 end
 
 local function castColor(unit)
@@ -526,19 +575,9 @@ local function castColor(unit)
     return r, g, b
 end
 
-local function SetCastbarColor(Castbar, r, g, b)
-    Castbar:SetStatusBarColor(r, g, b)
-    Castbar.bg:SetVertexColor(r, g, b)
-    Castbar.border:SetBackdropBorderColor(r, g, b)
-    -- Castbar.Button.BorderTexture:SetVertexColor(r, g, b)
-end
+-- duplicate removed; using canonical SetCastbarColor above
 
-local function SetButtonColor(button, r, g, b)
-    button:SetBackdropBorderColor(r, g, b)
-    if button.backdrop and button.backdrop.border then
-        button.backdrop.border:SetBackdropBorderColor(r, g, b)
-    end
-end
+-- duplicate removed; using canonical SetButtonColor above
 
 local function SetLimitedText(text, maxLength)
     if #text > maxLength then
@@ -563,7 +602,6 @@ UF.PostCastStart = function(Castbar, unit)
         r, g, b = color[1], color[2], color[3]
     end
     SetCastbarColor(Castbar, r, g, b)
-    Castbar.bg:SetVertexColor(r, g, b, 0.1)
 
     -- -- Safely set the button border color
     -- if Castbar.Button then
@@ -662,12 +700,11 @@ UF.HideAuraFrame = function(self)
 end
 
 UF.PostCreateIcon = function(element, button)
-    button:SetTemplate("Icon")
-    button.border:SetFrameStrata("LOW")
+    UF.ApplyFrameTemplate(button, "Icon", { borderStrata = "LOW" })
 
-    button.remaining = R.SetFontString(button, unpack(C.font.nameplates.auras))
-    button.remaining:SetPoint("CENTER", button, "CENTER", 1, 1)
-    button.remaining:SetJustifyH("CENTER")
+    -- button.timerText = R.SetFontString(button, unpack(C.font.nameplates.auras))
+    -- button.timerText:SetPoint("CENTER", button, "CENTER", 1, 1)
+    -- button.timerText:SetJustifyH("CENTER")
 
     button.Cooldown.noCooldownCount = true
     button.Icon:SetPoint("TOPLEFT", 2, -2)
@@ -680,14 +717,13 @@ UF.PostCreateIcon = function(element, button)
 
     element.disableCooldown = false
     local cooldown = button.Cooldown
-    cooldown:SetSwipeTexture("Interface\\AddOns\\RefineUI\\Media\\Textures\\CDAura.blp")
+    cooldown:SetSwipeTexture(C.media.auraCooldown)
     cooldown:SetParent(button)
-    cooldown:SetPoint("TOPLEFT", button, "TOPLEFT", -2, 2)
-    cooldown:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 2, -2)
+    cooldown:SetPoint("TOPLEFT", button, "TOPLEFT", -1, 1)
+    cooldown:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 1, -1)
     cooldown:SetReverse(true)
     cooldown:SetDrawEdge(false)
-    cooldown:SetSwipeColor(0, 0, 0, .6)
-
+    cooldown:SetSwipeColor(0, 0, 0, 0.8)
 
     -- Castbar.Button.Cooldown = CreateFrame("Cooldown", nil, Castbar.Button, "CooldownFrameTemplate")
     -- Castbar.Button.Cooldown:SetAllPoints()
@@ -700,87 +736,92 @@ UF.PostCreateIcon = function(element, button)
     parent:SetFrameLevel(cooldown:GetFrameLevel() + 1)
     button.Count:SetParent(parent)
 
-    button.remaining:SetParent(parent)
+    -- button.timerText:SetParent(parent)
     button.parent = parent
 end
 
-local day, hour, minute = 86400, 3600, 60
-local FormatTime = function(s)
-    if s >= day then
-        return format("%dd", floor(s / day + 0.5))
-    elseif s >= hour then
-        return format("%dh", floor(s / hour + 0.5))
-    elseif s >= minute then
-        return format("%dm", floor(s / minute + 0.5))
-    elseif s >= 5 then
-        return floor(s + 0.5)
-    end
-    return format("%.1f", s)
-end
-
-UF.CreateAuraTimer = function(self, elapsed)
-    if not self.timeLeft then return end
-    
-    self.elapsed = (self.elapsed or 0) + elapsed
-    if self.elapsed < 0.1 then return end
-    
-    self.timeLeft = self.timeLeft - (self.first and GetTime() or self.elapsed)
-    self.first = false
-    
-    if self.timeLeft > 0 then
-        self.remaining:SetText(FormatTime(self.timeLeft))
-    else
-        self.remaining:Hide()
-        self:SetScript("OnUpdate", nil)
-    end
-    
-    self.elapsed = 0
-end
-
-
-local playerUnits = {
-    player = true,
-    pet = true,
-    vehicle = true,
-}
+-- duplicate removed; using canonical FormatTime above
 
 UF.PostUpdateIcon = function(_, button, unit, data)
+    -- Handle the gap spacer between debuffs and buffs: keep space, hide visuals
+    local isGap = (button.isGap or not data or not data.name) and true or false
+    if isGap then
+        if not button._gapHidden then
+            if button.Icon then button.Icon:SetTexture(nil) end
+            if button.Count then button.Count:SetText("") end
+            if button.Cooldown then button.Cooldown:Hide() end
+            if button.border then button.border:Hide() end
+            button:SetAlpha(0)
+            button._gapHidden = true
+        end
+        return
+    else
+        if button._gapHidden then
+            button._gapHidden = nil
+            button:SetAlpha(1)
+            if button.border then button.border:Show() end
+            if button.Cooldown then button.Cooldown:Show() end
+        end
+    end
     local isPlayerUnit = (unit == "player" or unit == "pet")
 
     if data.isHarmful then
         if not UnitIsFriend("player", unit) and not isPlayerUnit then
             if not C.auras.playerAuraOnly then
-                button.border:SetBackdropBorderColor(unpack(C.media.borderColor))
-                button.Icon:SetDesaturated(true)
+                local br, bg, bb = unpack(C.media.borderColor)
+                if button._lastBorderR ~= br or button._lastBorderG ~= bg or button._lastBorderB ~= bb then
+                    button.border:SetBackdropBorderColor(br, bg, bb)
+                    button._lastBorderR, button._lastBorderG, button._lastBorderB = br, bg, bb
+                end
+                if not button._lastDesat then
+                    button.Icon:SetDesaturated(true)
+                    button._lastDesat = true
+                end
             end
         else
             if C.player.debuffColorType == true then
                 local color = DebuffTypeColor[data.dispelName] or DebuffTypeColor.none
-                button.border:SetBackdropBorderColor(color.r, color.g, color.b)
-                button.Icon:SetDesaturated(false)
+                if button._lastBorderR ~= color.r or button._lastBorderG ~= color.g or button._lastBorderB ~= color.b then
+                    button.border:SetBackdropBorderColor(color.r, color.g, color.b)
+                    button._lastBorderR, button._lastBorderG, button._lastBorderB = color.r, color.g, color.b
+                end
+                if button._lastDesat ~= false then
+                    button.Icon:SetDesaturated(false)
+                    button._lastDesat = false
+                end
             else
-                button:SetBackdropBorderColor(1, 0, 0)
+                if button._lastBorderR ~= 1 or button._lastBorderG ~= 0 or button._lastBorderB ~= 0 then
+                    button:SetBackdropBorderColor(1, 0, 0)
+                    button._lastBorderR, button._lastBorderG, button._lastBorderB = 1, 0, 0
+                end
             end
         end
     else
         -- This is the buff section
         if (data.isStealable or ((R.class == "MAGE" or R.class == "PRIEST" or R.class == "SHAMAN" or R.class == "HUNTER") and data.dispelName == "Magic")) and not UnitIsFriend("player", unit) then
-            button.border:SetBackdropBorderColor(1, 0.85, 0)
+            if button._lastBorderR ~= 1 or button._lastBorderG ~= 0.85 or button._lastBorderB ~= 0 then
+                button.border:SetBackdropBorderColor(1, 0.85, 0)
+                button._lastBorderR, button._lastBorderG, button._lastBorderB = 1, 0.85, 0
+            end
         elseif data.duration and data.duration > 0 then
             -- Set the border color to green for buffs with duration
-            button.border:SetBackdropBorderColor(0, 1, 0) -- RGB values for green
+            if button._lastBorderR ~= 0 or button._lastBorderG ~= 1 or button._lastBorderB ~= 0 then
+                button.border:SetBackdropBorderColor(0, 1, 0)
+                button._lastBorderR, button._lastBorderG, button._lastBorderB = 0, 1, 0
+            end
         else
             -- Use default border color for permanent/passive buffs
-            button.border:SetBackdropBorderColor(unpack(C.media.borderColor))
+            local br, bg, bb = unpack(C.media.borderColor)
+            if button._lastBorderR ~= br or button._lastBorderG ~= bg or button._lastBorderB ~= bb then
+                button.border:SetBackdropBorderColor(br, bg, bb)
+                button._lastBorderR, button._lastBorderG, button._lastBorderB = br, bg, bb
+            end
         end
-        button.Icon:SetDesaturated(false)
+        if button._lastDesat ~= false then
+            button.Icon:SetDesaturated(false)
+            button._lastDesat = false
+        end
     end
-
-    -- button.remaining:Hide()
-    button.timeLeft = math.huge
-    button:SetScript("OnUpdate", nil)
-
-    button.first = true
 end
 
 UF.CustomFilter = function(element, unit, data)
@@ -836,44 +877,47 @@ local function StopFlash(self)
 end
 
 function UF.UpdateManaLevel(self, elapsed)
-    self.elapsed = (self.elapsed or 0) + elapsed
-    if self.elapsed < 0.2 then return end
-    self.elapsed = 0
+    -- Early bails: hidden or missing fontstring
+    if not self:IsShown() or not self.ManaLevel then return end
 
-    if UnitPowerType(PLAYER) == 0 then
-        local cur = UnitPower(PLAYER, 0)
-        local max = UnitPowerMax(PLAYER, 0)
-        local percMana = max > 0 and (cur / max * 100) or 100
-        if percMana <= 25 and not UnitIsDeadOrGhost(PLAYER) then
+    self._acc = (self._acc or 0) + elapsed
+    if self._acc < 0.5 then return end
+    self._acc = 0
+
+    local pType = UnitPowerType(PLAYER)
+    if pType ~= 0 then
+        -- No mana bar active; for non-hybrid classes, keep things hidden and idle
+        if R.class ~= "DRUID" and R.class ~= "PRIEST" and R.class ~= "SHAMAN" then
+            if self._lowManaShown then
+                self.ManaLevel:SetText("")
+                StopFlash(self)
+                self._lowManaShown = false
+            end
+        end
+        return
+    end
+
+    local cur = UnitPower(PLAYER, 0)
+    local max = UnitPowerMax(PLAYER, 0)
+    local percMana = max > 0 and (cur / max * 100) or 100
+    local isLow = (percMana <= 25) and not UnitIsDeadOrGhost(PLAYER)
+
+    if isLow ~= (self._lowManaShown or false) then
+        if isLow then
             self.ManaLevel:SetText("|cffaf5050" .. L_UF_MANA .. "|r")
             Flash(self)
         else
-            self.ManaLevel:SetText()
+            self.ManaLevel:SetText("")
             StopFlash(self)
         end
-    elseif R.class ~= "DRUID" and R.class ~= "PRIEST" and R.class ~= "SHAMAN" then
-        self.ManaLevel:SetText()
-        StopFlash(self)
+        self._lowManaShown = isLow
     end
 end
 
 ----------------------------------------------------------------------------------------
 -- PvP Status
 ----------------------------------------------------------------------------------------
-function UF.UpdatePvPStatus(self)
-    local unit = self.unit
-
-    if self.Status then
-        local factionGroup = UnitFactionGroup(unit)
-        if UnitIsPVPFreeForAll(unit) then
-            self.Status:SetText(PVP)
-        elseif factionGroup and UnitIsPVP(unit) then
-            self.Status:SetText(PVP)
-        else
-            self.Status:SetText("")
-        end
-    end
-end
+-- duplicate removed
 
 ----------------------------------------------------------------------------------------
 --	Aura Watch Functions
@@ -894,154 +938,28 @@ local CountOffSets = {
     }
 }
 
--- Optimize CreateAuraWatch function
+-- DEPRECATED: Old AuraWatch functions - replaced by BuffWatch oUF module
+-- These are kept for reference but should not be used
+--[[
 function UF.CreateAuraWatch(self, buffs, name, anchorPoint, size, filter, reverseGrowth)
-    local auras = CreateFrame("Frame", nil, self)
-    auras:SetPoint(unpack(anchorPoint))
-    auras:SetSize(size, size)
-
-    auras.icons = {}
-    auras.PostCreateIcon = UF.CreateAuraWatchIcon
-
-    local iconSize = size / 2 - 1
-    local icon, spell
-    for i = 1, #buffs do
-        spell = buffs[i]
-        icon = CreateFrame("Frame", nil, auras)
-        icon.spellID = spell[1]
-        icon.anyUnit = spell[4]
-        icon.strictMatching = spell[5]
-        icon:SetSize(iconSize, iconSize)
-        icon:SetTemplate("Icon")
-        icon.border:SetFrameStrata("LOW")
-        icon.border:SetBackdropBorderColor(unpack(spell[2] or C.media.borderColor))
-
-        icon.texture = icon:CreateTexture(nil, "ARTWORK")
-        icon.texture:SetAllPoints(icon)
-        icon.texture:SetTexCoord(0.1, 0.9, 0.1, 0.9)
-
-        local spellTexture = C_Spell.GetSpellTexture(icon.spellID)
-        if spellTexture then
-            icon.texture:SetTexture(spellTexture)
-        end
-
-        icon.cooldown = CreateFrame("Cooldown", nil, icon, "CooldownFrameTemplate")
-        icon.cooldown:SetAllPoints(icon)
-        icon.cooldown:SetReverse(true)
-        icon.cooldown:SetDrawEdge(false)
-        icon.cooldown:SetSwipeColor(0, 0, 0, 0.8)
-
-        icon:Hide()
-        auras.icons[spell[1]] = icon
-    end
-
-    local visibleIcons = {}
-    auras.UpdateAuras = function(self, unit)
-        if not unit then return end
-
-        wipe(visibleIcons)
-        for i = 1, 40 do
-            local name, _, count, _, duration, expirationTime, unitCaster, _, _, spellID = UnitAura(unit, i, filter)
-            if not name then break end
-
-            local watchIcon = self.icons[spellID]
-            if watchIcon and ((filter == "HELPFUL|PLAYER") or (filter == "HELPFUL" and not UnitIsUnit(unitCaster, PLAYER))) then
-                if watchIcon.count then
-                    watchIcon.count:SetText(count > 1 and count or "")
-                end
-                watchIcon.expirationTime = expirationTime
-                watchIcon.duration = duration
-                watchIcon.cooldown:SetCooldown(expirationTime - duration, duration)
-                watchIcon:SetScript("OnUpdate", UF.UpdateAuraTimer)
-                tinsert(visibleIcons, watchIcon)
-            end
-        end
-
-        table.sort(visibleIcons, function(a, b) return (a.expirationTime or 0) < (b.expirationTime or 0) end)
-
-        local offsetSet = reverseGrowth and CountOffSets.Reversed or CountOffSets.Normal
-        for i = 1, min(4, #visibleIcons) do
-            local icon = visibleIcons[i]
-            icon:ClearAllPoints()
-            icon:SetPoint(offsetSet[i][1], self, offsetSet[i][1], offsetSet[i][2], offsetSet[i][3])
-            icon:SetAlpha(1)
-            icon:Show()
-        end
-
-        for i = 5, #visibleIcons do
-            visibleIcons[i]:Hide()
-            visibleIcons[i]:ClearAllPoints()
-        end
-
-        for _, icon in pairs(self.icons) do
-            if not tContains(visibleIcons, icon) then
-                icon:Hide()
-                icon:ClearAllPoints()
-            end
-        end
-    end
-
-    auras:RegisterEvent("UNIT_AURA")
-    auras:SetScript("OnEvent", function(frame, event, unit)
-        if unit == self.unit or (self.unit == PLAYER and unit == VEHICLE) then
-            frame:UpdateAuras(unit)
-        end
-    end)
-
-    self[name] = auras
-    auras:UpdateAuras(self.unit)
-
-    return auras
+    -- ... deprecated implementation removed for brevity ...
 end
 
--- Optimize CreatePlayerBuffWatch function
 function UF.CreatePlayerBuffWatch(self)
-    local buffs = {}
-    if R.RaidBuffs["ALL"] then
-        for _, value in pairs(R.RaidBuffs["ALL"]) do
-            tinsert(buffs, value)
-        end
-    end
-    if R.RaidBuffs[R.class] then
-        for _, value in pairs(R.RaidBuffs[R.class]) do
-            tinsert(buffs, value)
-        end
-    end
-    return UF.CreateAuraWatch(self, buffs, "AuraWatch", { "BOTTOMRIGHT", self.Health, "TOPRIGHT", 4, 6 }, 40,
-        "HELPFUL|PLAYER")
+    -- ... deprecated implementation removed for brevity ...
 end
 
--- Optimize CreatePartyBuffWatch function
 function UF.CreatePartyBuffWatch(self)
-    local buffs = {}
-    for _, buffList in pairs(R.RaidBuffs) do
-        for _, value in pairs(buffList) do
-            tinsert(buffs, value)
-        end
-    end
-    return UF.CreateAuraWatch(self, buffs, "OtherPlayersAuraWatch", { "BOTTOMLEFT", self.Health, "TOPLEFT", -4, 6 }, 40,
-        "HELPFUL", true)
+    -- ... deprecated implementation removed for brevity ...
 end
 
--- Optimize InitialAuraCheck function
 local function InitialAuraCheck(frame)
-    if frame.AuraWatch then
-        frame.AuraWatch:UpdateAuras(frame.unit)
-    end
-    if frame.OtherPlayersAuraWatch then
-        frame.OtherPlayersAuraWatch:UpdateAuras(frame.unit)
-    end
+    -- ... deprecated implementation removed for brevity ...
 end
 
--- Optimize initial check frame
 local initialCheckFrame = CreateFrame("Frame")
-initialCheckFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-initialCheckFrame:SetScript("OnEvent", function()
-    for _, frame in pairs(oUF.objects) do
-        InitialAuraCheck(frame)
-    end
-    initialCheckFrame:UnregisterAllEvents()
-end)
+-- ... deprecated implementation removed for brevity ...
+--]]
 
 ----------------------------------------------------------------------------------------
 --	Health Prediction Functions
@@ -1064,7 +982,7 @@ end)
 --     hab:SetVertexColor(1, 0, 0, 0.4)
 
 --     local oa = self.Health:CreateTexture(nil, "ARTWORK")
---     oa:SetTexture([[Interface\AddOns\TKUI\Media\Textures\Cross.tga]], "REPEAT", "REPEAT")
+--     oa:SetTexture([[Interface\AddOns\RefineUI\Media\Textures\Cross.tga]], "REPEAT", "REPEAT")
 --     oa:SetVertexColor(0.5, 0.5, 1)
 --     oa:SetHorizTile(true)
 --     oa:SetVertTile(true)
@@ -1072,7 +990,7 @@ end)
 --     oa:SetBlendMode("ADD")
 
 --     local oha = self.Health:CreateTexture(nil, "ARTWORK")
---     oha:SetTexture([[Interface\AddOns\TKUI\Media\Textures\Cross.tga]], "REPEAT", "REPEAT")
+--     oha:SetTexture([[Interface\AddOns\RefineUI\Media\Textures\Cross.tga]], "REPEAT", "REPEAT")
 --     oha:SetVertexColor(1, 0, 0)
 --     oha:SetHorizTile(true)
 --     oha:SetVertTile(true)

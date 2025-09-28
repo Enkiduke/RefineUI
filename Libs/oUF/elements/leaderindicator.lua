@@ -50,13 +50,9 @@ local function Update(self, event)
 	local isInLFGInstance = HasLFGRestrictions()
 	local isLeader = UnitIsGroupLeader(unit)
 	if(isLeader) then
-		if(isInLFGInstance) then
-			element:SetTexture([[Interface\AddOns\TKUI\Media\Textures\Leader.tga]])
-			element:SetTexCoord(0, 0.296875, 0.015625, 0.3125)
-		else
-			element:SetTexture([[Interface\AddOns\TKUI\Media\Textures\Leader.tga]])
-			element:SetTexCoord(0, 1, 0, 1)
-		end
+		-- Use the full Leader icon; RefineUI provides single-icon textures
+		element:SetTexture([[Interface\AddOns\RefineUI\Media\Textures\Leader.tga]])
+		element:SetTexCoord(0, 1, 0, 1)
 
 		element:Show()
 	else

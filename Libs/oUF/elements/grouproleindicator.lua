@@ -14,7 +14,7 @@ A default texture will be applied if the widget is a Texture and doesn't have a 
 ## Examples
 
     -- Position and size
-    local GroupRoleIndicator = self:CreateTexture(nil, 'OVERLAY')
+	local GroupRoleIndicator = self:CreateTexture(nil, 'OVERLAY')
     GroupRoleIndicator:SetSize(16, 16)
     GroupRoleIndicator:SetPoint('LEFT', self)
 
@@ -50,13 +50,13 @@ local function Update(self, event)
 
 	local role = UnitGroupRolesAssigned(self.unit)
 	if role == 'TANK' then
-		element:SetTexture([[Interface\AddOns\TKUI\Media\Textures\Tank.tga]])
+		element:SetTexture([[Interface\AddOns\RefineUI\Media\Textures\TANK.tga]])
 		element:Show()
 	elseif role == 'HEALER' then
-		element:SetTexture([[Interface\AddOns\TKUI\Media\Textures\Healer.tga]])
+		element:SetTexture([[Interface\AddOns\RefineUI\Media\Textures\HEALER.tga]])
 		element:Show()
 	elseif role == 'DAMAGER' then
-		element:SetTexture([[Interface\AddOns\TKUI\Media\Textures\Damager.tga]])
+		element:SetTexture([[Interface\AddOns\RefineUI\Media\Textures\DAMAGER.tga]])
 		element:Show()
 	else
 		element:Hide()
@@ -101,7 +101,8 @@ local function Enable(self)
 		end
 
 		if(element:IsObjectType('Texture') and not element:GetTexture()) then
-			element:SetTexture([[Interface\LFGFrame\UI-LFG-ICON-PORTRAITROLES]])
+			-- Default to RefineUI role textures to match the addon style
+			element:SetTexture([[Interface\AddOns\RefineUI\Media\Textures\DAMAGER.tga]])
 		end
 
 		return true

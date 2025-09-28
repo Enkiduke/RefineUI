@@ -1,4 +1,5 @@
 local R, C, L = unpack(RefineUI)
+local oGlow = rawget(_G, "oGlow")
 
 local createItemLevelText = function(self)
     if not self.oGlowItemLevel then
@@ -11,6 +12,8 @@ local createItemLevelText = function(self)
 end
 
 local itemLevelDisplay = function(frame, itemLevel, itemLink)
+    -- Safety: some pipes may invoke displays with a nil frame (e.g., missing bank slot frames)
+    if not frame then return end
     if itemLevel and type(itemLevel) == "number" then
         local text = createItemLevelText(frame)
         local quality = 1  -- Default to common quality
@@ -29,7 +32,7 @@ local itemLevelDisplay = function(frame, itemLevel, itemLink)
         text:Show()
         return true
     else
-        if frame.oGlowItemLevel then
+        if frame and frame.oGlowItemLevel then
             frame.oGlowItemLevel:Hide()
         end
     end

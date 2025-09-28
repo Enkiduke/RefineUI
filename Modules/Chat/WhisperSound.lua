@@ -6,6 +6,26 @@ if not C.chat.whisperSound then return end
 ----------------------------------------------------------------------------------------
 local CreateFrame = CreateFrame
 local PlaySoundFile = PlaySoundFile
+local GetTime = GetTime
+local tonumber = tonumber
+
+----------------------------------------------------------------------------------------
+-- Optional debounce (default OFF)
+----------------------------------------------------------------------------------------
+-- Example to enable: C.chat.whisperSoundDebounceMs = 200
+local DEBOUNCE_MS = (C.chat.whisperSoundDebounceMs and tonumber(C.chat.whisperSoundDebounceMs)) or 0
+local lastPlayMs = 0
+local function ShouldPlay()
+    if DEBOUNCE_MS <= 0 then
+        return true
+    end
+    local nowMs = (GetTime() or 0) * 1000
+    if (nowMs - lastPlayMs) >= DEBOUNCE_MS then
+        lastPlayMs = nowMs
+        return true
+    end
+    return false
+end
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -19,7 +39,7 @@ local WHISPER_EVENTS = {
 -- Whisper Sound System
 ----------------------------------------------------------------------------------------
 local function OnWhisperReceived(_, event)
-    if C.media.whisperSound then
+    if C.media.whisperSound and ShouldPlay() then
         PlaySoundFile(C.media.whisperSound, "Master")
     end
 end

@@ -3,8 +3,8 @@ local R, C, L = unpack(RefineUI)
 ----------------------------------------------------------------------------------------
 -- Upvalues
 ----------------------------------------------------------------------------------------
-local format, select, UnitIsPlayer, UnitClass, UnitReaction, GetUnitName = 
-    format, select, UnitIsPlayer, UnitClass, UnitReaction, GetUnitName
+local format, select, UnitIsPlayer, UnitClass, UnitReaction, GetUnitName, UnitAura = 
+	format, select, UnitIsPlayer, UnitClass, UnitReaction, GetUnitName, UnitAura
 local C_UnitAuras, AuraUtil = C_UnitAuras, AuraUtil
 local DONE_BY, RAID_CLASS_COLORS = DONE_BY, RAID_CLASS_COLORS
 local pairs, hooksecurefunc = pairs, hooksecurefunc
@@ -32,9 +32,15 @@ end
 ----------------------------------------------------------------------------------------
 -- Aura Source Function
 ----------------------------------------------------------------------------------------
-local function addAuraSource(self, func, unit, index, filter, instanceID)
-    local srcUnit = instanceID and (C_UnitAuras.GetAuraDataByAuraInstanceID(unit, index) or {}).sourceUnit
-                    or select(7, func(unit, index, filter))
+	local function addAuraSource(self, func, unit, index, filter, instanceID)
+		local srcUnit
+		if instanceID then
+			local aura = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, index)
+			srcUnit = aura and aura.sourceUnit
+		else
+			local aura = C_UnitAuras.GetAuraDataByIndex and C_UnitAuras.GetAuraDataByIndex(unit, index, filter)
+			srcUnit = aura and aura.sourceUnit or select(7, UnitAura and UnitAura(unit, index, filter))
+		end
     
     if not srcUnit then return end
 
@@ -42,10 +48,11 @@ local function addAuraSource(self, func, unit, index, filter, instanceID)
     if srcUnit == "pet" or srcUnit == "vehicle" then
         src = format("%s (%s%s|r)", src, PLAYER_COLOR, GetUnitName("player", true))
     else
-        local petOwner = srcUnit:match("^(party)pet(%d+)$") or srcUnit:match("^(raid)pet(%d+)$")
-        if petOwner then
-            src = format("%s (%s)", src, GetUnitName(petOwner .. srcUnit:match("%d+"), true))
-        end
+		local grp, idx = srcUnit:match("^(party)pet(%d+)$")
+		if not grp then grp, idx = srcUnit:match("^(raid)pet(%d+)$") end
+		if grp and idx then
+			src = format("%s (%s)", src, GetUnitName(grp .. idx, true))
+		end
     end
 
     src = getColoredName(srcUnit, src)
@@ -64,8 +71,11 @@ local funcs = {
     SetUnitDebuffByAuraInstanceID = C_UnitAuras.GetAuraDataByAuraInstanceID,
 }
 
-for k, v in pairs(funcs) do
-    hooksecurefunc(GameTooltip, k, function(self, unit, index, filter)
-        addAuraSource(self, v, unit, index, filter, k:find("ByAuraInstanceID"))
-    end)
+if not GameTooltip._refineAuraSourceHooked then
+	for k, v in pairs(funcs) do
+		hooksecurefunc(GameTooltip, k, function(self, unit, index, filter)
+			addAuraSource(self, v, unit, index, filter, k:find("ByAuraInstanceID"))
+		end)
+	end
+	GameTooltip._refineAuraSourceHooked = true
 end

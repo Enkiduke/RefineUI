@@ -59,7 +59,7 @@ font.unitframes = {
 
 -- Unit frames fonts
 font.group = {
-	name = { C.media.normalFont, 14, "THICKOUTLINE" },
+	name = { C.media.normalFont, 14, "OUTLINE" },
 }
 
 -- Auras fonts

@@ -1,4 +1,5 @@
 local _E
+local oGlow = rawget(_G, "oGlow")
 local slots = {
 	"Head", "Neck", "Shoulder", "Shirt", "Chest", "Waist", "Legs", "Feet", "Wrist", "Hands",
 	"Finger0", "Finger1", "Trinket0", "Trinket1", "Back", "MainHand", "SecondaryHand", [19] = "Tabard"

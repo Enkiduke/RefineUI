@@ -1,6 +1,6 @@
 local R, C, L = unpack(RefineUI)
 local _, ns = ...
-local oUF = R.oUF or ns.oUF or oUF
+local oUF = R.oUF or (ns and ns.oUF) or rawget(_G, "oUF")
 local UF = R.UF
 
 -- Upvalues
@@ -35,7 +35,8 @@ end
 oUF:Factory(function(self)
     oUF:RegisterStyle("RefineUI_Party", CreatePartyFrame)
     oUF:SetActiveStyle("RefineUI_Party")
-    local party = self:SpawnHeader("RefineUI_Party", nil, "custom [@raid6,exists] hide;show",
+    -- Use a distinct header name to avoid colliding with our anchor frame
+    local partyHeader = self:SpawnHeader("RefineUI_PartyHeader", nil, "custom [@raid6,exists] hide;show",
         "oUF-initialConfigFunction", [[
 				local header = self:GetParent()
 				self:SetWidth(header:GetAttribute("initial-width"))
@@ -51,12 +52,13 @@ oUF:Factory(function(self)
         "showParty", true,
         "showRaid", true,
         "xOffset",  R.PixelPerfect(0),
-        "yOffset",  R.PixelPerfect(-52),
+        "yOffset",  R.PixelPerfect(-58),
         "point", "TOP"
     )
-    party:SetPoint("CENTER", _G["RefineUI_Party"])
+    -- Anchor the header to our party anchor frame
+    partyHeader:SetPoint("CENTER", _G["RefineUI_Party"])
     _G["RefineUI_Party"]:SetSize(C.group.partyWidth, C.group.partyHealthHeight * 5 + 7 * 4)
-    R.PixelSnap(party)
+    R.PixelSnap(partyHeader)
 end)
 
 -- Create anchors
@@ -64,31 +66,7 @@ local party = CreateFrame("Frame", "RefineUI_Party", UIParent)
 party:SetPoint(unpack(C.position.unitframes.party))
 R.PixelSnap(party)
 
--- local partyHolder = _G["RefineUI_Party"] -- Adjust this to match your party frame holder name
--- if not partyHolder then return end
-
-local frameWidth = C.group.partyWidth
-local frameHeight = C.group.partyHealthHeight + C.group.partyPowerHeight
-local spacing = C.group.spacing or 5 -- Adjust spacing as needed
-
-for i = 1, 5 do -- Assuming max 5 party members
-    local frame = _G["RefineUI_Party"..i]
-    if frame then
-        frame:ClearAllPoints()
-        if i == 1 then
-            frame:SetPoint("TOPLEFT", party, "TOPLEFT", 0, 0)
-        else
-            local previousFrame = _G["RefineUI_Party"..(i-1)]
-            frame:SetPoint("TOP", previousFrame, "BOTTOM", 0, -spacing)
-        end
-        
-        -- Ensure pixel-perfect positioning
-        R.PixelSnap(frame)
-        
-        -- Set size
-        frame:SetSize(R.PixelPerfect(frameWidth), R.PixelPerfect(frameHeight))
-    end
-end
+-- Rely on oUF header attributes for child layout; no manual repositioning is needed
 
 
 

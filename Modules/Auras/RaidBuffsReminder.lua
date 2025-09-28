@@ -1,5 +1,18 @@
 local R, C, L = unpack(RefineUI)
-if not C.reminder.raidBuffsEnable then return end
+-- Safer early-out: handle nil C.reminder gracefully
+if not (C.reminder and C.reminder.raidBuffsEnable) then return end
+
+-- NOTE:
+-- This module is currently disabled (legacy implementation below is commented out).
+-- Keeping the file loaded preserves config gates and avoids runtime errors.
+-- If/when re-enabling, prefer sharing helpers with SelfBuffsReminder (icons, alpha/flash rules)
+-- and AuraUtil.ForEachAura for scanning to minimize C->Lua crossings.
+
+--------------------------------------------------------------------------------
+-- Upvalues (kept here for potential reactivation; no functional change while code is commented)
+--------------------------------------------------------------------------------
+-- local _G = _G
+-- local AuraUtil, C_PaperDollInfo = AuraUtil, C_PaperDollInfo
 
 -- ----------------------------------------------------------------------------------------
 -- -- Upvalues

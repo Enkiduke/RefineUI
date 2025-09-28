@@ -1,6 +1,9 @@
 local R, C, L = unpack(RefineUI)
 local _, ns = ...
 local oUF = ns.oUF
+-- External helpers from oUF/global env
+local Hex = rawget(_G, "Hex") or R.RGBToHex
+local TAGS = (oUF and oUF.Tags and oUF.Tags.Methods) or rawget(_G, "_TAGS")
 
 -- Upvalues
 local UnitDetailedThreatSituation = UnitDetailedThreatSituation
@@ -29,6 +32,9 @@ local string = string
 local math = math
 local unpack = unpack
 
+-- Forward declarations
+local IsOffTankTanking
+
 ----------------------------------------------------------------------------------------
 -- Helper Functions
 ----------------------------------------------------------------------------------------
@@ -48,7 +54,7 @@ end
 local function GetThreatColor(unit, threatStatus)
     if R.Role == "Tank" then
         if threatStatus == 3 then
-            return C.nameplate.mobColorEnable and R.ColorPlate[uniR.npcID] or C.nameplate.good_color
+            return C.nameplate.mobColorEnable and R.ColorPlate[unit.npcID] or C.nameplate.good_color
         elseif threatStatus == 0 then
             return IsOffTankTanking(unit) and C.nameplate.offtank_color or C.nameplate.bad_color
         end
@@ -56,13 +62,13 @@ local function GetThreatColor(unit, threatStatus)
         if threatStatus == 3 then
             return C.nameplate.bad_color
         elseif threatStatus == 0 then
-            return C.nameplate.mobColorEnable and R.ColorPlate[uniR.npcID] or C.nameplate.good_color
+            return C.nameplate.mobColorEnable and R.ColorPlate[unit.npcID] or C.nameplate.good_color
         end
     end
     return C.nameplate.near_color
 end
 
-local function IsOffTankTanking(unit)
+IsOffTankTanking = function(unit)
     if not IsInRaid() then return false end
     for i = 1, GetNumGroupMembers() do
         if UnitExists("raid" .. i) and not UnitIsUnit("raid" .. i, "player") and
@@ -93,46 +99,15 @@ oUF.Tags.Methods["Threat"] = function()
     end
 end
 oUF.Tags.Events["Threat"] = "UNIT_THREAT_LIST_UPDATE"
-
-oUF.Tags.Methods["DiffColor"] = function(unit)
-    local level = UnitLevel(unit)
-    local r, g, b
-    if level < 1 then
-        r, g, b = 0.69, 0.31, 0.31
-    else
-        local DiffColor = level - UnitLevel("player")
-        if DiffColor >= 5 then
-            r, g, b = 0.69, 0.31, 0.31
-        elseif DiffColor >= 3 then
-            r, g, b = 0.71, 0.43, 0.27
-        elseif DiffColor >= -2 then
-            r, g, b = 0.84, 0.75, 0.65
-        elseif -DiffColor <= 5 then
-            r, g, b = 0.33, 0.59, 0.33
-        else
-            r, g, b = 0.55, 0.57, 0.61
-        end
-    end
-    return FormatColor(r, g, b)
-end
-oUF.Tags.Events["DiffColor"] = "UNIT_LEVEL"
-
-oUF.Tags.Methods["PetNameColor"] = function()
-    return FormatColor(R.color.r, R.color.g, R.color.b)
-end
-oUF.Tags.Events["PetNameColor"] = "UNIT_POWER_UPDATE"
-
 oUF.Tags.Methods["GetNameColor"] = function(unit)
     local reaction = UnitReaction(unit, "player")
-    local name = UnitName(unit)  -- Get the unit name
-
-    -- Check if the name is valid
+    local name = UnitName(unit)
     if not name then
-        return FormatColor(0.5, 0.5, 0.5)  -- Return a default color (gray) if the name is nil
+        return FormatColor(0.5, 0.5, 0.5)
     end
 
     if UnitIsPlayer(unit) then
-        return _TAGS["raidcolor"](unit)
+        return TAGS and TAGS["raidcolor"] and TAGS["raidcolor"](unit)
     elseif reaction then
         local c = R.oUF_colors.reaction[reaction]
         return FormatColor(unpack(c))
@@ -176,7 +151,8 @@ oUF.Tags.Events["NameLongAbbrev"] = "UNIT_NAME_UPDATE"
 local hiddenTooltip
 local function GetHiddenTooltip()
     if not hiddenTooltip then
-        hiddenTooltip = CreateFrame("GameTooltip", "HiddenTitleTooltip", nil, "GameTooltipTemplate")
+        hiddenTooltip = CreateFrame("GameTooltip", "HiddenTitleTooltip", UIParent, "GameTooltipTemplate")
+        ---@diagnostic disable-next-line: param-type-mismatch
         hiddenTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
     end
     return hiddenTooltip
@@ -189,6 +165,7 @@ local function GetNPCTitle(unit)
     
     -- Use the reusable hidden tooltip
     local tooltip = GetHiddenTooltip()
+    ---@diagnostic disable-next-line: param-type-mismatch
     tooltip:SetUnit(unit)
     
     -- Check the second line of the tooltip
@@ -201,6 +178,7 @@ local function GetNPCTitle(unit)
     end
     
     -- Clear the tooltip
+    ---@diagnostic disable-next-line: param-type-mismatch
     tooltip:ClearLines()
     
     return title
@@ -231,133 +209,83 @@ oUF.Tags.Methods["AltPower"] = function(unit)
     end
 end
 oUF.Tags.Events["AltPower"] = "UNIT_POWER_UPDATE"
-
-oUF.Tags.Methods["NameplateLevel"] = function(unit)
-    local level = UnitLevel(unit)
-    local c = UnitClassification(unit)
-    if UnitIsWildBattlePet(unit) or UnitIsBattlePetCompanion(unit) then
-        level = UnitBattlePetLevel(unit)
-    end
-
-    if level == R.level and c == "normal" then return end
-    if level > 0 then
-        return level
-    else
-        return "??"
-    end
-end
-oUF.Tags.Events["NameplateLevel"] = "UNIT_LEVEL PLAYER_LEVEL_UP"
-
 oUF.Tags.Methods["NameplateNameColor"] = function(unit)
     local reaction = UnitReaction(unit, "player")
     local threatStatus = UnitThreatSituation("player", unit)
-    -- TKUI Name Threat Color--
+    local c
+
     if UnitAffectingCombat("player") and UnitAffectingCombat(unit) then
-        if unit.npcID == "120651" then -- Explosives affix
-            local c = {unpack(C.nameplate.extraColor)} -- Updated to extraColor
-            return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
-        elseif unit.npcID == "174773" then -- Spiteful Shade affix
+        local npcID = unit.npcID
+        if npcID == "120651" then
+            c = C.nameplate.extraColor
+            return FormatColor(c[1], c[2], c[3])
+        elseif npcID == "174773" then
             if threatStatus == 3 then
-                local c = {unpack(C.nameplate.extraColor)} -- Updated to extraColor
-                return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+                c = C.nameplate.extraColor
             else
-                local c = {unpack(C.nameplate.goodColor)} -- Updated to goodColor
-                return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+                c = C.nameplate.goodColor
             end
-        elseif threatStatus == 3 then -- securely tanking, highest threat
-            if R.Role == "Tank" then
-                if C.nameplate.enhanceThreat == true then
-                    if C.nameplate.mobColorEnable and R.ColorPlate[unit.npcID] then
-                        local c = {unpack(R.ColorPlate[unit.npcID])}
-                        return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
-                    else
-                        local c = {unpack(C.nameplate.goodColor)} -- Updated to goodColor
-                        return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
-                    end
-                end
-            else
-                if C.nameplate.enhanceThreat == true then
-                    local c = {unpack(C.nameplate.badColor)} -- Updated to badColor
-                    return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
-                end
-            end
-        elseif threatStatus == 2 then -- insecurely tanking, another unit has higher threat but not tanking
-            if C.nameplate.enhanceThreat == true then
-                local c = {unpack(C.nameplate.nearColor)} -- Updated to nearColor
-                return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
-            end
-        elseif threatStatus == 1 then -- not tanking, higher threat than tank
-            if C.nameplate.enhanceThreat == true then
-                local c = {unpack(C.nameplate.nearColor)} -- Updated to nearColor
-                return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
-            end
-        elseif threatStatus == 0 then -- not tanking, lower threat than tank
-            if C.nameplate.enhanceThreat == true then
+            return FormatColor(c[1], c[2], c[3])
+        end
+
+        if C.nameplate.enhanceThreat then
+            if threatStatus == 3 then
                 if R.Role == "Tank" then
-                    local offTank = false
-                    if IsInRaid() then
-                        for i = 1, GetNumGroupMembers() do
-                            if UnitExists("raid" .. i) and not UnitIsUnit("raid" .. i, "player") and
-                                UnitGroupRolesAssigned("raid" .. i) == "TANK" then
-                                local isTanking = UnitDetailedThreatSituation("raid" .. i, unit)
-                                if isTanking then
-                                    offTank = true
-                                    break
-                                end
-                            end
-                        end
-                    end
-                    if offTank then
-                        local c = {unpack(C.nameplate.offtankColor)} -- Updated to offtankColor
-                        return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+                    if C.nameplate.mobColorEnable and R.ColorPlate[npcID] then
+                        c = R.ColorPlate[npcID]
                     else
-                        local c = {unpack(C.nameplate.badColor)} -- Updated to badColor
-                        return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+                        c = C.nameplate.goodColor
                     end
                 else
-                    if C.nameplate.mobColorEnable and R.ColorPlate[unit.npcID] then
-                        local c = {unpack(R.ColorPlate[unit.npcID])}
-                        return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+                    c = C.nameplate.badColor
+                end
+                return FormatColor(c[1], c[2], c[3])
+            elseif threatStatus == 2 or threatStatus == 1 then
+                c = C.nameplate.nearColor
+                return FormatColor(c[1], c[2], c[3])
+            elseif threatStatus == 0 then
+                if R.Role == "Tank" then
+                    if IsOffTankTanking(unit) then
+                        c = C.nameplate.offtankColor
                     else
-                        local c = {unpack(C.nameplate.goodColor)} -- Updated to goodColor
-                        return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+                        c = C.nameplate.badColor
+                    end
+                else
+                    if C.nameplate.mobColorEnable and R.ColorPlate[npcID] then
+                        c = R.ColorPlate[npcID]
+                    else
+                        c = C.nameplate.goodColor
                     end
                 end
+                return FormatColor(c[1], c[2], c[3])
             end
-        elseif reaction then
-            local c = R.oUF_colors.reaction[reaction]
-            return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+        end
+
+        if reaction then
+             c = R.oUF_colors.reaction[reaction]
+             return FormatColor(c[1], c[2], c[3])
         end
 
     elseif not UnitIsUnit("player", unit) and UnitIsPlayer(unit) and (reaction and reaction >= 5) then
         if C.nameplate.onlyName then
-            return _TAGS["raidcolor"](unit)
+            return TAGS and TAGS["raidcolor"] and TAGS["raidcolor"](unit)
         else
-            local c = R.oUF_colors.power["MANA"]
-            return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
+            c = R.oUF_colors.power["MANA"]
+            return FormatColor(c[1], c[2], c[3])
         end
     elseif UnitIsPlayer(unit) then
-        return _TAGS["raidcolor"](unit)
+        return TAGS and TAGS["raidcolor"] and TAGS["raidcolor"](unit)
     elseif UnitIsDeadOrGhost(unit) then
-        local r, g, b = 0.6, 0.6, 0.6
-        return string.format("|cff%02x%02x%02x", r * 255, g * 255, b * 255)
+        return FormatColor(0.6, 0.6, 0.6)
     elseif reaction then
-        local c = R.oUF_colors.reaction[reaction]
-        return string.format("|cff%02x%02x%02x", c[1] * 255, c[2] * 255, c[3] * 255)
-    else
-        local r, g, b = 0.33, 0.59, 0.33
-        return string.format("|cff%02x%02x%02x", r * 255, g * 255, b * 255)
+        c = R.oUF_colors.reaction[reaction]
+        return FormatColor(c[1], c[2], c[3])
     end
+
+    return FormatColor(0.33, 0.59, 0.33)
 end
 oUF.Tags.Events["NameplateNameColor"] =
     "UNIT_POWER_UPDATE UNIT_FLAGS UNIT_THREAT_SITUATION_UPDATE UNIT_THREAT_LIST_UPDATE"
-    
-oUF.Tags.Methods["NameplateNameShort"] = function(unit)
-    local name = UnitName(unit)
-    name = R.ShortNames[name] or name
-    return R.UTF(name, 18, true)
-end
-oUF.Tags.Events["NameplateNameShort"] = "UNIT_NAME_UPDATE"
 
 oUF.Tags.Methods["NameplateHealth"] = function(unit)
     local hp = UnitHealth(unit)
@@ -370,10 +298,16 @@ oUF.Tags.Methods["NameplateHealth"] = function(unit)
 end
 oUF.Tags.Events["NameplateHealth"] = "UNIT_HEALTH UNIT_MAXHEALTH NAME_PLATE_UNIT_ADDED"
 
-oUF.Tags.Methods["Absorbs"] = function(unit)
-    local absorb = UnitGetTotalAbsorbs(unit)
-    if absorb and absorb > 0 then
-        return R.ShortValue(absorb)
+oUF.Tags.Methods["GroupHealthText"] = function(unit)
+    if not UnitExists(unit) then return "" end
+    if not UnitIsConnected(unit) then return L_UF_OFFLINE end
+    if UnitIsDead(unit) then return L_UF_DEAD end
+    if UnitIsGhost(unit) then return L_UF_GHOST end
+    local hp = UnitHealth(unit)
+    local maxhp = UnitHealthMax(unit)
+    if maxhp and maxhp > 0 then
+        return string.format("%d", math.floor(hp / maxhp * 100 + 0.5))
     end
+    return ""
 end
-oUF.Tags.Events["Absorbs"] = "UNIT_ABSORB_AMOUNT_CHANGED"
+oUF.Tags.Events["GroupHealthText"] = "UNIT_HEALTH UNIT_MAXHEALTH UNIT_CONNECTION UNIT_FLAGS PLAYER_ENTERING_WORLD"

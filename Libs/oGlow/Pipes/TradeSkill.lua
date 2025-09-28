@@ -1,5 +1,8 @@
 local _E
 local hook
+local oGlow = rawget(_G, "oGlow")
+
+local TradeSkillFrame = rawget(_G, "TradeSkillFrame")
 
 local pipe = function(_, id)
 	if not id then return end
@@ -23,7 +26,9 @@ local doHook = function()
 			if _E then return pipe(...) end
 		end
 
-		hooksecurefunc(TradeSkillFrame.RecipeList, "SetSelectedRecipeID", hook)
+        if TradeSkillFrame and TradeSkillFrame.RecipeList and TradeSkillFrame.RecipeList.SetSelectedRecipeID then
+            hooksecurefunc(TradeSkillFrame.RecipeList, "SetSelectedRecipeID", hook)
+        end
 	end
 end
 
@@ -35,10 +40,11 @@ local function ADDON_LOADED(self, event, addon)
 end
 
 local update = function(self)
-	local id = GetTradeSkillSelectionIndex()
-	if id and C_AddOns.IsAddOnLoaded("Blizzard_TradeSkillUI") then
-		return pipe(id)
-	end
+    if not C_AddOns.IsAddOnLoaded("Blizzard_TradeSkillUI") then return end
+    if C_TradeSkillUI and C_TradeSkillUI.GetSelectedRecipeID then
+        local id = C_TradeSkillUI.GetSelectedRecipeID()
+        if id then return pipe(id) end
+    end
 end
 
 local enable = function(self)

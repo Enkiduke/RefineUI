@@ -5,6 +5,11 @@
 
 local R, C, L = unpack(RefineUI)
 
+-- Disable legacy junk seller if unified AutoSell is enabled to avoid double scans
+if C and C.autosell and C.autosell.enable == true then
+    return
+end
+
 ----------------------------------------------------------------------------------------
 --	Upvalues
 ----------------------------------------------------------------------------------------
@@ -56,22 +61,20 @@ function AutoSellJunk:OnMerchantShow()
 
     for bag = 0, MAX_BAG_ID do
         for slot = 1, C_Container.GetContainerNumSlots(bag) do
-            local link = C_Container.GetContainerItemLink(bag, slot)
-            if link then
-                local itemInfo = self:GetItemInfo(link)
-                local containerItemInfo = self:GetContainerItemInfo(bag, slot)
-
-                if self:IsJunk(itemInfo) then
+            local info = C_Container.GetContainerItemInfo(bag, slot)
+            if info and info.quality == Enum.ItemQuality.Poor and not info.hasNoValue and not info.isLocked then
+                local _, _, _, _, _, _, _, _, _, _, sellPrice = GetItemInfo(info.hyperlink or info.itemID)
+                if sellPrice and sellPrice > 0 then
                     C_Container.UseContainerItem(bag, slot)
                     itemsSold = itemsSold + 1
-                    profitInCopper = profitInCopper + (itemInfo.SellPrice * containerItemInfo.ItemCount)
+                    profitInCopper = profitInCopper + (sellPrice * (info.stackCount or 1))
                 end
             end
         end
     end
 
     if profitInCopper > 0 then
-        print("|cFFFFD200Auto Sell Junk for:|r " .. GetCoinTextureString(profitInCopper))
+        print("|cFFFFD200Auto Sell Junk:|r " .. GetCoinTextureString(profitInCopper))
     end
 end
 

@@ -37,10 +37,14 @@ local function InstallUI()
 	SetCVar("nameplateShowFriendlyNPCs", 1)
 	SetCVar("lootUnderMouse", 1)
 
-	-- Reset saved variables on char
-	RefineUISettings = {}
+	-- Persist install flags without wiping existing settings
+	RefineUISettings = RefineUISettings or {}
 	RefineUISettings.Install = true
-	RefineUISettings.Coords = true
+	RefineUISettings.Coords = (RefineUISettings.Coords ~= false) and true or false
+
+	-- Mark per-character as installed
+	RefineUICharDB = RefineUICharDB or {}
+	RefineUICharDB.Installed = true
 
 	ReloadUI()
 end
@@ -60,9 +64,9 @@ local deleteDialog = StaticPopupDialogs["DELETE_GOOD_ITEM"]
 if deleteDialog.OnShow then
 	hooksecurefunc(deleteDialog, "OnShow",
 		function(s)
-			s.editBox:SetText(DELETE_ITEM_CONFIRM_STRING)
-			s.editBox:SetAutoFocus(false)
-			s.editBox:ClearFocus()
+			s.EditBox:SetText(DELETE_ITEM_CONFIRM_STRING)
+			s.EditBox:SetAutoFocus(false)
+			s.EditBox:ClearFocus()
 		end)
 end
 
@@ -106,19 +110,20 @@ OnLogon:RegisterEvent("PLAYER_ENTERING_WORLD")
 OnLogon:SetScript("OnEvent", function(self)
 	self:UnregisterEvent("PLAYER_ENTERING_WORLD")
 
-	-- Create empty CVar if they doesn't exist
+	-- Create empty SavedVariables if they don't exist
 	if RefineUISettings == nil then RefineUISettings = {} end
 	if RefineUIPositions == nil then RefineUIPositions = {} end
-	if RefineUISettings == nil then RefineUISettings = {} end
 	if RefineUIItems == nil then RefineUIItems = {} end
+	if RefineUIAutoSellDB == nil then RefineUIAutoSellDB = { AlwaysSell = {} } end -- Initialize AutoSell DB
 	if RefineUISettings.Coords == nil then RefineUISettings.Coords = true end
+	if RefineUICharDB == nil then RefineUICharDB = {} end
 
 	if R.screenWidth < 1024 and GetCVar("gxMonitor") == "0" then
 		SetCVar("useUiScale", 0)
 		StaticPopup_Show("DISABLE_UI")
 	else
 		SetCVar("useUiScale", 1)
-		if C.general.uiScale > 1.28 then C.general.uiscale = 1.28 end
+		if C.general.uiScale > 1.28 then C.general.uiScale = 1.28 end
 
 		-- Set our uiScale
 		if tonumber(GetCVar("uiScale")) ~= tonumber(C.general.uiScale) then
@@ -131,8 +136,19 @@ OnLogon:SetScript("OnEvent", function(self)
 		end
 
 		-- Install default if we never ran RefineUI on this character
-		if not RefineUISettings.Install then
+		local installed = (RefineUICharDB and RefineUICharDB.Installed == true) or (RefineUISettings and RefineUISettings.Install == true)
+		if not installed then
 			StaticPopup_Show("INSTALL_UI")
+		else
+			-- Sync flags so future loads are stable per character
+			if RefineUISettings and RefineUISettings.Install == true then
+				RefineUICharDB.Installed = true
+			end
+			-- If per-character installed is true, ensure account-wide flag reflects it
+			if RefineUICharDB and RefineUICharDB.Installed == true then
+				RefineUISettings = RefineUISettings or {}
+				RefineUISettings.Install = true
+			end
 		end
 	end
 

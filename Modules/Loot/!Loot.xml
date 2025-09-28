@@ -1,5 +1,6 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Script file="AutoSell.lua"/>
 	<Script file="AutoConfirm.lua"/>
-	<Script file="FasterLoot.lua"/>
+	<!-- <Script file="FasterLoot.lua"/> -->
 	<Script file="LootFilter.lua"/>
 </Ui>

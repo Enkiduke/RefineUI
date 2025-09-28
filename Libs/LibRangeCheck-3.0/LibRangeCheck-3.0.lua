@@ -66,8 +66,8 @@ local tinsert = tinsert
 local tremove = tremove
 local tostring = tostring
 local setmetatable = setmetatable
-local BOOKTYPE_SPELL = BOOKTYPE_SPELL or Enum.SpellBookSpellBank.Player
-local GetSpellBookItemName = GetSpellBookItemName or C_SpellBook.GetSpellBookItemName
+local BOOKTYPE_SPELL = rawget(_G, "BOOKTYPE_SPELL") or Enum.SpellBookSpellBank.Player
+local GetSpellBookItemName = rawget(_G, "GetSpellBookItemName") or C_SpellBook.GetSpellBookItemName
 local C_Item = C_Item
 local UnitCanAttack = UnitCanAttack
 local UnitCanAssist = UnitCanAssist
@@ -76,7 +76,7 @@ local UnitIsUnit = UnitIsUnit
 local UnitGUID = UnitGUID
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
 local CheckInteractDistance = CheckInteractDistance
-local IsSpellInRange = _G.IsSpellInRange or function(id, unit)
+local IsSpellInRange = rawget(_G, "IsSpellInRange") or function(id, unit)
   local result = C_Spell.IsSpellInRange(id, unit)
   if result == true then
     return 1
@@ -85,7 +85,7 @@ local IsSpellInRange = _G.IsSpellInRange or function(id, unit)
   end
   return nil
 end
-local IsSpellBookItemInRange = _G.IsSpellInRange or function(index, spellBank, unit)
+local IsSpellBookItemInRange = rawget(_G, "IsSpellBookItemInRange") or function(index, spellBank, unit)
   -- Deprecated_11_0_0.lua set BOOKTYPE_SPELL to "spell" but doesn't provide a compatibility wrapper for IsSpellBookItemInRange
   if type(spellBank) == "string" then
     spellBank = (spellBank == "spell") and Enum.SpellBookSpellBank.Player or Enum.SpellBookSpellBank.Pet;
@@ -117,8 +117,8 @@ local GetSpellInfo = GetSpellInfo or function(spellID)
   end
 end
 
-local GetNumSpellTabs = GetNumSpellTabs or C_SpellBook.GetNumSpellBookSkillLines
-local GetSpellTabInfo = GetSpellTabInfo or function(index)
+local GetNumSpellTabs = rawget(_G, "GetNumSpellTabs") or C_SpellBook.GetNumSpellBookSkillLines
+local GetSpellTabInfo = rawget(_G, "GetSpellTabInfo") or function(index)
   local skillLineInfo = C_SpellBook.GetSpellBookSkillLineInfo(index);
   if skillLineInfo then
     return skillLineInfo.name,
@@ -724,10 +724,12 @@ local function createCheckerList(spellList, itemList, interactList)
     for range, items in pairs(itemList) do
       for i = 1, #items do
         local item = items[i]
-        -- Check if C_Item is available before using it
-        if C_Item and C_Item.CreateFromItemID and Item:CreateFromItemID(item):IsItemDataCached() and C_Item.GetItemInfo(item) then
-          addChecker(res, range, nil, checkers_Item[item], "item:" .. item)
-          break
+        if Item and Item.CreateFromItemID and C_Item and C_Item.GetItemInfo then
+          local itemObj = Item:CreateFromItemID(item)
+          if itemObj and itemObj.IsItemDataCached and itemObj:IsItemDataCached() and C_Item.GetItemInfo(item) then
+            addChecker(res, range, nil, checkers_Item[item], "item:" .. item)
+            break
+          end
         end
       end
     end
@@ -746,19 +748,17 @@ local function createCheckerList(spellList, itemList, interactList)
       if spellIdx and range then
         -- print("### spell: " .. tostring(name) .. ", " .. tostring(minRange) .. " - " ..  tostring(range))
 
-        if minRange == 0 then -- getRange() expects minRange to be nil in this case
-          minRange = nil
-        end
+        local effectiveMinRange = (minRange ~= 0) and minRange or nil
 
         if range == 0 then
           range = MeleeRange
         end
 
-        if minRange then
-          local checker = getCheckerForSpellWithMinRange(spellIdx, minRange, range, spellList, interactList)
+        if effectiveMinRange then
+          local checker = getCheckerForSpellWithMinRange(spellIdx, effectiveMinRange, range, spellList, interactList)
           if checker then
-            addChecker(res, range, minRange, checker, "spell:" .. sid .. ":" .. tostring(name))
-            addChecker(resInCombat, range, minRange, checker, "spell:" .. sid .. ":" .. tostring(name))
+            addChecker(res, range, effectiveMinRange, checker, "spell:" .. sid .. ":" .. tostring(name))
+            addChecker(resInCombat, range, effectiveMinRange, checker, "spell:" .. sid .. ":" .. tostring(name))
           end
         else
           addChecker(res, range, minRange, checkers_Spell[spellIdx], "spell:" .. sid .. ":" .. tostring(name))
@@ -1307,22 +1307,24 @@ function lib:processItemRequests(itemRequests)
       if not i then
         itemRequests[range] = nil
         break
-      elseif Item:CreateFromItemID(item):IsItemEmpty() or self.failedItemRequests[item] then
+      elseif (Item and Item.CreateFromItemID and Item:CreateFromItemID(item) and Item:CreateFromItemID(item):IsItemEmpty()) or self.failedItemRequests[item] then
         -- print("### processItemRequests: failed: " .. tostring(item))
         tremove(items, i)
-      elseif pendingItemRequest[item] and GetTime() < itemRequestTimeoutAt[item] then
+      elseif pendingItemRequest[item] and itemRequestTimeoutAt[item] and GetTime() < itemRequestTimeoutAt[item] then
         return true -- still waiting for server response
-      elseif C_Item.GetItemInfo(item) then
+      elseif C_Item and C_Item.GetItemInfo and C_Item.GetItemInfo(item) then
         -- print("### processItemRequests: found: " .. tostring(item))
         foundNewItems = true
-        itemRequestTimeoutAt[item] = nil
-        pendingItemRequest[item] = nil
+        if item then
+          itemRequestTimeoutAt[item] = nil
+          pendingItemRequest[item] = nil
+        end
         if not cacheAllItems then
           itemRequests[range] = nil
           break
         end
         tremove(items, i)
-      elseif not itemRequestTimeoutAt[item] then
+      elseif item and not itemRequestTimeoutAt[item] then
         -- print("### processItemRequests: waiting: " .. tostring(item))
         itemRequestTimeoutAt[item] = GetTime() + ItemRequestTimeout
         pendingItemRequest[item] = true
@@ -1330,11 +1332,12 @@ function lib:processItemRequests(itemRequests)
           self.frame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
         end
         return true
-      elseif GetTime() >= itemRequestTimeoutAt[item] then
+      elseif item and itemRequestTimeoutAt[item] and GetTime() >= itemRequestTimeoutAt[item] then
         -- print("### processItemRequests: timeout: " .. tostring(item))
         if cacheAllItems then
           print(MAJOR_VERSION .. ": timeout for item: " .. tostring(item))
         end
+        self.failedItemRequests = self.failedItemRequests or {}
         self.failedItemRequests[item] = true
         itemRequestTimeoutAt[item] = nil
         pendingItemRequest[item] = nil

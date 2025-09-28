@@ -1,3 +1,4 @@
+local oGlow = rawget(_G, "oGlow")
 local function quality(...)
     local quality = -1
     local numItems = select("#", ...)

@@ -2,8 +2,6 @@
 	<Script file="Tooltip.lua"/>
 	<Script file="HyperLink.lua"/>
 	<Script file="TooltipIcons.lua"/>
-	<Script file="ItemLevel.lua"/>
-	<Script file="MountSource.lua"/>
 	<Script file="SpellID.lua"/>
 	<Script file="ItemCount.lua"/>
 </Ui>

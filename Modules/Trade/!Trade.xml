@@ -1,6 +1,4 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
-	<Script file="AlreadyKnown.lua"/>
 	<Script file="Merchant.lua"/>
-	<Script file="ProfessionTabs.lua"/>
 	<Script file="SumAucBuyouts.lua"/>
 </Ui>

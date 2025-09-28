@@ -57,7 +57,8 @@ local AddOnFrames = {
 	["Blizzard_TalkingHeadUI"] = {"TalkingHeadFrame"},
 	-- ["Blizzard_TradeSkillUI"] = {"TradeSkillFrame"},
 	["Blizzard_TrainerUI"] = {"ClassTrainerFrame"},
-	["Blizzard_VoidStorageUI"] = {"VoidStorageFrame"}
+	-- Void Storage removed in 11.2
+	-- ["Blizzard_VoidStorageUI"] = {"VoidStorageFrame"}
 }
 
 local frame = CreateFrame("Frame")

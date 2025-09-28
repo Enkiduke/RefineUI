@@ -138,7 +138,7 @@ else
 end
 
 if LSM then
-	LSM:Register(LSM.MediaType.FONT, "ITCAvantGardeStd-Demi", [[Interface\AddOns\TKUI\Media\Fonts\ITCAvantGardeStd-Demi.ttf]], LOCALE_MASK)
-	LSM:Register(LSM.MediaType.FONT, "ITCAvantGardeStd-Bold", [[Interface\AddOns\TKUI\Media\Fonts\ITCAvantGardeStd-Bold.ttf]], LOCALE_MASK)
-	LSM:Register(LSM.MediaType.STATUSBAR, "Smooth!", [[Interface\AddOns\TKUI\Media\Textures\Texture.tga]])
+	LSM:Register(LSM.MediaType.FONT, "ITCAvantGardeStd-Demi", [[Interface\AddOns\RefineUI\Media\Fonts\ITCAvantGardeStd-Demi.ttf]], LOCALE_MASK)
+	LSM:Register(LSM.MediaType.FONT, "ITCAvantGardeStd-Bold", [[Interface\AddOns\RefineUI\Media\Fonts\ITCAvantGardeStd-Bold.ttf]], LOCALE_MASK)
+	LSM:Register(LSM.MediaType.STATUSBAR, "Smooth!", [[Interface\AddOns\RefineUI\Media\Textures\Texture.tga]])
 end

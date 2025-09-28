@@ -1,5 +1,4 @@
-----------------------------------------------------------------------------------------
---	Player Buff Frame for TKUI
+--	Player Buff Frame for RefineUI
 --	This module styles and manages the player's buff frame, including layout, duration,
 --	and visual elements like cooldown swipes and border colors.
 --	Based on Tukz's original buff styling
@@ -8,10 +7,21 @@
 local R, C, L = unpack(RefineUI)
 
 ----------------------------------------------------------------------------------------
+--	Upvalues
+----------------------------------------------------------------------------------------
+local _G = _G
+-- hot path locals
+local format = string.format
+local floor  = math.floor
+local sin    = math.sin
+local GetTime = GetTime
+
+----------------------------------------------------------------------------------------
 --	Constants and Configuration
 ----------------------------------------------------------------------------------------
 local rowbuffs = 16
 local alpha = 0
+local USE_BLIZZARD_DURATION_TEXT = true -- single source of truth: Blizzard's aura.Duration
 
 ----------------------------------------------------------------------------------------
 --	Utility Functions
@@ -23,8 +33,26 @@ local GetFormattedTime = function(s)
         return format("%dh", floor(s / 3600 + 0.5))
     elseif s >= 60 then
         return format("%dm", floor(s / 60 + 0.5))
+    elseif s > 5 then
+        return format("%d", floor(s + 0.5))
+    else
+        return format("%.1f", s)
     end
-    return floor(s + 0.5)
+end
+
+-- Compact text for Blizzard duration label:
+--  * seconds show with NO unit (e.g., "9" instead of "9 s")
+--  * minutes/hours/days keep compact unit suffix (e.g., "2m", "1h", "3d")
+local function GetCompactDurationText(timeLeft)
+	if timeLeft >= 86400 then
+		return format("%dd", floor(timeLeft / 86400 + 0.5))
+	elseif timeLeft >= 3600 then
+		return format("%dh", floor(timeLeft / 3600 + 0.5))
+	elseif timeLeft >= 60 then
+		return format("%dm", floor(timeLeft / 60 + 0.5))
+	else
+		return format("%d", floor(timeLeft + 0.5)) -- seconds: no "s"
+	end
 end
 
 ----------------------------------------------------------------------------------------
@@ -37,14 +65,31 @@ BuffsAnchor:SetSize((16 * C.player.buffSize) + 42, (C.player.buffSize * 2) + 3)
 ----------------------------------------------------------------------------------------
 --	Aura Update Functions
 ----------------------------------------------------------------------------------------
+local function ApplyAuraFlashAlpha(aura, alpha)
+	-- Apply a uniform flash alpha to all visible parts with minimal work
+	local icon = aura.Icon
+	if icon then icon:SetAlpha(alpha) end
+
+	local iconFrame = aura.iconFrame
+	if iconFrame then iconFrame:SetAlpha(alpha) end
+
+	local border = aura.border
+	if border and border.SetAlpha then border:SetAlpha(alpha) end
+
+	-- Intentionally do NOT flash the cooldown swipe; keep it steady
+	-- If needed, ensure the cooldown frame remains fully opaque for input/layering
+	-- local cd = aura.cooldown
+	-- if cd then cd:SetAlpha(1) end
+end
+
 local function FlashAura(aura, timeLeft)
-    if timeLeft and timeLeft < 10 then  -- Check if the remaining time is less than 10 seconds
-        local alpha = (math.sin(GetTime() * 5) + 1) / 2  -- Create a flashing effect
-        alpha = alpha * 0.5 + 0.5  -- Scale to ensure alpha is between 0.5 and 1
-        aura:SetAlpha(alpha)  -- Set the aura's alpha based on the sine wave
-    else
-        aura:SetAlpha(1)  -- Reset alpha to fully visible if more than 10 seconds or no duration
-    end
+	if timeLeft and timeLeft < 10 then
+		local a = (sin(GetTime() * 5) + 1) / 2
+		a = a * 0.5 + 0.5 -- range [0.5, 1]
+		ApplyAuraFlashAlpha(aura, a)
+	else
+		ApplyAuraFlashAlpha(aura, 1)
+	end
 end
 
 local function UpdateDuration(aura, timeLeft)
@@ -81,20 +126,7 @@ local function UpdateCooldownSwipe(aura)
 end
 
 local function UpdateAura(aura)
-    local timeLeft = aura.buttonInfo and aura.buttonInfo.expirationTime and (aura.buttonInfo.expirationTime - GetTime())
-    
-    if timeLeft and timeLeft > 0 and C.player.buffTimer == true then
-        aura.Duration:SetVertexColor(1, 1, 1)
-        aura.Duration:SetFormattedText(GetFormattedTime(timeLeft))
-        aura.Duration:Show()
-        FlashAura(aura, timeLeft)
-    else
-        aura.Duration:Hide()
-        aura:SetAlpha(1)  -- Reset alpha for passive buffs or when timer is disabled
-    end
-    
     UpdateCooldownSwipe(aura)
-    UpdateBorderColor(aura)
 end
 
 ----------------------------------------------------------------------------------------
@@ -108,18 +140,20 @@ hooksecurefunc(BuffFrame.AuraContainer, "UpdateGridLayout", function(self, auras
         aura:SetTemplate("Zero")
 
         aura.TempEnchantBorder:SetAlpha(0)
-        -- Update the hook for the temporary enchant border
-        hooksecurefunc(aura.TempEnchantBorder, "Show", function(self)
-            aura.border:SetBackdropBorderColor(0.6, 0.1, 0.6) -- Set to purple when shown
-        end)
-
-        hooksecurefunc(aura.TempEnchantBorder, "Hide", function(self)
-            UpdateBorderColor(aura) -- Call UpdateBorderColor to set the correct color when hidden
-        end)
+        -- Update the hook for the temporary enchant border (guard to prevent multiple hooks)
+        if aura.TempEnchantBorder and not aura._tebHooked then
+            hooksecurefunc(aura.TempEnchantBorder, "Show", function(self)
+                aura.border:SetBackdropBorderColor(0.6, 0.1, 0.6) -- Set to purple when shown
+            end)
+            hooksecurefunc(aura.TempEnchantBorder, "Hide", function(self)
+                UpdateBorderColor(aura) -- Call UpdateBorderColor to set the correct color when hidden
+            end)
+            aura._tebHooked = true
+        end
 
         -- Position auras in grid layout
         aura:ClearAllPoints()
-        if (index > 1) and (mod(index, rowbuffs) == 1) then
+        if (index > 1) and ((index - 1) % rowbuffs == 0) then
             aura:SetPoint("TOP", aboveBuff, "BOTTOM", 0, -C.player.buffSpacing)
             aboveBuff = aura
         elseif index == 1 then
@@ -135,17 +169,43 @@ hooksecurefunc(BuffFrame.AuraContainer, "UpdateGridLayout", function(self, auras
         aura.Icon:CropIcon()
         aura.border:SetFrameStrata("LOW")
 
-        -- Create and configure cooldown swipe
-        if not aura.cooldown then
-            aura.cooldown = CreateFrame("Cooldown", nil, aura, "CooldownFrameTemplate")
-            aura.cooldown:SetSwipeTexture("Interface\\AddOns\\RefineUI\\Media\\Textures\\CDBig.blp")
-            aura.cooldown:SetAllPoints(aura)
-            aura.cooldown:SetDrawBling(false)
-            aura.cooldown:SetDrawEdge(false)
-            aura.cooldown:SetSwipeColor(0, 0, 0, 0.6)
-            aura.cooldown:SetReverse(true)
-            aura.cooldown:SetFrameLevel(aura:GetFrameLevel() + 1)
-        end
+		-- Create and configure cooldown swipe
+		if not aura.cooldown then
+			aura.cooldown = CreateFrame("Cooldown", nil, aura, "CooldownFrameTemplate")
+			-- Anchor cooldown to the icon with optional padding to enlarge swipe
+			aura.cooldown:ClearAllPoints()
+			aura.cooldown:SetPoint("TOPLEFT", aura.Icon, "TOPLEFT", -2, 2)
+			aura.cooldown:SetPoint("BOTTOMRIGHT", aura.Icon, "BOTTOMRIGHT", 2, -2)
+			aura.cooldown:SetDrawBling(false)
+			aura.cooldown:SetDrawEdge(false)
+			aura.cooldown:SetReverse(true)
+			aura.cooldown:SetFrameLevel(aura:GetFrameLevel() + 1)
+			-- Hide Blizzard/OmniCC numbers (we use Blizzard Duration label only)
+			aura.cooldown:SetHideCountdownNumbers(true)
+			aura.cooldown.noCooldownCount = true -- prevent addons like OmniCC from adding numbers
+			-- Default swipe visuals (overridden below if project media available)
+			aura.cooldown:SetSwipeTexture("Interface\\Buttons\\WHITE8X8", 0, 1, 0, 1)
+			aura.cooldown:SetSwipeColor(0, 0, 0, 0.8)
+			aura.cooldown._baseSwipeAlpha = 0.8
+
+			-- Match ActionBars’ swipe look & darkness (texture + alpha)
+			local function StyleAuraCooldown(cd)
+				if not cd or cd:IsForbidden() then return end
+				if C.media and C.media.auraCooldown then
+					pcall(cd.SetSwipeTexture, cd, C.media.auraCooldown, 0, 1, 0, 1)
+				end
+				cd:SetSwipeColor(0, 0, 0, cd._baseSwipeAlpha or 0.8)
+				cd:SetDrawEdge(false)
+				cd:SetDrawSwipe(true)
+			end
+			StyleAuraCooldown(aura.cooldown)
+			if not aura._cooldownStyleHooked then
+				hooksecurefunc(aura.cooldown, "SetCooldown", function(self)
+					StyleAuraCooldown(self)
+				end)
+				aura._cooldownStyleHooked = true
+			end
+		end
 
         if not aura.iconFrame then
             aura.iconFrame = CreateFrame("Frame", nil, aura)
@@ -153,7 +213,7 @@ hooksecurefunc(BuffFrame.AuraContainer, "UpdateGridLayout", function(self, auras
             aura.iconFrame:SetFrameLevel(aura.cooldown:GetFrameLevel() + 1)
         end
 
-        -- Configure duration text
+		-- Configure Blizzard duration text (we do NOT create our own)
         local duration = aura.Duration
         if duration then -- Check if duration exists
             duration:ClearAllPoints()
@@ -163,6 +223,11 @@ hooksecurefunc(BuffFrame.AuraContainer, "UpdateGridLayout", function(self, auras
             duration:SetShadowOffset(1, -1)
             duration:SetDrawLayer("OVERLAY") -- Set draw layer to overlay
         end
+		-- Ensure no competing numeric overlays (Blizzard/OmniCC)
+		if aura.cooldown then
+			aura.cooldown:SetHideCountdownNumbers(true) -- hide Blizzard numbers
+			aura.cooldown.noCooldownCount = true        -- ask OmniCC to skip this cooldown
+		end
 
         -- Configure stack count
         if aura.Count then
@@ -174,13 +239,24 @@ hooksecurefunc(BuffFrame.AuraContainer, "UpdateGridLayout", function(self, auras
             aura.Count:SetDrawLayer("OVERLAY") -- Set draw layer to overlay
         end
 
-        -- Hook duration update function
-        if not aura.hook then
-            hooksecurefunc(aura, "UpdateDuration", function(aura, timeLeft)
-                UpdateDuration(aura, timeLeft)
-            end)
-            aura.hook = true
-        end
+		-- Always hook Blizzard's UpdateDuration to adjust formatting/flash on the SAME text.
+		if not aura._durationHooked then
+			hooksecurefunc(aura, "UpdateDuration", function(self, timeLeft)
+				-- Only show text if your setting asks for it; otherwise hide (no second text anywhere).
+				local d = self.Duration
+				if not d then return end
+				if timeLeft and C.player.buffTimer == true then
+					d:SetVertexColor(1, 1, 1)
+					d:SetText(GetCompactDurationText(timeLeft))
+					d:Show()
+					FlashAura(self, timeLeft)  -- alpha pulse near expiry
+				else
+					d:Hide()
+					self:SetAlpha(1)
+				end
+			end)
+			aura._durationHooked = true
+		end
 
         UpdateCooldownSwipe(aura)
 

@@ -10,7 +10,7 @@ R.RaidBuffs = {
 		{ 774,    { 0.8, 0.4, 0.8 } }, -- Rejuvenation
 		{ 48438,  { 0.8, 0.4, 0 } }, -- Wild Growth
 		{ 8936,   { 0.2, 0.8, 0.2 } }, -- Regrowth
-		{ 33763,  { 0.4, 0.8, 0.2 } }, -- Lifebloom
+		{ 33763,  { 0.4, 0.8, 0.2 } }, -- Lifeblooma
 		{ 391891, { 0.2, 0.7, 0.2 } }, -- Adaptive Swarm
 		{ 102351, { 0.2, 0.7, 0.2 } }, -- Cenarion Ward
 		{ 102342, { 0.45, 0.3, 0.2 } }, -- Ironbark
@@ -31,7 +31,7 @@ R.RaidBuffs = {
 		{ 406732, { 0.82, 0.29, 0.24 } }, -- Spatial Paradox < on yourself
 	},
 	MAGE    = {
-		{ 1459, { 0.2, 0.7, 0.7 } }, -- Renewing Mist
+
 	},
 	MONK    = {
 		{ 119611, { 0.2, 0.7, 0.7 } }, -- Renewing Mist
@@ -52,12 +52,13 @@ R.RaidBuffs = {
 		{ 204018, { 0.4, 0.6, 0.8 }, }, -- Blessing of Spellwarding
 		{ 287280, { 0.9, 0.5, 0.1 } }, -- Glimmer of Light
 		{ 223306, { 0.8, 0.8, 0.1 } }, -- Bestow Faith
+
 	},
 	PRIEST  = {
 		{ 194384, { 0.8, 0.4, 0.2 } }, -- Atonement
 		{ 139,    { 0.4, 0.7, 0.2 } }, -- Renew
 		{ 41635,  { 0.2, 0.7, 0.2 } }, -- Prayer of Mending
-		{ 6788,   { 1, 0, 0 } }, -- Weakened Soul
+		{ 6788,   { 1, 0, 0 } },   -- Weakened Soul
 		{ 17,     { 0.81, 0.85, 0.1 } }, -- Power Word: Shield
 		{ 33206,  { 0.89, 0.1, 0.1 } }, -- Pain Suppression
 		{ 47788,  { 0.86, 0.52, 0 } }, -- Guardian Spirit
@@ -95,7 +96,7 @@ local function SpellName(id)
 	if name then
 		return name
 	else
-		print("|cffff0000TKUI: RaidAuraWatch spell ID [" .. tostring(id) .. "] no longer exists!|r")
+		print("|cffff0000RefineUI: RaidAuraWatch spell ID [" .. tostring(id) .. "] no longer exists!|r")
 		return "Empty"
 	end
 end

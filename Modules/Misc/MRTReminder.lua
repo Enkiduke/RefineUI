@@ -1,7 +1,15 @@
 local R, C, L = unpack(RefineUI)
+-- Hot-path upvalues
+local _G = _G
+local GetTime, UnitName, GetSpellInfo, IsInInstance, InCombatLockdown =
+	GetTime, UnitName, GetSpellInfo, IsInInstance, InCombatLockdown
+local insert, remove, wipe, ipairs, type, select = table.insert, table.remove, wipe, ipairs, type, select
+
 local MRTReminder = {
-    data = {},
-    parsedData = {}
+	data = {},
+	parsedData = {},
+	_nextIdx = 1,
+	_noteParseDeferred = false,
 }
 R.MRTReminder = MRTReminder
 
@@ -9,16 +17,14 @@ if not C.mrtreminder.enable or not C_AddOns.IsAddOnLoaded("BigWigs") then
     return
 end
 
-local BigWigsLoader = _G.BigWigsLoader
+local BigWigsLoader = rawget(_G, "BigWigsLoader")
 
 local eventFrame = CreateFrame("Frame")
 local eventHandlers = {}
 
 function MRTReminder:RegisterEvent(event, handlerName)
     eventFrame:RegisterEvent(event)
-    eventHandlers[event] = function(...)
-        self[handlerName](self, ...)
-    end
+    eventHandlers[event] = handlerName
 end
 
 function MRTReminder:UnregisterEvent(event)
@@ -27,28 +33,28 @@ function MRTReminder:UnregisterEvent(event)
 end
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
-    local handler = eventHandlers[event]
-    if handler then
-        handler(event, ...)
-    end
+    local methodName = eventHandlers[event]
+    local method = methodName and MRTReminder[methodName]
+    if method then method(MRTReminder, event, ...) end
 end)
 
 local timerFrame = CreateFrame("Frame")
 local timers = {}
 
 function MRTReminder:ScheduleTimer(func, delay, ...)
-    local args = { ... }
-    local timer = {
+    local args = select("#", ...) > 0 and { ... } or nil
+    local t = {
         func = func,
         args = args,
         expires = GetTime() + delay
     }
-    table.insert(timers, timer)
-    return timer
+    insert(timers, t)
+    if not timerFrame._armed then
+        timerFrame._armed = true
+        timerFrame:SetScript("OnUpdate", MRTReminder._TimerOnUpdate)
+    end
+    return t
 end
-
-local GetTime, UnitName, GetSpellInfo, IsInInstance, GetNumGroupMembers, InCombatLockdown = 
-    GetTime, UnitName, GetSpellInfo, IsInInstance, GetNumGroupMembers, InCombatLockdown
 
 local spellCache = {}
 
@@ -60,20 +66,9 @@ local function getCachedSpellInfo(spellID)
 end
 
 function MRTReminder:IsNoteEnabledAndShowing()
-    if not VMRT or not VMRT.Note.enabled or not VMRT.Note.Text1 or VMRT.Note.Text1 == "" then
-        return false
-    end
 
     local inInstance, instanceType = IsInInstance()
     if not (inInstance and instanceType == "raid") then
-        return false
-    end
-
-    if VMRT.Note.HideOutsideRaid and GetNumGroupMembers() == 0 then
-        return false
-    end
-
-    if VMRT.Note.HideInCombat and InCombatLockdown() then
         return false
     end
 
@@ -83,30 +78,40 @@ end
 function MRTReminder:CancelTimer(timer)
     for i, t in ipairs(timers) do
         if t == timer then
-            table.remove(timers, i)
-            return
+            remove(timers, i)
+            break
         end
+    end
+    if #timers == 0 then
+        timerFrame:SetScript("OnUpdate", nil)
+        timerFrame._armed = false
     end
 end
 
 function MRTReminder:CancelAllTimers()
-    wipe(timers)
+    if #timers > 0 then wipe(timers) end
+    timerFrame:SetScript("OnUpdate", nil)
+    timerFrame._armed = false
 end
 
-timerFrame:SetScript("OnUpdate", function(self, elapsed)
+function MRTReminder:_TimerOnUpdate()
     local now = GetTime()
     for i = #timers, 1, -1 do
         local timer = timers[i]
         if now >= timer.expires then
-            table.remove(timers, i)
+            remove(timers, i)
             if type(timer.func) == "function" then
-                timer.func(unpack(timer.args))
+                if timer.args then timer.func(unpack(timer.args)) else timer.func() end
             elseif type(timer.func) == "string" and type(MRTReminder[timer.func]) == "function" then
-                MRTReminder[timer.func](MRTReminder, unpack(timer.args))
+                if timer.args then MRTReminder[timer.func](MRTReminder, unpack(timer.args)) else MRTReminder[timer.func](MRTReminder) end
             end
         end
     end
-end)
+    if #timers == 0 then
+        timerFrame:SetScript("OnUpdate", nil)
+        timerFrame._armed = false
+    end
+end
 
 function MRTReminder:OnInitialize()
     if not C.mrtreminder.enable then 
@@ -117,27 +122,28 @@ function MRTReminder:OnInitialize()
     self.parsedData = {}
 
     self:RegisterEvent("CHAT_MSG_ADDON", "OnMRTUpdate")
+    self:RegisterEvent("PLAYER_ENTERING_WORLD", "OnPEW")
     self:RegisterEvent("ENCOUNTER_START", "OnBossPulled")
     self:RegisterEvent("ENCOUNTER_END", "OnBossFightEnd")
 
-    self:InitializeBigWigs()
+    self:_RegisterBigWigs()
+    self.playerName = UnitName("player")
 end
 
 
 function MRTReminder:OnMRTUpdate(event, prefix, message, channel, sender)
     if prefix == "EXRTADD" and message:sub(1, 9) == "multiline" then
-        self:ParseNote()
+        if not self._noteParseDeferred then
+            self._noteParseDeferred = true
+            self:ScheduleTimer(function()
+                self._noteParseDeferred = false
+                self:ParseNote()
+            end, 0.05)
+        end
     end
 end
 
-function MRTReminder:InitializeBigWigs()
-    if BigWigsLoader then
-        BigWigsLoader.RegisterMessage(self, "BigWigs_StartBar", "OnBigWigsStartBar")
-        BigWigsLoader.RegisterMessage(self, "BigWigs_StopBar", "OnBigWigsStopBar")
-    end
-end
-
-function MRTReminder:RegisterBigWigsMessages()
+function MRTReminder:_RegisterBigWigs()
     if BigWigsLoader then
         BigWigsLoader.RegisterMessage(self, "BigWigs_StartBar", "OnBigWigsStartBar")
         BigWigsLoader.RegisterMessage(self, "BigWigs_StopBar", "OnBigWigsStopBar")
@@ -176,15 +182,16 @@ function MRTReminder:ParseNote()
         return
     end
 
-    local noteText = VMRT.Note.Text1
-    local playerName = UnitName("player")
+	local vmrt = rawget(_G, 'VMRT')
+	local noteText = vmrt and vmrt.Note and vmrt.Note.Text1
+	local playerName = self.playerName or UnitName("player")
 
     if not noteText or noteText == "" then
         return
     end
 
-    if not self.data then self.data = {} else table.wipe(self.data) end
-    if not self.parsedData then self.parsedData = {} else table.wipe(self.parsedData) end
+	if not self.data then self.data = {} else wipe(self.data) end
+	if not self.parsedData then self.parsedData = {} else wipe(self.parsedData) end
 
     for line in noteText:gmatch("[^\r\n]+") do
         local timeInfo, spellInfo, playerInfo = line:match("{time:([^}]*)}{spell:(%d+)}[^-]+-(.+)")
@@ -200,12 +207,15 @@ function MRTReminder:ParseNote()
                             spellID = tonumber(playerSpellID)
                         }
                     }
-                    table.insert(self.data, newEntry)
-                    table.insert(self.parsedData, newEntry)
+					insert(self.data, newEntry)
+					insert(self.parsedData, newEntry)
                 end
             end
         end
     end
+	-- Sort once & reset pointer
+	self:SortData()
+	self._nextIdx = 1
 end
 
 function MRTReminder:ParseTime(timeInfo)
@@ -215,13 +225,14 @@ end
 
 function MRTReminder:SortData()
     table.sort(self.data, function(a, b) return a.time < b.time end)
+    table.sort(self.parsedData, function(a, b) return a.time < b.time end)
 end
 
-function MRTReminder:OnMRTUpdate(event, prefix, message, channel, sender)
-    if prefix == "EXRTADD" and message:sub(1, 9) == "multiline" then
-        self.noteText = VMRT.Note.Text1
-    end
-end
+-- function MRTReminder:OnMRTUpdate(event, prefix, message, channel, sender)
+--     if prefix == "EXRTADD" and message:sub(1, 9) == "multiline" then
+--         self.noteText = VMRT.Note.Text1
+--     end
+-- end
 
 function MRTReminder:StartFightTimer()
     if not self.parsedData or #self.parsedData == 0 then
@@ -229,7 +240,8 @@ function MRTReminder:StartFightTimer()
     end
 
     self.fightStartTime = GetTime()
-    self:ScheduleTimer("CheckTimedReminders", 0.1)
+    self._nextIdx = 1
+    self:ScheduleTimer("CheckTimedReminders", 0.05)
 end
 
 function MRTReminder:CheckTimedReminders()
@@ -241,25 +253,34 @@ function MRTReminder:CheckTimedReminders()
         return
     end
 
-    local currentTime = GetTime() - self.fightStartTime
-    local playerName = UnitName("player")
-    local activeReminders = false
-    
-    for _, data in ipairs(self.parsedData) do
-        local timeToReminder = data.time - currentTime
-        
-        if timeToReminder <= C.mrtreminder.autoShow and timeToReminder > 0 and not data.reminded then
-            self:StartBigWigsBar(timeToReminder, data.player.spellID, data.player.name)
-            self:ShowReminder(data)
-            data.reminded = true
-            activeReminders = true
-        elseif timeToReminder <= 0 and not data.reminded then
-            data.reminded = true
+    local t = GetTime() - self.fightStartTime
+    local idx = self._nextIdx
+    local n = #self.parsedData
+    local auto = C.mrtreminder.autoShow or 3
+    local nextWake = nil
+
+    while idx <= n do
+        local item = self.parsedData[idx]
+        local dt = item.time - t
+        if item.reminded then
+            idx = idx + 1
+        elseif dt <= auto and dt > 0 then
+            self:StartBigWigsBar(dt, item.player.spellID, item.player.name)
+            self:ShowReminder(item)
+            item.reminded = true
+            idx = idx + 1
+        elseif dt <= 0 then
+            item.reminded = true
+            idx = idx + 1
+        else
+            nextWake = dt - auto
+            break
         end
     end
-    
-    if activeReminders or currentTime < self.parsedData[#self.parsedData].time then
-        self:ScheduleTimer("CheckTimedReminders", 0.1)
+
+    self._nextIdx = idx
+    if idx <= n then
+        self:ScheduleTimer("CheckTimedReminders", math.max(0.05, nextWake or 0.1))
     end
 end
 
@@ -276,14 +297,13 @@ function MRTReminder:OnBossPulled()
 end
 
 function MRTReminder:OnBossFightEnd()
-    if IsInInstance() and select(2, IsInInstance()) == "raid" then
+    local inInst, instType = IsInInstance()
+    if inInst and instType == "raid" then
         self:CancelAllTimers()
 
         if self.parsedData then
             for _, data in ipairs(self.parsedData) do
                 if not data.reminded then
-                    local spellName = getCachedSpellInfo(data.player.spellID)
-                    local text = data.player.name .. ": " .. spellName
                     self:StopBigWigsBar(data.player.spellID, data.player.name)
                 end
             end
@@ -320,4 +340,10 @@ function MRTReminder:ShowReminder(data)
     end
 end
 
+function MRTReminder:OnPEW()
+	-- refresh cached player name defensively (rarely changes)
+	self.playerName = UnitName("player")
+end
+
 MRTReminder:OnInitialize()
+

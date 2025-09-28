@@ -243,12 +243,14 @@ local function updateRaid(self, event)
 	end
 end
 
--- boss6-8 exsist in some encounters, but unit event registration seems to be
+-- boss6-10 exsist in some encounters, but unit event registration seems to be
 -- completely broken for them, so instead we use OnUpdate to update them.
 local eventlessUnits = {
 	boss6 = true,
 	boss7 = true,
 	boss8 = true,
+	boss9 = true,
+	boss10 = true,
 }
 
 local function isEventlessUnit(unit)
@@ -551,17 +553,17 @@ do
 	end
 
 	-- There has to be an easier way to do this.
-	local initialConfigFunction = [[
-		local header = self:GetParent()
-		local frames = table.new()
-		table.insert(frames, self)
-		self:GetChildList(frames)
-		for i = 1, #frames do
-			local frame = frames[i]
-			local unit
-			-- There's no need to do anything on frames with onlyProcessChildren
-			if(not frame:GetAttribute('oUF-onlyProcessChildren')) then
-				RegisterUnitWatch(frame)
+local initialConfigFunction = [[
+        local header = self:GetParent()
+        local frames = table.new()
+        table.insert(frames, self)
+        self:GetChildList(frames)
+        for i = 1, #frames do
+            local frame = frames[i]
+            local unit
+            -- There's no need to do anything on frames with onlyProcessChildren
+            if(not frame:GetAttribute('oUF-onlyProcessChildren')) then
+                RegisterUnitWatch(frame)
 
 				-- Attempt to guess what the header is set to spawn.
 				local groupFilter = header:GetAttribute('groupFilter')
@@ -834,11 +836,13 @@ function oUF:SpawnNamePlates(namePrefix, nameplateCallback, nameplateCVars)
 			if(nameplate.UnitFrame) then
 				if(nameplate.UnitFrame.WidgetContainer) then
 					nameplate.UnitFrame.WidgetContainer:SetParent(nameplate.unitFrame)
+					nameplate.UnitFrame.WidgetContainer:SetIgnoreParentAlpha(true)
 					nameplate.unitFrame.WidgetContainer = nameplate.UnitFrame.WidgetContainer
 				end
 
 				if(nameplate.UnitFrame.SoftTargetFrame) then
 					nameplate.UnitFrame.SoftTargetFrame:SetParent(nameplate.unitFrame)
+					nameplate.UnitFrame.SoftTargetFrame:SetIgnoreParentAlpha(true)
 					nameplate.unitFrame.SoftTargetFrame = nameplate.UnitFrame.SoftTargetFrame
 				end
 			end

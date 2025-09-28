@@ -15,12 +15,13 @@ local oUF = ns.oUF
 local function GetMaelstromStack()
 	local spellTable = C_UnitAuras.GetPlayerAuraBySpellID(344179)
 	if type(spellTable) ~= "table" then return 0 end
-	count = spellTable.applications
+	local count = spellTable.applications
 	return (count or 0)
 end
 
-local function Update(self, _, unit)
-	if(self.unit ~= unit or (powerType and powerType ~= "MAELSTROM")) then return end
+local function Update(self, event, unit, powerToken)
+    if self.unit ~= unit then return end
+    if powerToken and powerToken ~= "MAELSTROM" then return end
 
 	local element = self.Maelstrom
 

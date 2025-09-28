@@ -1,4 +1,5 @@
 local _E
+local oGlow = rawget(_G, "oGlow")
 
 local player = function(self, event, index)
 	local slotFrame = _G["TradePlayerItem"..index.."ItemButton"]

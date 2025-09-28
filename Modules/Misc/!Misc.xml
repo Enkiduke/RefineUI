@@ -1,5 +1,5 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
-    <!-- <Script file="AdvCombatLog.lua"/> -->
+    <Script file="AdvCombatLog.lua"/>
     <Script file="CombatCrosshair.lua"/>
     <Script file="CombatCursor.lua"/>
     <Script file="SCT.lua"/>

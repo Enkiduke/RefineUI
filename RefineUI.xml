@@ -1,12 +1,12 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
     <Script file="Core\Init.lua"/>
     <Script file="Core\Constants.lua"/>
-    <!-- Locale -->
+
     <Script file="Locales\English.lua"/>
-    <!-- Libraries -->
+
     <Include file="Libs\!Libs.xml"/>
     <Script file="Config\Settings.lua"/>
-    <!-- Core -->
+
     <Script file="Core\Functions.lua"/>
     <Script file="Config\Colors.lua"/>
     <Script file="Config\Positions.lua"/>
@@ -16,7 +16,7 @@
     <Script file="Core\Style.lua"/>
     <Script file="Config\Tags.lua"/>
     <Include file="Config\Filters\Filters.xml"/>
-    <!-- Modules -->
+
     <Include file="Modules\!Modules.xml"/>
     <Script file="Core\EditMode.lua"/>
 </Ui>

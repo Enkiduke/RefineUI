@@ -5,4 +5,6 @@
     <Script file="LootFilter.lua"/>
     <Script file="AuraWatch.lua"/>
     <Script file="FilgerSpells.lua"/>
+    <Script file="AdvCombatLogSpells.lua"/>
+    <Script file="CCDebuffs.lua"/>
 </Ui>

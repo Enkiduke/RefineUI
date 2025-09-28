@@ -112,9 +112,9 @@ local function Update(self, event, unit)
 		previousTexture = UpdateFillBar(self, self.Health, element.overHealAbsorb, overHealAbsorb, maxHealth, true)
 	end
 
-	if(element.PostUpdate) then
-		return element:PostUpdate(unit, myIncomingHeal, otherIncomingHeal, absorb, healAbsorb)
-	end
+    if(element.PostUpdate) then
+        return element:PostUpdate(unit, myIncomingHeal, allIncomingHeal, absorb, healAbsorb)
+    end
 end
 
 local function Path(self, ...)

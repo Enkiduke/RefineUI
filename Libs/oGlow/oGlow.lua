@@ -29,7 +29,7 @@ function oGlow:ADDON_LOADED(event, addon)
 			end
 		end
 
-		self:UnregisterEvent(event, self.ADDON_LOADED)
+		self:UnregisterEvent(event)
 	end
 end
 
@@ -229,23 +229,21 @@ end
 
 -- General API
 function oGlow:CallFilters(pipe, frame, ...)
-	if not pipesTable[pipe] then return nil, "Pipe does not exist." end
+    if not pipesTable[pipe] then return nil, "Pipe does not exist." end
+    -- Safety: if no frame is provided, skip processing for this call
+    if not frame then return end
 
-	local ref = activeFilters[pipe]
-	if ref then
-		for display, filters in next, ref do
-			if not displaysTable[display] then return nil, "Display does not exist." end
+    local ref = activeFilters[pipe]
+    if ref then
+        for display, filters in next, ref do
+            if not displaysTable[display] then return nil, "Display does not exist." end
 
-			for i = 1, #filters do
-				local func = filters[i][2]
-
-				if (displaysTable[display](frame, func(...))) then break end
-			end
-		end
-	end
+            for i = 1, #filters do
+                local func = filters[i][2]
+                if (displaysTable[display](frame, func(...))) then break end
+            end
+        end
+    end
 end
 
 oGlow:RegisterEvent("ADDON_LOADED")
-
-
--- At the end of the file, add:

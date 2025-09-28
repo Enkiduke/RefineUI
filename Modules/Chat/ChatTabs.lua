@@ -12,17 +12,27 @@ if C.chat.tabs_mouseover == true then
 	CHAT_FRAME_TAB_ALERTING_MOUSEOVER_ALPHA = 1
 end
 
+local _G = _G
+local hooksecurefunc = hooksecurefunc
+
 local Fane = CreateFrame("Frame")
 
 local updateFS = function(self, _, ...)
-	local fstring = self:GetFontString()
+    local fstring = self:GetFontString()
 
-	fstring:SetFont(unpack(C.font.chatTabs))
-	fstring:SetShadowOffset(1, -1)
+    if not self.__fane_fs_init then
+        fstring:SetFont(unpack(C.font.chatTabs))
+        fstring:SetShadowOffset(1, -1)
+        self.__fane_fs_init = true
+    end
 
-	if (...) then
-		fstring:SetTextColor(...)
-	end
+    if (...) then
+        local r, g, b = ...
+        local cr, cg, cb = fstring:GetTextColor()
+        if cr ~= r or cg ~= g or cb ~= b then
+            fstring:SetTextColor(r, g, b)
+        end
+    end
 end
 
 local OnEnter = function(self)
@@ -79,8 +89,8 @@ local faneifyTab = function(frame, selected)
 					-- system this way.
 					frame.SetAlpha = UIFrameFadeRemoveFrame
 				else
-					frame.SetAlpha = ChatFrame2_SetAlpha
-					frame.GetAlpha = ChatFrame2_GetAlpha
+				frame.SetAlpha = ChatFrame2_SetAlpha
+				frame.GetAlpha = ChatFrame2_GetAlpha
 
 					-- We do this here as people might be using AddonLoader together with Fane
 					if CombatLogQuickButtonFrame_Custom then
@@ -111,6 +121,16 @@ hooksecurefunc("FCFTab_UpdateColors", faneifyTab)
 for i = 1, NUM_CHAT_WINDOWS do
 	faneifyTab(_G["ChatFrame"..i.."Tab"])
 end
+
+-- Also apply to temporary windows
+hooksecurefunc("FCF_OpenTemporaryWindow", function()
+	local cf = FCF_GetCurrentChatFrame()
+	if not cf then return end
+	local tab = _G[cf:GetName().."Tab"]
+	if tab then
+		faneifyTab(tab)
+	end
+end)
 
 function Fane:ADDON_LOADED(event, addon)
 	if addon == "Blizzard_CombatLog" then

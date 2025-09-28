@@ -1,6 +1,6 @@
 local R, C, L = unpack(RefineUI)
 local _, ns = ...
-local oUF = R.oUF or ns.oUF or oUF
+local oUF = R.oUF or (ns and ns.oUF) or rawget(_G, "oUF")
 local UF = R.UF
 
 -- Upvalues
@@ -30,13 +30,14 @@ end
 
 local frameWidth = C.group.partyWidth
 local frameHeight = C.group.partyHealthHeight + C.group.partyPowerHeight
-local spacing = C.group.spacing or 5 -- Adjust spacing as needed
 
+-- Create anchor earlier to ensure it's available when placing the header
+local raid = CreateFrame("Frame", "RaidAnchor", UIParent)
 oUF:Factory(function(self)
     oUF:RegisterStyle("RefineUI_Raid", CreateRaidFrame)
     oUF:SetActiveStyle("RefineUI_Raid")
     
-    local raidgroup = self:SpawnHeader("RefineUI_Raid", nil, "raid,party,solo",
+    local raidgroup = self:SpawnHeader("RefineUI_RaidHeader", nil, "raid,party,solo",
         "oUF-initialConfigFunction", [[
             local header = self:GetParent()
             self:SetWidth(header:GetAttribute("initial-width"))
@@ -65,24 +66,11 @@ oUF:Factory(function(self)
 	-- raidgroup:SetScale(0.9)
 end)
 
-local raid = CreateFrame("Frame", "RaidAnchor", UIParent)
+-- anchor already created above
 
 ----------------------------------------------------------------------------------------
 -- Expose CreateTargetFrame function
 ----------------------------------------------------------------------------------------
 R.CreateRaidFrame = CreateRaidFrame
 
-local function PreventDefaultRaidFramesShowing()
-    if CompactRaidFrameManager_UpdateShown then
-        hooksecurefunc("CompactRaidFrameManager_UpdateShown", function()
-            -- if CompactRaidFrameManager:IsShown() then
-            --     CompactRaidFrameManager:Hide()
-            -- end
-            if CompactRaidFrameContainer:IsShown() then
-                CompactRaidFrameContainer:Hide()
-            end
-        end)
-    end
-end
-
-PreventDefaultRaidFramesShowing()
+-- Blizzard compact frames are disabled early in Modules/Blizzard/CompactRaidFrames.lua

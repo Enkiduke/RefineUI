@@ -96,3 +96,10 @@ position.altPowerBar = {"TOP", UIWidgetTopCenterContainerFrame, "BOTTOM", 0, -7}
 position.uiwidgetTop = {"TOP", UIParent, "TOP", 1, -21}
 position.uiwidgetBelow = {"TOP", UIWidgetTopCenterContainerFrame, "BOTTOM", 0, -15}
 position.compactRaid = {"LEFT", UIParent, "LEFT", 0, 0}
+
+-- Mirror timer Y-offsets
+position.mirrorTimers = {
+    BREATH = -96,
+    EXHAUSTION = -116,
+    FEIGNDEATH = -142,
+}

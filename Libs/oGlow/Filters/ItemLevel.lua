@@ -1,3 +1,4 @@
+local oGlow = rawget(_G, "oGlow")
 local itemLevelFilter = function(...)
     for i = 1, select("#", ...) do
         local itemLink = select(i, ...)

@@ -5,8 +5,10 @@ local pairs, ipairs = pairs, ipairs
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 
--- Debug function
+-- Debug function (gated by CVAR: refineui_actionbar_debug)
+local GetCVarBool = GetCVarBool or function() return false end
 local function Debug(...)
+    if not GetCVarBool("refineui_actionbar_debug") then return end
     print("|cff33ff99RefineUI ActionBar Fade:|r", ...)
 end
 
@@ -46,6 +48,7 @@ function R.ActionBars.Mouseover:Initialize()
     self.db = RefineUISettings.actionBarFade
     
     self.bars = {}
+    self.barButtons = {}
     for _, barName in ipairs(barNames) do
         local bar = _G[barName]
         if bar then
@@ -61,26 +64,62 @@ end
 function R.ActionBars.Mouseover:HookBar(bar, barName)
     bar:EnableMouse(true)
     
-    local function IsMouseOverBarOrButtons()
-        if MouseIsOver(bar) then return true end
-        local buttonPrefix = barName == "PetActionBar" and "PetActionButton" or string.gsub(barName, "Bar", "Button")
+    -- Cache buttons for this bar once
+    local buttons = {}
+    do
+        local buttonPrefix
+        if barName == "PetActionBar" then
+            buttonPrefix = "PetActionButton"
+        elseif barName == "StanceBar" then
+            buttonPrefix = "StanceButton"
+        else
+            buttonPrefix = string.gsub(barName, "Bar", "Button")
+        end
         for i = 1, 12 do
             local button = _G[buttonPrefix .. i]
-            if button and MouseIsOver(button) then
-                return true
+            if button then
+                buttons[#buttons + 1] = button
             end
+        end
+    end
+    self.barButtons[barName] = buttons
+    
+    local function IsMouseOverBarOrButtons()
+        if MouseIsOver(bar) then return true end
+        for i = 1, #buttons do
+            local button = buttons[i]
+            if button and MouseIsOver(button) then return true end
         end
         return false
     end
 
+    -- Ensure animations exist
+    local function EnsureAnimations()
+        if bar.fadeInAG and bar.fadeOutAG then return end
+        -- Fade In
+        local fadeInAG = bar:CreateAnimationGroup()
+        local fadeIn = fadeInAG:CreateAnimation("Alpha")
+        fadeIn:SetDuration(self.db.fadeInDuration)
+        fadeIn:SetSmoothing("OUT")
+        bar.fadeInAG = fadeInAG
+        bar.fadeIn = fadeIn
+        -- Fade Out
+        local fadeOutAG = bar:CreateAnimationGroup()
+        local fadeOut = fadeOutAG:CreateAnimation("Alpha")
+        fadeOut:SetDuration(self.db.fadeOutDuration)
+        fadeOut:SetSmoothing("IN")
+        bar.fadeOutAG = fadeOutAG
+        bar.fadeOut = fadeOut
+    end
+
     local function HandleMouseEnter()
+        EnsureAnimations()
         self:FadeIn(bar)
-        if bar.fadeTimer then
-            bar.fadeTimer:Cancel()
-        end
+        if bar.fadeTimer then bar.fadeTimer:Cancel() end
     end
 
     local function HandleMouseLeave()
+        EnsureAnimations()
         bar.fadeTimer = C_Timer.NewTimer(0.1, function()
             if not IsMouseOverBarOrButtons() then
                 self:FadeOut(bar)
@@ -92,73 +131,42 @@ function R.ActionBars.Mouseover:HookBar(bar, barName)
     bar:SetScript("OnLeave", HandleMouseLeave)
     
     -- Hook individual buttons
-    local buttonPrefix = barName == "PetActionBar" and "PetActionButton" or string.gsub(barName, "Bar", "Button")
-    for i = 1, 12 do
-        local button = _G[buttonPrefix .. i]
-        if button then
-            button:HookScript("OnEnter", HandleMouseEnter)
-            button:HookScript("OnLeave", HandleMouseLeave)
-        end
+    for i = 1, #buttons do
+        local button = buttons[i]
+        button:HookScript("OnEnter", HandleMouseEnter)
+        button:HookScript("OnLeave", HandleMouseLeave)
     end
     
     Debug("Hooked bar and buttons for " .. barName)
 end
 
 function R.ActionBars.Mouseover:FadeIn(bar)
-    if bar.fadeTimer then
-        bar.fadeTimer:Cancel()
-        bar.fadeTimer = nil
-    end
-    bar:SetAlpha(self.db.alphaMax)
-    Debug("FadeIn called for bar " .. bar:GetName() .. ", setting alpha to " .. self.db.alphaMax)
+    if bar.fadeTimer then bar.fadeTimer:Cancel(); bar.fadeTimer = nil end
+    if bar.fadeOutAG and bar.fadeOutAG:IsPlaying() then bar.fadeOutAG:Stop() end
+    if not bar.fadeInAG then return end
+    local current = bar:GetAlpha()
+    bar.fadeIn:SetFromAlpha(current)
+    bar.fadeIn:SetToAlpha(self.db.alphaMax)
+    bar.fadeIn:SetDuration(self.db.fadeInDuration)
+    bar.fadeInAG:Stop()
+    bar.fadeInAG:Play()
+    Debug("FadeIn called for bar " .. bar:GetName() .. ", to alpha " .. self.db.alphaMax)
 end
 
 function R.ActionBars.Mouseover:FadeOut(bar)
-    if bar.fadeTimer then
-        bar.fadeTimer:Cancel()
-    end
-    
+    if bar.fadeTimer then bar.fadeTimer:Cancel() end
+    if bar.fadeInAG and bar.fadeInAG:IsPlaying() then bar.fadeInAG:Stop() end
+    if not bar.fadeOutAG then return end
     bar.fadeTimer = C_Timer.NewTimer(self.db.fadeOutDelay, function()
-        local startAlpha = bar:GetAlpha()
-        local duration = self.db.fadeOutDuration
-        local startTime = GetTime()
-        
-        bar:SetScript("OnUpdate", function(self)
-            local elapsed = GetTime() - startTime
-            local progress = elapsed / duration
-            
-            if progress >= 1 then
-                self:SetAlpha(R.ActionBars.Mouseover.db.alphaMin)
-                self:SetScript("OnUpdate", nil)
-                Debug("FadeOut completed for bar " .. self:GetName())
-            else
-                local newAlpha = startAlpha + (R.ActionBars.Mouseover.db.alphaMin - startAlpha) * progress
-                self:SetAlpha(newAlpha)
-            end
-        end)
+        local current = bar:GetAlpha()
+        bar.fadeOut:SetFromAlpha(current)
+        bar.fadeOut:SetToAlpha(self.db.alphaMin)
+        bar.fadeOut:SetDuration(self.db.fadeOutDuration)
+        bar.fadeOutAG:Stop()
+        bar.fadeOutAG:Play()
+        Debug("FadeOut started for bar " .. bar:GetName())
     end)
-    Debug("FadeOut initiated for bar " .. bar:GetName() .. ", delay: " .. self.db.fadeOutDelay)
-end
-
-function R.ActionBars.Mouseover:Initialize()
-    -- Ensure settings exist in RefineUISettings
-    if not RefineUISettings.actionBarFade then
-        RefineUISettings.actionBarFade = CopyTable(defaults)
-    end
-    
-    self.db = RefineUISettings.actionBarFade
-    
-    self.bars = {}
-    for _, barName in ipairs(barNames) do
-        local bar = _G[barName]
-        if bar then
-            self.bars[barName] = bar
-            self:HookBar(bar, barName)
-            -- Set initial alpha
-            bar:SetAlpha(self.db.alphaMin)
-        end
-    end
-    Debug("Mouseover initialized for " .. #barNames .. " bars")
+    Debug("FadeOut scheduled for bar " .. bar:GetName() .. ", delay: " .. self.db.fadeOutDelay)
 end
 
 function R.ActionBars.Mouseover:UpdateBars()

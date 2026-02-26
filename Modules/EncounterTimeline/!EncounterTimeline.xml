@@ -1,0 +1,9 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="EncounterTimeline.lua"/>
+    <Script file="State.lua"/>
+    <Script file="Skin.lua"/>
+    <Script file="ScriptEvents.lua"/>
+    <Script file="EditMode.lua"/>
+    <Script file="BigIcon.lua"/>
+    <Script file="Lifecycle.lua"/>
+</Ui>

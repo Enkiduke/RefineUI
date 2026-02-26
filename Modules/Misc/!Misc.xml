@@ -1,0 +1,12 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="MicroMenu.lua"/>
+    <Script file="Blizzard.lua"/>
+    <Script file="Combat.lua"/>
+    <Script file="ErrorFilter.lua"/>
+    <Script file="ExperienceBar.lua"/>
+    <Script file="FadeIn.lua"/>
+    <Script file="GameTime.lua"/>
+    <Script file="Dismount.lua"/>
+    <Script file="TalkingHead.lua"/>
+    <Script file="AutoPotion.lua"/>
+</Ui>

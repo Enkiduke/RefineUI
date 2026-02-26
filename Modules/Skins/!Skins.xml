@@ -1,0 +1,8 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Script file="Skins.lua"/>
+	<Script file="CharacterPanel.lua"/>
+	<Script file="DamageMeter.lua"/>
+	<Script file="LSToasts.lua"/>
+	<Script file="SCT.lua"/>
+	<Script file="StatusBars.lua"/>
+</Ui>

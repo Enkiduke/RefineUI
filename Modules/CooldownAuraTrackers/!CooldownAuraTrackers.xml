@@ -1,0 +1,7 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="CooldownAuraTrackers.lua"/>
+    <Script file="Assignments.lua"/>
+    <Script file="AuraProbe.lua"/>
+    <Script file="Trackers.lua"/>
+    <Script file="SettingsInjection.lua"/>
+</Ui>

@@ -1,0 +1,17 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="CDM.lua"/>
+    <Script file="Config.lua"/>
+    <Script file="State.lua"/>
+    <Script file="AssignmentsData.lua"/>
+    <Script file="AssignmentsSync.lua"/>
+    <Script file="AuraProbeRegistry.lua"/>
+    <Script file="AuraProbePayload.lua"/>
+    <Script file="TrackersLayout.lua"/>
+    <Script file="TrackersRender.lua"/>
+    <Script file="SettingsDragDrop.lua"/>
+    <Script file="SettingsUI.lua"/>
+    <Script file="VisualsStyles.lua"/>
+    <Script file="VisualsApply.lua"/>
+    <Script file="VisualsMenu.lua"/>
+    <Script file="Lifecycle.lua"/>
+</Ui>

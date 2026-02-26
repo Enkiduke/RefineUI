@@ -1,0 +1,8 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Script file="Elements.lua"/>
+	<Script file="Portraits.lua"/>
+	<Script file="CastBars.lua"/>
+	<Script file="ClassResources.lua"/>
+	<Script file="Party.lua"/>
+	<Script file="UnitFrames.lua"/>
+</Ui>

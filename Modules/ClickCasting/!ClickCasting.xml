@@ -1,0 +1,9 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="ClickCasting.lua"/>
+    <Script file="Data.lua"/>
+    <Script file="Resolver.lua"/>
+    <Script file="Secure.lua"/>
+    <Script file="Frames.lua"/>
+    <Script file="Conflict.lua"/>
+    <Script file="SpellbookUI.lua"/>
+</Ui>

@@ -1,0 +1,9 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="Util.lua"/>
+    <Script file="DynamicPortrait.lua"/>
+    <Script file="Target.lua"/>
+    <Script file="CastBars.lua"/>
+    <Script file="CrowdControl.lua"/>
+    <Script file="Nameplates.lua"/>
+    <Script file="EditMode.lua"/>
+</Ui>

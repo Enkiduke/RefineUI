@@ -1,0 +1,23 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Include file="AFK\!AFK.xml"/>
+    <Include file="ActionBars\!ActionBars.xml"/>
+    <Include file="Auras\!Auras.xml"/>
+    <Include file="BuffReminder\!BuffReminder.xml"/>
+    <Include file="CDM\!CDM.xml"/>
+    <Include file="EncounterAchievements\!EncounterAchievements.xml"/>
+    <Include file="EncounterTimeline\!EncounterTimeline.xml"/>
+    <Include file="Chat\!Chat.xml"/>
+    <Include file="Maps\!Maps.xml"/>
+    <Include file="UnitFrames\!UnitFrames.xml"/>
+    <Include file="Nameplates\!Nameplates.xml"/>
+    <Include file="Misc\!Misc.xml"/>
+    <Include file="AutoItemBar\!AutoItemBar.xml"/>
+    <Include file="ClickCasting\!ClickCasting.xml"/>
+    <Include file="Tooltip\!Tooltip.xml"/>
+    <Include file="Quests\!Quests.xml"/>
+    <Include file="Loot\!Loot.xml"/>
+    <Include file="Borders\!Borders.xml"/>
+    <Include file="Bags\!Bags.xml"/>
+    <Include file="Skins\!Skins.xml"/>
+    <Include file="RadBar\!RadBar.xml"/>
+</Ui>

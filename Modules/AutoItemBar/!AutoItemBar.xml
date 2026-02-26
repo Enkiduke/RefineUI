@@ -1,0 +1,10 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="AutoItemBar.lua"/>
+    <Script file="Config.lua"/>
+    <Script file="Filtering.lua"/>
+    <Script file="Ordering.lua"/>
+    <Script file="Tracking.lua"/>
+    <Script file="Actions.lua"/>
+    <Script file="CategoryEditor.lua"/>
+    <Script file="BarController.lua"/>
+</Ui>

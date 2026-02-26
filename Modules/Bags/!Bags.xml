@@ -1,0 +1,10 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Script file="Config.lua"/>
+	<Script file="Categories.lua"/>
+	<Script file="State.lua"/>
+	<Script file="Layout.lua"/>
+	<Script file="Bags.lua"/>
+	<Script file="ReagentWindow.lua"/>
+	<Script file="EditMode.lua"/>
+	<Script file="CategoryEditor.lua"/>
+</Ui>

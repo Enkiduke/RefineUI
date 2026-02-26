@@ -1,0 +1,10 @@
+## Interface: 120000
+## Title: |cffffd200Refine|rUI
+## Notes: A Refined User Interface.
+## Author: Enkiduke
+## Version: 0.1-beta
+## SavedVariables: RefineDB
+## IconTexture: Interface\AddOns\RefineUI\Media\Logo\Logo
+## Bindings: Bindings.xml
+
+RefineUI.xml

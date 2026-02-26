@@ -1,0 +1,11 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Script file="Tooltip.lua"/>
+	<Script file="Core.lua"/>
+	<Script file="Style.lua"/>
+	<Script file="Unit.lua"/>
+	<Script file="Anchor.lua"/>
+	<Script file="HyperLink.lua"/>
+	<Script file="Icons.lua"/>
+	<Script file="SpellID.lua"/>
+	<Script file="ItemCount.lua"/>
+</Ui>

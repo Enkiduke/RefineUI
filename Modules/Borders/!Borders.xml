@@ -1,0 +1,6 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="Borders.lua"/>
+    <Script file="PipeCharacter.lua"/>
+    <Script file="PipeContainers.lua"/>
+    <Script file="PipeInteractions.lua"/>
+</Ui>

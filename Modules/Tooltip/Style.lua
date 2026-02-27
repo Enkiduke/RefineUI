@@ -16,10 +16,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
 local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
@@ -420,9 +417,7 @@ function Tooltip:StyleCloseButton()
     local closeButton = itemRefTooltip.CloseButton
     RefineUI.StripTextures(closeButton)
 
-    local closeTexturePath = RefineUI.Media
-        and RefineUI.Media.Textures
-        and RefineUI.Media.Textures.Close
+    local closeTexturePath = Media and Media.Textures and Media.Textures.Close
     if closeTexturePath then
         local tex = closeButton:CreateTexture(nil, "OVERLAY")
         tex:SetTexture(closeTexturePath)

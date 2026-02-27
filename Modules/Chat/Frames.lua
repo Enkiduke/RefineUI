@@ -33,7 +33,6 @@ local FCF_SavePositionAndDimensions = FCF_SavePositionAndDimensions
 local FCF_DockFrame = FCF_DockFrame
 local FCF_DockUpdate = FCF_DockUpdate
 local FCF_GetCurrentChatFrame = FCF_GetCurrentChatFrame
-local ChatEdit_AddHistory = ChatEdit_AddHistory
 local ChatEdit_UpdateHeader = ChatEdit_UpdateHeader
 local hooksecurefunc = hooksecurefunc
 local C_Timer = C_Timer
@@ -517,21 +516,6 @@ local function RemoveRealmName(_, _, ...)
 	end
     
     return false, unpack(args, 1, argc)
-end
-
--- Save typos to history for recovery
-local function TypoHistory_Posthook_AddMessage(chat, text)
-    -- Safe check for secret values
-    if (issecretvalue and issecretvalue(text)) or type(text) ~= "string" then 
-        return 
-    end
-
-    -- Use pcall as double-safety for strfind on secrets
-    pcall(function()
-        if text and strfind(text, HELP_TEXT_SIMPLE) then
-            ChatEdit_AddHistory(chat.editBox)
-        end
-    end)
 end
 
 -- Switch channels by Tab
@@ -1018,16 +1002,6 @@ local function InstallRuntimeHooksOnce()
     ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", RemoveRealmName)
     for _, event in ipairs(FILTER_EVENTS) do
         ChatFrame_AddMessageEventFilter(event, ChatMessageFilter)
-    end
-
-    -- Hook typo history for all chat frames
-    for i = 1, NUM_CHAT_WINDOWS do
-        if i ~= 2 then
-            local frame = _G["ChatFrame" .. i]
-            if frame then
-                RefineUI:HookOnce(BuildChatFramesHookKey(frame, "AddMessage", i), frame, "AddMessage", TypoHistory_Posthook_AddMessage)
-            end
-        end
     end
 
     -- Hook temporary window creation

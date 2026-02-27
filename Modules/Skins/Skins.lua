@@ -67,6 +67,12 @@ function Skins:OnEnable()
     if self.InitDamageMeterSkinner then
         self:InitDamageMeterSkinner()
     end
+    if self.SetupGossipFrameSkin then
+        self:SetupGossipFrameSkin()
+    end
+    if self.SetupItemTextFrameSkin then
+        self:SetupItemTextFrameSkin()
+    end
     if self.SetupSCT then
         self:SetupSCT()
     end

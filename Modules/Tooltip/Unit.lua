@@ -16,10 +16,8 @@ end
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
 local Config = RefineUI.Config
-local Locale = RefineUI.Locale
+local Colors = RefineUI.Colors
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues

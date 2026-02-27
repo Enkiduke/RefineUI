@@ -27,7 +27,7 @@ RefineUI focuses on improving the look, layout, and usability of Blizzard's exis
 
 ## Status
 
-- Version: `0.1-beta`
+- Latest Version: `2026.02.27-beta`
 - Game version (TOC): `120000` (Retail)
 
 ## Discord / Support

@@ -432,10 +432,10 @@ local function ResolveTotemState(frame)
     local slot = ResolveTotemSlot(frame)
     local hasTotemData = false
     if frame then
-        local okTotemData, value = pcall(function()
-            return frame.totemData ~= nil
+        local okTotemData, totemData = pcall(function()
+            return frame.totemData
         end)
-        if okTotemData and value then
+        if okTotemData and (IsSecret(totemData) or totemData ~= nil) then
             hasTotemData = true
         end
     end

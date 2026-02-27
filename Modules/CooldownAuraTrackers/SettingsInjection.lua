@@ -64,14 +64,14 @@ local function IsTabSelected(tab)
 
     if type(tab.GetChecked) == "function" then
         local ok, checked = pcall(tab.GetChecked, tab)
-        if ok and checked ~= nil then
+        if ok and checked ~= nil and not (_G.issecretvalue and _G.issecretvalue(checked)) then
             return checked and true or false
         end
     end
 
     if type(tab.IsChecked) == "function" then
         local ok, checked = pcall(tab.IsChecked, tab)
-        if ok and checked ~= nil then
+        if ok and checked ~= nil and not (_G.issecretvalue and _G.issecretvalue(checked)) then
             return checked and true or false
         end
     end

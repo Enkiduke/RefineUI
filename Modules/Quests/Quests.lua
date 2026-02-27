@@ -27,6 +27,7 @@ local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
 local GetScreenHeight = GetScreenHeight
 local C_Timer = C_Timer
+local gsub = string.gsub
 
 local ObjectiveTrackerFrame = _G.ObjectiveTrackerFrame
 local QuestMapFrame = _G.QuestMapFrame
@@ -36,6 +37,38 @@ local UIParent = _G.UIParent
 -- Constants
 ----------------------------------------------------------------------------------------
 local R, G, B = unpack(RefineUI.MyClassColor)
+local GOLD_TEXT_COLOR = { 1, 0.82, 0 }
+local WHITE_TEXT_COLOR = { 1, 1, 1 }
+
+local QUEST_PROGRESS_HOOK = {
+    PANEL_ON_SHOW = "Quests:QuestFrameProgressPanel_OnShow",
+    PANEL_SCRIPT_ON_SHOW = "Quests:QuestFrameProgressPanel:OnShow",
+    ITEMS_UPDATE = "Quests:QuestFrameProgressItems_Update",
+}
+local QUEST_GREETING_HOOK = {
+    PANEL_ON_SHOW = "Quests:QuestFrameGreetingPanel_OnShow",
+    PANEL_SCRIPT_ON_SHOW = "Quests:QuestFrameGreetingPanel:OnShow",
+}
+local QUEST_PROGRESS_EVENT = {
+    ADDON_LOADED = "Quests:QuestProgress:ADDON_LOADED",
+}
+
+local function SetTextColorIfPossible(fontString, color)
+    if fontString and fontString.SetTextColor then
+        fontString:SetTextColor(color[1], color[2], color[3], color[4] or 1)
+    end
+end
+
+local function ReplaceQuestInlineColors(text)
+    if type(text) ~= "string" or text == "" then
+        return text
+    end
+
+    text = gsub(text, "|c[fF][fF]000000", "|cffffd200")
+    text = gsub(text, "|c[fF][fF]042c54", "|cff1c86ee")
+
+    return text
+end
 
 local function BuildQuestHookKey(owner, method, suffix)
     local ownerId
@@ -309,6 +342,108 @@ function Quests:ApplyObjectiveTrackerFonts()
     end)
 end
 
+function Quests:ApplyQuestProgressColors()
+    local progressTitle = _G.QuestProgressTitleText or _G.QuestProgressTitle
+    SetTextColorIfPossible(progressTitle, GOLD_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestProgressText, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestProgressRequiredItemsText, GOLD_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestProgressRequiredMoneyText, GOLD_TEXT_COLOR)
+end
+
+function Quests:ApplyQuestGreetingColors()
+    SetTextColorIfPossible(_G.GreetingText, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.CurrentQuestsText, GOLD_TEXT_COLOR)
+    SetTextColorIfPossible(_G.AvailableQuestsText, GOLD_TEXT_COLOR)
+
+    local greetingPanel = _G.QuestFrameGreetingPanel
+    if not greetingPanel or not greetingPanel.titleButtonPool then
+        return
+    end
+
+    for button in greetingPanel.titleButtonPool:EnumerateActive() do
+        local fontString = button.GetFontString and button:GetFontString()
+        if fontString then
+            SetTextColorIfPossible(fontString, WHITE_TEXT_COLOR)
+            local text = fontString:GetText()
+            if text and text ~= "" then
+                local replaced = ReplaceQuestInlineColors(text)
+                if replaced ~= text then
+                    fontString:SetText(replaced)
+                end
+            end
+        end
+    end
+end
+
+function Quests:InstallQuestProgressHooks()
+    if self.questProgressHooksInstalled then
+        return true
+    end
+
+    local installedAny = false
+
+    local okOnShow = RefineUI:HookOnce(QUEST_PROGRESS_HOOK.PANEL_ON_SHOW, "QuestFrameProgressPanel_OnShow", function()
+        self:ApplyQuestProgressColors()
+    end)
+    if okOnShow then
+        installedAny = true
+    end
+
+    local panel = _G.QuestFrameProgressPanel
+    if panel and panel.HookScript then
+        local okPanel = RefineUI:HookScriptOnce(QUEST_PROGRESS_HOOK.PANEL_SCRIPT_ON_SHOW, panel, "OnShow", function()
+            self:ApplyQuestProgressColors()
+        end)
+        if okPanel then
+            installedAny = true
+        end
+    end
+
+    local okItemsUpdate = RefineUI:HookOnce(QUEST_PROGRESS_HOOK.ITEMS_UPDATE, "QuestFrameProgressItems_Update", function()
+        self:ApplyQuestProgressColors()
+    end)
+    if okItemsUpdate then
+        installedAny = true
+    end
+
+    if installedAny then
+        self.questProgressHooksInstalled = true
+    end
+
+    return installedAny
+end
+
+function Quests:InstallQuestGreetingHooks()
+    if self.questGreetingHooksInstalled then
+        return true
+    end
+
+    local installedAny = false
+
+    local okOnShow = RefineUI:HookOnce(QUEST_GREETING_HOOK.PANEL_ON_SHOW, "QuestFrameGreetingPanel_OnShow", function()
+        self:ApplyQuestGreetingColors()
+    end)
+    if okOnShow then
+        installedAny = true
+    end
+
+    local panel = _G.QuestFrameGreetingPanel
+    if panel and panel.HookScript then
+        local okPanel = RefineUI:HookScriptOnce(QUEST_GREETING_HOOK.PANEL_SCRIPT_ON_SHOW, panel, "OnShow", function()
+            self:ApplyQuestGreetingColors()
+        end)
+        if okPanel then
+            installedAny = true
+        end
+    end
+
+    if installedAny then
+        self.questGreetingHooksInstalled = true
+    end
+
+    return installedAny
+end
+
 function Quests:ApplyQuestMapFonts()
     local roots = {
         _G.QuestInfoFrame,
@@ -335,22 +470,66 @@ function Quests:ApplyQuestMapFonts()
         end
     end
 
-    if _G.QuestInfoTitleHeader then _G.QuestInfoTitleHeader:SetTextColor(1, 0.82, 0) end
-    if _G.QuestInfoDescriptionHeader then _G.QuestInfoDescriptionHeader:SetTextColor(1, 0.82, 0) end
-    if _G.QuestInfoObjectivesHeader then _G.QuestInfoObjectivesHeader:SetTextColor(1, 0.82, 0) end
+    SetTextColorIfPossible(_G.QuestInfoTitleHeader, GOLD_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestInfoDescriptionHeader, GOLD_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestInfoObjectivesHeader, GOLD_TEXT_COLOR)
     if _G.QuestInfoRewardsFrame and _G.QuestInfoRewardsFrame.Header then
-        _G.QuestInfoRewardsFrame.Header:SetTextColor(1, 0.82, 0)
+        SetTextColorIfPossible(_G.QuestInfoRewardsFrame.Header, GOLD_TEXT_COLOR)
     end
 
-    if _G.QuestInfoDescriptionText then _G.QuestInfoDescriptionText:SetTextColor(1, 1, 1) end
-    if _G.QuestInfoObjectivesText then _G.QuestInfoObjectivesText:SetTextColor(1, 1, 1) end
-    if _G.QuestInfoGroupSize then _G.QuestInfoGroupSize:SetTextColor(1, 1, 1) end
-    if _G.QuestInfoRewardText then _G.QuestInfoRewardText:SetTextColor(1, 1, 1) end
-    if _G.QuestInfoRewardsFrame and _G.QuestInfoRewardsFrame.ItemReceiveText then
-        _G.QuestInfoRewardsFrame.ItemReceiveText:SetTextColor(1, 1, 1)
+    SetTextColorIfPossible(_G.QuestInfoDescriptionText, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestInfoObjectivesText, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestInfoGroupSize, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestInfoRewardText, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestInfoTimerText, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestInfoSpellObjectiveLearnLabel, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestInfoQuestType, WHITE_TEXT_COLOR)
+    if _G.QuestInfoRewardsFrame and _G.QuestInfoRewardsFrame.ItemChooseText then
+        SetTextColorIfPossible(_G.QuestInfoRewardsFrame.ItemChooseText, WHITE_TEXT_COLOR)
     end
-    if _G.QuestDetailDescriptionText then _G.QuestDetailDescriptionText:SetTextColor(1, 1, 1) end
-    if _G.QuestDetailObjectivesText then _G.QuestDetailObjectivesText:SetTextColor(1, 1, 1) end
+    if _G.QuestInfoRewardsFrame and _G.QuestInfoRewardsFrame.ItemReceiveText then
+        SetTextColorIfPossible(_G.QuestInfoRewardsFrame.ItemReceiveText, WHITE_TEXT_COLOR)
+    end
+    if _G.QuestInfoRewardsFrame and _G.QuestInfoRewardsFrame.PlayerTitleText then
+        SetTextColorIfPossible(_G.QuestInfoRewardsFrame.PlayerTitleText, WHITE_TEXT_COLOR)
+    end
+    if _G.QuestInfoRewardsFrame and _G.QuestInfoRewardsFrame.QuestSessionBonusReward then
+        SetTextColorIfPossible(_G.QuestInfoRewardsFrame.QuestSessionBonusReward, WHITE_TEXT_COLOR)
+    end
+    if _G.MapQuestInfoRewardsFrame and _G.MapQuestInfoRewardsFrame.ItemChooseText then
+        SetTextColorIfPossible(_G.MapQuestInfoRewardsFrame.ItemChooseText, WHITE_TEXT_COLOR)
+    end
+    if _G.MapQuestInfoRewardsFrame and _G.MapQuestInfoRewardsFrame.ItemReceiveText then
+        SetTextColorIfPossible(_G.MapQuestInfoRewardsFrame.ItemReceiveText, WHITE_TEXT_COLOR)
+    end
+    if _G.MapQuestInfoRewardsFrame and _G.MapQuestInfoRewardsFrame.PlayerTitleText then
+        SetTextColorIfPossible(_G.MapQuestInfoRewardsFrame.PlayerTitleText, WHITE_TEXT_COLOR)
+    end
+    if _G.MapQuestInfoRewardsFrame and _G.MapQuestInfoRewardsFrame.QuestSessionBonusReward then
+        SetTextColorIfPossible(_G.MapQuestInfoRewardsFrame.QuestSessionBonusReward, WHITE_TEXT_COLOR)
+    end
+    local questXPFrame = _G.QuestInfoXPFrame or (_G.QuestInfoRewardsFrame and _G.QuestInfoRewardsFrame.XPFrame)
+    if questXPFrame and questXPFrame.ReceiveText then
+        SetTextColorIfPossible(questXPFrame.ReceiveText, GOLD_TEXT_COLOR)
+    end
+    local mapQuestXPFrame = _G.MapQuestInfoXPFrame or (_G.MapQuestInfoRewardsFrame and _G.MapQuestInfoRewardsFrame.XPFrame)
+    if mapQuestXPFrame and mapQuestXPFrame.ReceiveText then
+        SetTextColorIfPossible(mapQuestXPFrame.ReceiveText, GOLD_TEXT_COLOR)
+    end
+    self:ApplyQuestProgressColors()
+    self:ApplyQuestGreetingColors()
+    SetTextColorIfPossible(_G.QuestDetailDescriptionText, WHITE_TEXT_COLOR)
+    SetTextColorIfPossible(_G.QuestDetailObjectivesText, WHITE_TEXT_COLOR)
+
+    if _G.QuestInfoSealFrame and _G.QuestInfoSealFrame.Text and _G.QuestInfoSealFrame.Text.GetText and _G.QuestInfoSealFrame.Text.SetText then
+        local sealText = _G.QuestInfoSealFrame.Text:GetText()
+        if sealText and sealText ~= "" then
+            local replacedSealText = ReplaceQuestInlineColors(sealText)
+            if replacedSealText ~= sealText then
+                _G.QuestInfoSealFrame.Text:SetText(replacedSealText)
+            end
+        end
+    end
 
     for i = 1, 20 do
         local text = _G["QuestInfoObjective" .. i]
@@ -491,6 +670,7 @@ function Quests:OnInitialize()
         self:ApplyObjectiveTrackerFonts()
     end)
     self:ApplyQuestMapFonts()
+    self:ApplyQuestProgressColors()
     C_Timer.After(0.1, function()
         self:ApplyQuestMapFonts()
     end)
@@ -523,4 +703,14 @@ function Quests:OnInitialize()
     RefineUI:HookOnce("Quests:QuestInfo_Display", "QuestInfo_Display", function()
         self:ApplyQuestMapFonts()
     end)
+    self:InstallQuestGreetingHooks()
+    self:InstallQuestProgressHooks()
+    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addon)
+        if addon == "Blizzard_UIPanels_Game" then
+            self:InstallQuestGreetingHooks()
+            self:InstallQuestProgressHooks()
+            self:ApplyQuestGreetingColors()
+            self:ApplyQuestProgressColors()
+        end
+    end, QUEST_PROGRESS_EVENT.ADDON_LOADED)
 end

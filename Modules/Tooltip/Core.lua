@@ -21,9 +21,7 @@ Tooltip.ItemHandlers = Tooltip.ItemHandlers or {}
 -- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
 local Config = RefineUI.Config
-local Media = RefineUI.Media
 local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
@@ -53,6 +51,8 @@ local UnitIsPlayer = UnitIsPlayer
 local UnitHasVehicleUI = UnitHasVehicleUI
 local UnitClass = UnitClass
 local UnitReaction = UnitReaction
+local UnitIsDead = UnitIsDead
+local UnitIsGhost = UnitIsGhost
 local UnitCanAttack = UnitCanAttack
 local UnitCanAssist = UnitCanAssist
 local GameTooltip_UnitColor = _G.GameTooltip_UnitColor
@@ -67,7 +67,7 @@ local TOOLTIP_SKIN_STATE_REGISTRY = "Tooltip:SkinState"
 local TOOLTIP_DISCOVER_DEBOUNCE_KEY = "Tooltip:DiscoverGlobalTooltips"
 local TOOLTIP_BORDER_INSET = 6
 local TOOLTIP_BORDER_EDGE_SIZE = 12
-local TOOLTIP_COMPARISON_GAP = 8
+local TOOLTIP_COMPARISON_GAP = 0
 local TOOLTIP_COMPARISON_HOOK_KEY = "Tooltip:TooltipComparisonManager:AnchorShoppingTooltips"
 local TOOLTIP_COMPARE_ITEM_HOOK_KEY = "Tooltip:GameTooltip_ShowCompareItem:ComparisonGap"
 local UNIT_TOOLTIP_FALLBACK_TOKENS = { "mouseover", "softenemy", "softfriend", "softinteract" }
@@ -535,7 +535,18 @@ function Tooltip:GetTooltipBorderParams()
 end
 
 function Tooltip:GetTooltipComparisonGap()
-    return TOOLTIP_COMPARISON_GAP
+    local visualGap = TOOLTIP_COMPARISON_GAP
+    local borderInset = TOOLTIP_BORDER_INSET
+
+    if type(self.GetTooltipBorderParams) == "function" then
+        local inset = select(1, self:GetTooltipBorderParams())
+        inset = ReadSafeNumber(inset)
+        if inset and inset >= 0 then
+            borderInset = inset
+        end
+    end
+
+    return visualGap + (borderInset * 2)
 end
 
 function Tooltip:GetTooltipComparisonHookKey()
@@ -803,6 +814,12 @@ function Tooltip:GetUnitBorderColor(unitToken)
     unitToken = ReadSafeString(unitToken)
     if not unitToken or unitToken == "" then
         return nil
+    end
+
+    local isDead = ReadSafeBoolean(UnitIsDead(unitToken))
+    local isGhost = ReadSafeBoolean(UnitIsGhost(unitToken))
+    if isDead == true or isGhost == true then
+        return self:GetDefaultTooltipBorderColor()
     end
 
     local isPlayer = ReadSafeBoolean(UnitIsPlayer(unitToken)) == true

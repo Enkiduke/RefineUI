@@ -2,7 +2,7 @@
 ## Title: |cffffd200Refine|rUI
 ## Notes: A Refined User Interface.
 ## Author: Enkiduke
-## Version: 0.1-beta
+## Version: 2026.02.27-beta
 ## SavedVariables: RefineDB
 ## IconTexture: Interface\AddOns\RefineUI\Media\Logo\Logo
 ## Bindings: Bindings.xml

@@ -270,16 +270,19 @@ function CDM:IsLayoutManagerBusy(layoutManager)
 
     if type(manager.AreNotificationsLocked) == "function" then
         local okLocked, isLocked = pcall(manager.AreNotificationsLocked, manager)
-        if okLocked and isLocked then
+        if okLocked and not (issecretvalue and issecretvalue(isLocked)) and isLocked then
             return true
         end
     end
 
-    if type(manager.notificationLockCount) == "number" and manager.notificationLockCount > 0 then
+    if not (issecretvalue and issecretvalue(manager.notificationLockCount))
+        and type(manager.notificationLockCount) == "number"
+        and manager.notificationLockCount > 0
+    then
         return true
     end
 
-    if manager.notifying == true then
+    if not (issecretvalue and issecretvalue(manager.notifying)) and manager.notifying == true then
         return true
     end
 

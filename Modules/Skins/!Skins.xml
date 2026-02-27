@@ -2,6 +2,8 @@
 	<Script file="Skins.lua"/>
 	<Script file="CharacterPanel.lua"/>
 	<Script file="DamageMeter.lua"/>
+	<Script file="GossipFrame.lua"/>
+	<Script file="ItemTextFrame.lua"/>
 	<Script file="LSToasts.lua"/>
 	<Script file="SCT.lua"/>
 	<Script file="StatusBars.lua"/>

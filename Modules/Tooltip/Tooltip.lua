@@ -16,9 +16,6 @@ Tooltip.ItemHandlers = Tooltip.ItemHandlers or {}
 -- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
 local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
 
 ----------------------------------------------------------------------------------------
 -- Lifecycle

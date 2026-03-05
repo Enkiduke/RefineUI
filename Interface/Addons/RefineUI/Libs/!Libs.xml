@@ -1,0 +1,17 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="LibStub\LibStub.lua"/>
+    <Script file="CallbackHandler-1.0\CallbackHandler-1.0.lua"/>
+    
+    <!-- SharedMedia -->
+    <Script file="LibSharedMedia-3.0\LibSharedMedia-3.0.lua"/>
+
+    <!-- CustomGlow -->
+    <Include file="LibCustomGlow-1.0\LibCustomGlow-1.0.xml"/>
+
+    <!-- EditMode -->
+    <Include file="LibEditMode\embed.xml"/>
+    <Include file="LibEditModeOverride\LibEditModeOverride.xml"/>
+
+    <!-- TaintLess -->
+    <Include file="TaintLess.xml"/>
+</Ui>

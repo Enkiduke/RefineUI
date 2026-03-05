@@ -1,0 +1,10 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="Chat.lua"/>
+    <Script file="Frames.lua"/>
+    <Script file="Tabs.lua"/>
+    <Script file="Icons.lua"/>
+    <Script file="LootIcons.lua"/>
+    <Script file="Roles.lua"/>
+    <Script file="Copy.lua"/>
+    <!-- <Script file="History.lua"/> -->
+</Ui>

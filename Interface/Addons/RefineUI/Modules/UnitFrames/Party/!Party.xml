@@ -1,0 +1,9 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Script file="Party.lua"/>
+	<Script file="ClassBuffs.lua"/>
+	<Script file="AuraLayout.lua"/>
+	<Script file="AuraBorders.lua"/>
+	<Script file="FrameStyle.lua"/>
+	<Script file="Settings.lua"/>
+	<Script file="Hooks.lua"/>
+</Ui>

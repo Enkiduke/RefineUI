@@ -1,0 +1,6 @@
+<Bindings>
+    <Binding name="CLICK RefineUI_RadBar:LeftButton" header="REFINEUI" />
+    <Binding name="REFINEUI_TOGGLEBAGS">
+        RefineUI_ToggleBags()
+    </Binding>
+</Bindings>

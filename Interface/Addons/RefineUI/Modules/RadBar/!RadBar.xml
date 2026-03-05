@@ -1,0 +1,8 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="RadBar.lua"/>
+    <Script file="Shared.lua"/>
+    <Script file="Core.lua"/>
+    <Script file="Ring.lua"/>
+    <Script file="Visuals.lua"/>
+    <Script file="Customization.lua"/>
+</Ui>

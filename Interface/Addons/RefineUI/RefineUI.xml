@@ -1,0 +1,33 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <!-- Libs -->
+    <Include file="Libs\!Libs.xml"/>
+
+    <!-- Engine & Libs (Must load first) -->
+    <Script file="Core\Engine.lua"/>
+    <Script file="Core\Libs.lua"/>
+
+    <!-- Config -->
+    <Script file="Config\Config.lua"/>
+    <Script file="Config\Colors.lua"/>
+    <Script file="Config\Positions.lua"/>
+    <Script file="Config\Media.lua"/>
+    <Script file="Config\Fonts.lua"/>
+
+    <!-- Locale -->
+    <Script file="Locale\enUS.lua"/>
+
+    <!-- Core -->
+    <Script file="Core\Lifecycle.lua"/>
+    <Script file="Core\Database.lua"/>
+    <Script file="Core\Modules.lua"/>
+    <Script file="Core\Events.lua"/>
+    <Script file="Core\EditMode.lua"/>
+    <Script file="Core\PixelPerfect.lua"/>
+    <Script file="Core\Install.lua"/>
+    <Script file="Core\Utilities.lua"/>
+    <Script file="Core\Scheduler.lua"/>
+    <Script file="Core\Style.lua"/>
+    <Script file="Core\Commands.lua"/>
+    <!-- Modules -->
+    <Include file="Modules\!Modules.xml"/>
+</Ui>

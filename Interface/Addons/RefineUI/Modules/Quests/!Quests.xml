@@ -1,0 +1,6 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="AutoAccept.lua"/>
+    <Script file="AutoCollapse.lua"/>
+    <Script file="AutoZoneTrack.lua"/>
+    <Script file="Quests.lua"/>
+</Ui>

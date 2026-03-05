@@ -1,0 +1,13 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Script file="FasterLoot.lua"/>
+	<Script file="AutoConfirm.lua"/>
+	<Script file="AutoRepair.lua"/>
+	<Script file="LootSettings.lua"/>
+	<Script file="LootRules.lua"/>
+	<Script file="LootRulesDefs.lua"/>
+	<Script file="LootRulesConfig.lua"/>
+	<Script file="LootRulesExecutor.lua"/>
+	<Script file="LootRulesOptionControls.lua"/>
+	<Script file="LootRulesOptionsUI.lua"/>
+	<Script file="LootRulesUI.lua"/>
+</Ui>

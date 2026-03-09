@@ -25,6 +25,7 @@ local type = type
 local tonumber = tonumber
 local ColorPickerFrame = ColorPickerFrame
 local Menu = Menu
+local MenuUtil = MenuUtil
 local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
@@ -164,7 +165,7 @@ local function BuildColorPickerInfo(colorCopy, onChanged)
 end
 
 
-local function AddColorSwatch(rootDescription, label, getColor, commitColor)
+local function AddColorSwatch(rootDescription, label, getColor, commitColor, onChanged)
     rootDescription:CreateColorSwatch(label, function()
         if not ColorPickerFrame or not ColorPickerFrame.SetupColorPickerAndShow then
             return
@@ -175,6 +176,9 @@ local function AddColorSwatch(rootDescription, label, getColor, commitColor)
         ColorPickerFrame:SetupColorPickerAndShow(BuildColorPickerInfo(colorCopy, function()
             if commitColor then
                 commitColor(colorCopy)
+            end
+            if onChanged then
+                onChanged(colorCopy)
             end
         end))
     end, BuildColorDisplayInfo(getColor and getColor() or nil))
@@ -203,15 +207,29 @@ local function GetOwnerCooldownID(owner)
         return nil
     end
 
+    if IsUsableCooldownID(owner.cooldownID) then
+        return owner.cooldownID
+    end
+
+    if type(owner.GetCooldownInfo) == "function" then
+        local ok, info = pcall(owner.GetCooldownInfo, owner)
+        if ok and not IsSecret(info) and type(info) == "table" and IsUsableCooldownID(info.cooldownID) then
+            return info.cooldownID
+        end
+    end
+
+    if CDM.StateGet then
+        local cooldownID = CDM:StateGet(owner, "cooldownID")
+        if IsUsableCooldownID(cooldownID) then
+            return cooldownID
+        end
+    end
+
     if type(owner.GetCooldownID) == "function" then
         local ok, cooldownID = pcall(owner.GetCooldownID, owner)
         if ok and IsUsableCooldownID(cooldownID) then
             return cooldownID
         end
-    end
-
-    if IsUsableCooldownID(owner.cooldownID) then
-        return owner.cooldownID
     end
 
     return nil
@@ -250,7 +268,16 @@ local function AddRefineTrackerAssignmentMenu(rootDescription, cooldownID)
 end
 
 
-local function AddVisualColorMenu(rootDescription, cooldownID, showBarColor, isSpellIcon)
+local function AddVisualColorMenu(rootDescription, cooldownID, showBarColor, isSpellIcon, owner)
+    local function OnColorChanged()
+        if owner and CDM.RefreshStandaloneSettingsItemVisual then
+            CDM:RefreshStandaloneSettingsItemVisual(owner)
+        end
+        if CDM.IsSettingsFrameShown and CDM:IsSettingsFrameShown() and CDM.RefreshSettingsSection then
+            CDM:RefreshSettingsSection()
+        end
+    end
+
     rootDescription:CreateDivider()
     rootDescription:CreateTitle("RefineUI Colors")
 
@@ -259,20 +286,20 @@ local function AddVisualColorMenu(rootDescription, cooldownID, showBarColor, isS
         return CDM:GetCooldownBorderColor(cooldownID)
     end, function(color)
         CDM:SetCooldownBorderColor(cooldownID, color)
-    end)
+    end, OnColorChanged)
 
     AddColorSwatch(rootDescription, "Font Color", function()
         return CDM:GetCooldownFontColor(cooldownID)
     end, function(color)
         CDM:SetCooldownFontColor(cooldownID, color)
-    end)
+    end, OnColorChanged)
 
     if showBarColor then
         AddColorSwatch(rootDescription, "Bar Color", function()
             return CDM:GetCooldownBarColor(cooldownID) or GetCurrentBarDefaultColor()
         end, function(color)
             CDM:SetCooldownBarColor(cooldownID, color)
-        end)
+        end, OnColorChanged)
     end
 
     rootDescription:CreateButton("Reset RefineUI Colors", function()
@@ -280,9 +307,36 @@ local function AddVisualColorMenu(rootDescription, cooldownID, showBarColor, isS
     end)
 end
 
+local function PopulateCooldownSettingsMenu(owner, rootDescription)
+    local cooldownID = GetOwnerCooldownID(owner)
+    if not IsUsableCooldownID(cooldownID) then
+        return
+    end
+
+    local info = ResolveCooldownInfo(owner, cooldownID)
+    local isSpellIcon = CDM:IsBlizzardSpellIconFrame(owner, cooldownID)
+    local showBarColor = info and not IsSecret(info.category) and info.category == TRACKED_BAR
+    AddVisualColorMenu(rootDescription, cooldownID, showBarColor, isSpellIcon, owner)
+
+    if IsRefineInjectedItem(owner) then
+        AddRefineTrackerAssignmentMenu(rootDescription, cooldownID)
+    end
+end
+
 ----------------------------------------------------------------------------------------
 -- Public Methods
 ----------------------------------------------------------------------------------------
+function CDM:OpenCooldownSettingsContextMenu(owner)
+    if not owner or not MenuUtil or type(MenuUtil.CreateContextMenu) ~= "function" then
+        return false
+    end
+
+    MenuUtil.CreateContextMenu(owner, function(menuOwner, rootDescription)
+        PopulateCooldownSettingsMenu(menuOwner or owner, rootDescription)
+    end)
+    return true
+end
+
 function CDM:InstallVisualMenuHooks()
     if self.visualMenuHooksInstalled then
         return
@@ -292,21 +346,8 @@ function CDM:InstallVisualMenuHooks()
     end
 
     Menu.ModifyMenu("MENU_COOLDOWN_SETTINGS_ITEM", function(owner, rootDescription)
-        local cooldownID = GetOwnerCooldownID(owner)
-        if not IsUsableCooldownID(cooldownID) then
-            return
-        end
-
-        local info = ResolveCooldownInfo(owner, cooldownID)
-        local isSpellIcon = CDM:IsBlizzardSpellIconFrame(owner, cooldownID)
-        local showBarColor = info and not IsSecret(info.category) and info.category == TRACKED_BAR
-        AddVisualColorMenu(rootDescription, cooldownID, showBarColor, isSpellIcon)
-
-        if IsRefineInjectedItem(owner) then
-            AddRefineTrackerAssignmentMenu(rootDescription, cooldownID)
-        end
+        PopulateCooldownSettingsMenu(owner, rootDescription)
     end)
 
     self.visualMenuHooksInstalled = true
 end
-

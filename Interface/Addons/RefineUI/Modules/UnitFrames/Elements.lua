@@ -1,401 +1,856 @@
 ----------------------------------------------------------------------------------------
--- RefineUI UnitFrames Elements
--- Description: Shared helper functions and elements for UnitFrames.
+-- UnitFrames Component: Elements
+-- Description: Shared colors, custom text elements, and aura styling.
 ----------------------------------------------------------------------------------------
-local _, RefineUI = ...
-local Config = RefineUI.Config
-RefineUI.UnitFrames = RefineUI.UnitFrames or {}
-local UF = RefineUI.UnitFrames
 
--- Global/Local Imports
+local _, RefineUI = ...
+local UnitFrames = RefineUI:GetModule("UnitFrames")
+if not UnitFrames then
+    return
+end
+
+----------------------------------------------------------------------------------------
+-- Shared Aliases
+----------------------------------------------------------------------------------------
+local Config = RefineUI.Config
+local Media = RefineUI.Media
+
+----------------------------------------------------------------------------------------
+-- Global / Local Imports
+----------------------------------------------------------------------------------------
+local _G = _G
+local CreateFrame = CreateFrame
 local UnitIsConnected = UnitIsConnected
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
 local UnitHealth = UnitHealth
-local tonumber = tonumber
-local issecretvalue = _G.issecretvalue
 local UnitExists = UnitExists
 local UnitClass = UnitClass
 local UnitIsPlayer = UnitIsPlayer
 local UnitReaction = UnitReaction
 local UnitIsUnit = UnitIsUnit
-local unpack = unpack
+local UnitCanAttack = UnitCanAttack
 local UnitHealthPercent = UnitHealthPercent
 local UnitPowerPercent = UnitPowerPercent
+local ipairs = ipairs
+local max = math.max
+local unpack = unpack
+local pairs = pairs
 local type = type
-local tostring = tostring
-
-local ELEMENTS_STATE_REGISTRY = "UnitFramesElementsState"
-
-local function GetElementState(owner, key, defaultValue)
-    return RefineUI:RegistryGet(ELEMENTS_STATE_REGISTRY, owner, key, defaultValue)
-end
-
-local function SetElementState(owner, key, value)
-    if value == nil then
-        RefineUI:RegistryClear(ELEMENTS_STATE_REGISTRY, owner, key)
-    else
-        RefineUI:RegistrySet(ELEMENTS_STATE_REGISTRY, owner, key, value)
-    end
-end
-
-local function BuildElementHookKey(owner, method)
-    local ownerId
-    if type(owner) == "table" and owner.GetName then
-        ownerId = owner:GetName()
-    end
-    if not ownerId or ownerId == "" then
-        ownerId = tostring(owner)
-    end
-    return "UnitFramesElements:" .. ownerId .. ":" .. method
-end
-
--- Cache Player Class Color
-local _, myClass = UnitClass("player")
-local MyClassColor = RefineUI.Colors.Class[myClass]
-RefineUI.MyClassColor = MyClassColor -- Share globally for other modules
+local tonumber = tonumber
+local issecretvalue = issecretvalue
 
 ----------------------------------------------------------------------------------------
 -- Colors
 ----------------------------------------------------------------------------------------
-function UF.GetUnitHealthColor(unit)
-    if not unit or not UnitExists(unit) then 
-        return unpack(Config.UnitFrames.Bars.HealthColor) 
+local MyClassColor = RefineUI.MyClassColor
+
+function UnitFrames.GetUnitHealthColor(unit)
+    if not unit or not UnitExists(unit) then
+        return unpack(Config.UnitFrames.Bars.HealthColor)
     end
-    
+
     if UnitIsPlayer(unit) and Config.UnitFrames.Bars.UseClassColor then
         if UnitIsUnit(unit, "player") and MyClassColor then
             return MyClassColor.r, MyClassColor.g, MyClassColor.b
         end
+
         local _, class = UnitClass(unit)
         local color = RefineUI.Colors.Class[class]
-        if color then return color.r, color.g, color.b end
+        if color then
+            return color.r, color.g, color.b
+        end
     elseif Config.UnitFrames.Bars.UseReactionColor then
         if UnitIsTapDenied(unit) then
             return 0.5, 0.5, 0.5
         end
+
         local reaction = UnitReaction(unit, "player")
         if reaction then
-             local color = RefineUI.Colors.Reaction[reaction]
-             if color then return color.r, color.g, color.b end
+            local color = RefineUI.Colors.Reaction[reaction]
+            if color then
+                return color.r, color.g, color.b
+            end
         end
     end
-    
+
     return unpack(Config.UnitFrames.Bars.HealthColor)
 end
 
-function UF.GetUnitPowerColor(unit)
-    if not unit or not UnitExists(unit) then 
-        return unpack(Config.UnitFrames.Bars.ManaColor) 
+function UnitFrames.GetUnitPowerColor(unit)
+    if not unit or not UnitExists(unit) then
+        return unpack(Config.UnitFrames.Bars.ManaColor)
     end
-    
+
     if Config.UnitFrames.Bars.UsePowerColor then
         local _, powerToken = UnitPowerType(unit)
         local color = RefineUI.Colors.Power[powerToken]
-        if color then return color.r, color.g, color.b end
+        if color then
+            return color.r, color.g, color.b
+        end
     end
-    
+
     return unpack(Config.UnitFrames.Bars.ManaColor)
 end
 
 ----------------------------------------------------------------------------------------
 -- Custom Text
 ----------------------------------------------------------------------------------------
-local function UpdateCustomHPText(hpContainer, unit)
+local function GetCustomTextData(frame)
+    local data = UnitFrames:GetFrameData(frame)
+    data.CustomText = data.CustomText or {}
+    return data.CustomText
+end
+
+local function UpdateCustomHPText(frame, unit)
+    local textData = GetCustomTextData(frame)
+    local percentText = textData.HealthPercentText
+    local currentText = textData.HealthCurrentText
+    if not percentText or not currentText then
+        return
+    end
+
     if not UnitIsConnected(unit) then
-        hpContainer.CustomPercentText:SetText("OFFLINE")
-        hpContainer.CustomCurrentText:SetText("OFFLINE")
-        hpContainer.CustomPercentText:SetTextColor(0.5, 0.5, 0.5)
-        hpContainer.CustomCurrentText:SetTextColor(0.5, 0.5, 0.5)
+        percentText:SetText("OFFLINE")
+        currentText:SetText("OFFLINE")
+        percentText:SetTextColor(0.5, 0.5, 0.5)
+        currentText:SetTextColor(0.5, 0.5, 0.5)
     elseif UnitIsDeadOrGhost(unit) then
-        hpContainer.CustomPercentText:SetText("DEAD")
-        hpContainer.CustomCurrentText:SetText("DEAD")
-        hpContainer.CustomPercentText:SetTextColor(0.5, 0.5, 0.5)
-        hpContainer.CustomCurrentText:SetTextColor(0.5, 0.5, 0.5)
+        percentText:SetText("DEAD")
+        currentText:SetText("DEAD")
+        percentText:SetTextColor(0.5, 0.5, 0.5)
+        currentText:SetTextColor(0.5, 0.5, 0.5)
     else
-        local scale = RefineUI.ScaleTo100 or 1.0
-        
-        -- WoW 12.0+: Use Percent Curve for health
         local percent = UnitHealthPercent(unit, true, RefineUI.GetPercentCurve())
-        hpContainer.CustomPercentText:SetText(percent) -- Pass directly (engine handles secrets)
-        
-        -- Safe Current Health
         local hp = UnitHealth(unit)
-        hpContainer.CustomCurrentText:SetText(hp) -- Pass directly (engine handles secrets)
-        
-        hpContainer.CustomPercentText:SetTextColor(1, 1, 1)
-        hpContainer.CustomCurrentText:SetTextColor(1, 1, 1)
+        percentText:SetText(percent)
+        currentText:SetText(hp)
+        percentText:SetTextColor(1, 1, 1)
+        currentText:SetTextColor(1, 1, 1)
     end
 end
 
 local function GetPlayerManaOverlayBar()
     local playerFrame = _G.PlayerFrame
-    if not playerFrame or not RefineUI.UnitFrameData then
+    if not playerFrame then
         return nil
     end
 
-    local data = RefineUI.UnitFrameData[playerFrame]
-    local overlayData = data and data.RefinePlayerManaOverlay
+    local data = UnitFrames:GetFrameData(playerFrame)
+    local overlayData = data and data.PlayerManaOverlay
     return overlayData and overlayData.Bar or nil
 end
 
-local function SyncManaTextParent(manaBar, unit)
-    if not manaBar or not manaBar.CustomPercentText then return end
+local function SyncManaTextParent(frame, manaBar, unit)
+    local textData = GetCustomTextData(frame)
+    local manaText = textData.ManaPercentText
+    if not manaText then
+        return
+    end
 
     local desiredParent = manaBar
-    if unit == "player" and UF.IsPlayerSecondaryPowerSwapActive and UF.IsPlayerSecondaryPowerSwapActive() then
+    if unit == "player" and UnitFrames.IsPlayerSecondaryPowerSwapActive and UnitFrames.IsPlayerSecondaryPowerSwapActive() then
         local overlayBar = GetPlayerManaOverlayBar()
         if overlayBar then
             desiredParent = overlayBar
         end
     end
 
-    if manaBar.CustomPercentText:GetParent() ~= desiredParent then
-        manaBar.CustomPercentText:SetParent(desiredParent)
+    if manaText:GetParent() ~= desiredParent then
+        manaText:SetParent(desiredParent)
     end
 end
 
-local function UpdateCustomManaText(manaBar, unit)
-    SyncManaTextParent(manaBar, unit)
+local function UpdateCustomManaText(frame, manaBar, unit)
+    local textData = GetCustomTextData(frame)
+    local manaText = textData.ManaPercentText
+    if not manaText then
+        return
+    end
 
-    -- WoW 12.0+: Use Percent Curve for power
+    SyncManaTextParent(frame, manaBar, unit)
+
     local powerType
-    if unit == "player" and UF.IsPlayerSecondaryPowerSwapActive and UF.IsPlayerSecondaryPowerSwapActive() then
+    if unit == "player" and UnitFrames.IsPlayerSecondaryPowerSwapActive and UnitFrames.IsPlayerSecondaryPowerSwapActive() then
         powerType = Enum.PowerType.Mana
     end
 
     local percent = UnitPowerPercent(unit, powerType, false, RefineUI.GetPercentCurve())
-    manaBar.CustomPercentText:SetText(percent) -- Pass directly (engine handles secrets)
+    manaText:SetText(percent)
 end
 
-local function GetFrameContainers(frame)
-    -- Helper to find containers safely
-    local content = frame.PlayerFrameContent or frame.TargetFrameContent
-    if not content then return end
-    local contentMain = content.PlayerFrameContentMain or content.TargetFrameContentMain
-    if not contentMain then return end
-    local hpContainer = contentMain.HealthBarsContainer
-    local manaBar = contentMain.ManaBarArea and contentMain.ManaBarArea.ManaBar or contentMain.ManaBar
-    return content, contentMain, hpContainer, manaBar
-end
-UF.GetFrameContainers = GetFrameContainers
+function UnitFrames.CreateCustomText(frame)
+    local _, _, hpContainer, manaBar = UnitFrames:GetFrameContainers(frame)
+    if not hpContainer then
+        return
+    end
 
-function UF.CreateCustomText(frame)
-    local _, _, hpContainer, manaBar = GetFrameContainers(frame)
-    if not hpContainer then return end
     local unit = frame.unit or "player"
-    local uConf = Config.UnitFrames
+    local cfg = Config.UnitFrames.Fonts
+    local frameData = UnitFrames:GetFrameData(frame)
+    local textData = GetCustomTextData(frame)
+    local refineUF = frameData and frameData.RefineUF
+    local parentTex = refineUF and refineUF.Texture or frame
 
-    -- Hide default texts
-    for _, text in pairs({hpContainer.LeftText, hpContainer.RightText, hpContainer.HealthBarText, hpContainer.DeadText}) do
+    for _, text in pairs({ hpContainer.LeftText, hpContainer.RightText, hpContainer.HealthBarText, hpContainer.DeadText }) do
         if text then
             text:SetAlpha(0)
-            if not GetElementState(text, "hiddenHook", false) then
-                RefineUI:HookOnce(BuildElementHookKey(text, "SetAlpha"), text, "SetAlpha", function(self, alpha)
-                    if alpha ~= 0 then self:SetAlpha(0) end
+            if not UnitFrames:GetState(text, "HiddenHook", false) then
+                RefineUI:HookOnce(UnitFrames:BuildHookKey(text, "SetAlpha:CustomText"), text, "SetAlpha", function(selfText, alpha)
+                    if alpha ~= 0 then
+                        selfText:SetAlpha(0)
+                    end
                 end)
-                SetElementState(text, "hiddenHook", true)
+                UnitFrames:SetState(text, "HiddenHook", true)
             end
         end
     end
 
-    local cfg = Config.UnitFrames.Fonts
-    
-    -- Retrieve external data to access RefineUF
-    local data = RefineUI.UnitFrameData and RefineUI.UnitFrameData[frame]
-    local refineUF = data and data.RefineUF
-    
-    -- Custom HP Percent
-    if not hpContainer.CustomPercentText then
-        hpContainer.CustomPercentText = hpContainer:CreateFontString(nil, "OVERLAY")
-        RefineUI.Font(hpContainer.CustomPercentText, cfg.HPSize)
-        
-        local parentTex = refineUF and refineUF.Texture or frame
-        hpContainer.CustomPercentText:SetPoint("CENTER", parentTex, "CENTER", 0, 8)
+    if not textData.HealthPercentText then
+        textData.HealthPercentText = hpContainer:CreateFontString(nil, "OVERLAY")
+        RefineUI.Font(textData.HealthPercentText, cfg.HPSize)
+        textData.HealthPercentText:SetPoint("CENTER", parentTex, "CENTER", 0, 8)
     end
 
-    -- Custom HP Current
-    if not hpContainer.CustomCurrentText then
-        hpContainer.CustomCurrentText = hpContainer:CreateFontString(nil, "OVERLAY")
-        RefineUI.Font(hpContainer.CustomCurrentText, cfg.HPSize)
-        
-        local parentTex = refineUF and refineUF.Texture or frame
-        hpContainer.CustomCurrentText:SetPoint("CENTER", parentTex, "CENTER", 0, 8)
-        hpContainer.CustomCurrentText:SetAlpha(0)
+    if not textData.HealthCurrentText then
+        textData.HealthCurrentText = hpContainer:CreateFontString(nil, "OVERLAY")
+        RefineUI.Font(textData.HealthCurrentText, cfg.HPSize)
+        textData.HealthCurrentText:SetPoint("CENTER", parentTex, "CENTER", 0, 8)
+        textData.HealthCurrentText:SetAlpha(0)
     end
 
-    -- Mana Text
     if manaBar then
-        for _, text in pairs({manaBar.LeftText, manaBar.RightText, manaBar.ManaBarText}) do
+        for _, text in pairs({ manaBar.LeftText, manaBar.RightText, manaBar.ManaBarText }) do
             if text then
                 text:SetAlpha(0)
-                if not GetElementState(text, "hiddenHook", false) then
-                    RefineUI:HookOnce(BuildElementHookKey(text, "SetAlpha"), text, "SetAlpha", function(self, alpha)
-                        if alpha ~= 0 then self:SetAlpha(0) end
+                if not UnitFrames:GetState(text, "HiddenHook", false) then
+                    RefineUI:HookOnce(UnitFrames:BuildHookKey(text, "SetAlpha:CustomText"), text, "SetAlpha", function(selfText, alpha)
+                        if alpha ~= 0 then
+                            selfText:SetAlpha(0)
+                        end
                     end)
-                    SetElementState(text, "hiddenHook", true)
+                    UnitFrames:SetState(text, "HiddenHook", true)
                 end
             end
         end
 
-        if not manaBar.CustomPercentText then
-            manaBar.CustomPercentText = manaBar:CreateFontString(nil, "OVERLAY")
-            RefineUI.Font(manaBar.CustomPercentText, cfg.ManaSize)
-            
-            local parentTex = refineUF and refineUF.Texture or frame
-            manaBar.CustomPercentText:SetPoint("CENTER", parentTex, "CENTER", 2, -6)
-            manaBar.CustomPercentText:SetAlpha(0)
+        if not textData.ManaPercentText then
+            textData.ManaPercentText = manaBar:CreateFontString(nil, "OVERLAY")
+            RefineUI.Font(textData.ManaPercentText, cfg.ManaSize)
+            textData.ManaPercentText:SetPoint("CENTER", parentTex, "CENTER", 2, -6)
+            textData.ManaPercentText:SetAlpha(0)
         end
     end
 
-    -- Event Handling via Core/Events.lua
-    if not GetElementState(hpContainer, "eventsRegistered", false) then
-         local function OnHealthEvent(event, u)
-             if u == unit then UpdateCustomHPText(hpContainer, unit) end
-         end
-         
-         -- Initial update
-         UpdateCustomHPText(hpContainer, unit)
-         
-         RefineUI:OnEvents({"UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION"}, OnHealthEvent, "RefineUF_HP_"..unit)
-         
-         if frame == TargetFrame then
-             RefineUI:RegisterEventCallback("PLAYER_TARGET_CHANGED", function() UpdateCustomHPText(hpContainer, frame.unit) end, "RefineUF_TGT_HP")
-         elseif frame == FocusFrame then
-             RefineUI:RegisterEventCallback("PLAYER_FOCUS_CHANGED", function() UpdateCustomHPText(hpContainer, frame.unit) end, "RefineUF_FOC_HP")
-         end
+    if not UnitFrames:GetState(hpContainer, "CustomTextEventsRegistered", false) then
+        local function OnHealthEvent(_, eventUnit)
+            if eventUnit == unit then
+                UpdateCustomHPText(frame, unit)
+            end
+        end
 
-         SetElementState(hpContainer, "eventsRegistered", true)
+        UpdateCustomHPText(frame, unit)
+        RefineUI:OnEvents({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, OnHealthEvent, "RefineUF_HP_" .. unit)
+
+        if frame == TargetFrame then
+            RefineUI:RegisterEventCallback("PLAYER_TARGET_CHANGED", function()
+                UpdateCustomHPText(frame, frame.unit)
+            end, "RefineUF_TGT_HP")
+        elseif frame == FocusFrame then
+            RefineUI:RegisterEventCallback("PLAYER_FOCUS_CHANGED", function()
+                UpdateCustomHPText(frame, frame.unit)
+            end, "RefineUF_FOC_HP")
+        end
+
+        UnitFrames:SetState(hpContainer, "CustomTextEventsRegistered", true)
     end
 
-    if manaBar and not GetElementState(manaBar, "eventsRegistered", false) then
-        local function OnPowerEvent(event, u)
-             if u == unit then UpdateCustomManaText(manaBar, unit) end
-         end
-         
-          UpdateCustomManaText(manaBar, unit)
-          
-          RefineUI:OnEvents({"UNIT_POWER_UPDATE", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER"}, OnPowerEvent, "RefineUF_PP_"..unit)
-         
-         if frame == TargetFrame then
-             RefineUI:RegisterEventCallback("PLAYER_TARGET_CHANGED", function() UpdateCustomManaText(manaBar, frame.unit) end, "RefineUF_TGT_MP")
-         elseif frame == FocusFrame then
-             RefineUI:RegisterEventCallback("PLAYER_FOCUS_CHANGED", function() UpdateCustomManaText(manaBar, frame.unit) end, "RefineUF_FOC_MP")
-         end
-         
-         SetElementState(manaBar, "eventsRegistered", true)
+    if manaBar and not UnitFrames:GetState(manaBar, "CustomTextEventsRegistered", false) then
+        local function OnPowerEvent(_, eventUnit)
+            if eventUnit == unit then
+                UpdateCustomManaText(frame, manaBar, unit)
+            end
+        end
+
+        UpdateCustomManaText(frame, manaBar, unit)
+        RefineUI:OnEvents({ "UNIT_POWER_UPDATE", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }, OnPowerEvent, "RefineUF_PP_" .. unit)
+
+        if frame == TargetFrame then
+            RefineUI:RegisterEventCallback("PLAYER_TARGET_CHANGED", function()
+                UpdateCustomManaText(frame, manaBar, frame.unit)
+            end, "RefineUF_TGT_MP")
+        elseif frame == FocusFrame then
+            RefineUI:RegisterEventCallback("PLAYER_FOCUS_CHANGED", function()
+                UpdateCustomManaText(frame, manaBar, frame.unit)
+            end, "RefineUF_FOC_MP")
+        end
+
+        UnitFrames:SetState(manaBar, "CustomTextEventsRegistered", true)
     end
 
-    -- Hover Hooks
-    if not GetElementState(frame, "refineHoverHooked", false) then
+    if not UnitFrames:GetState(frame, "RefineHoverHooked", false) then
         local function OnEnter()
-            hpContainer.CustomPercentText:SetAlpha(0)
-            hpContainer.CustomCurrentText:SetAlpha(1)
-            if manaBar then manaBar.CustomPercentText:SetAlpha(1) end
+            textData.HealthPercentText:SetAlpha(0)
+            textData.HealthCurrentText:SetAlpha(1)
+            if textData.ManaPercentText then
+                textData.ManaPercentText:SetAlpha(1)
+            end
         end
+
         local function OnLeave()
-            hpContainer.CustomPercentText:SetAlpha(1)
-            hpContainer.CustomCurrentText:SetAlpha(0)
-            if manaBar then manaBar.CustomPercentText:SetAlpha(0) end
+            textData.HealthPercentText:SetAlpha(1)
+            textData.HealthCurrentText:SetAlpha(0)
+            if textData.ManaPercentText then
+                textData.ManaPercentText:SetAlpha(0)
+            end
         end
 
         frame:HookScript("OnEnter", OnEnter)
         frame:HookScript("OnLeave", OnLeave)
         if hpContainer.HealthBar then
-             hpContainer.HealthBar:HookScript("OnEnter", OnEnter)
-             hpContainer.HealthBar:HookScript("OnLeave", OnLeave)
+            hpContainer.HealthBar:HookScript("OnEnter", OnEnter)
+            hpContainer.HealthBar:HookScript("OnLeave", OnLeave)
         end
         if manaBar then
-             manaBar:HookScript("OnEnter", OnEnter)
-             manaBar:HookScript("OnLeave", OnLeave)
+            manaBar:HookScript("OnEnter", OnEnter)
+            manaBar:HookScript("OnLeave", OnLeave)
         end
-        SetElementState(frame, "refineHoverHooked", true)
+
+        UnitFrames:SetState(frame, "RefineHoverHooked", true)
     end
 end
 
 ----------------------------------------------------------------------------------------
 -- Auras
 ----------------------------------------------------------------------------------------
-function UF.StyleAuraIcon(button)
-    if not button or button:IsForbidden() or GetElementState(button, "refineUIHooked", false) then return end
-    
-    RefineUI.CreateBorder(button, 2, 2, 8)
-    
-    if button.Border then
-        button.Border:Hide()
-        RefineUI:HookOnce(BuildElementHookKey(button.Border, "Show"), button.Border, "Show", function(self) self:Hide() end)
-    end
-    
-    if button.Stealable then
-        button.Stealable:Hide()
-        RefineUI:HookOnce(BuildElementHookKey(button.Stealable, "Show"), button.Stealable, "Show", function(self) self:Hide() end)
+local TARGET_FOCUS_AURA_BORDER_INSET = 4
+local TARGET_FOCUS_AURA_BORDER_EDGE = 8
+local TARGET_FOCUS_AURA_COOLDOWN_OFFSET_X = 1.5
+local TARGET_FOCUS_AURA_COOLDOWN_OFFSET_Y = 1.5
+local TARGET_FOCUS_DEBUFF_DISPLAY_INFO = AuraUtil and AuraUtil.GetDebuffDisplayInfoTable and AuraUtil.GetDebuffDisplayInfoTable() or nil
+
+local function GetTargetFocusCooldownSwipeTexture()
+    local textures = Media and Media.Textures
+    if type(textures) ~= "table" then
+        return nil
     end
 
-    if not GetElementState(button, "refineUISizeHook", false) then
-        RefineUI:HookOnce(BuildElementHookKey(button, "SetSize"), button, "SetSize", function(self, width, height)
-            if GetElementState(self, "refineUISizing", false) then return end
-            SetElementState(self, "refineUISizing", true)
-            
-            local auras = Config.UnitFrames.Auras
-            local isLarge = width > 20
-            local newSize = isLarge and auras.LargeSize or auras.Size
-            
-            self:SetSize(newSize, newSize)
-            SetElementState(self, "refineUISizing", nil)
-        end)
-        SetElementState(button, "refineUISizeHook", true)
+    if type(textures.CooldownSwipeSmall) == "string" and textures.CooldownSwipeSmall ~= "" then
+        return textures.CooldownSwipeSmall
     end
 
-    SetElementState(button, "refineUIHooked", true)
+    if type(textures.CooldownSwipe) == "string" and textures.CooldownSwipe ~= "" then
+        return textures.CooldownSwipe
+    end
+
+    return nil
 end
 
-function UF.UpdateUnitAuras(frame)
-    if not frame or not frame.auraPools then return end
-    
-    local _, _, hpContainer = GetFrameContainers(frame)
-    if not hpContainer then return end
+local function IsPlayerOrPetAuraSource(sourceUnit)
+    if issecretvalue and issecretvalue(sourceUnit) then
+        return false
+    end
+
+    return sourceUnit == "player" or sourceUnit == "pet"
+end
+
+local function GetTargetFocusAuraBorderColor(button, auraData)
+    local color = Config.General and Config.General.BorderColor
+    local defaultR = color and color[1] or 0.6
+    local defaultG = color and color[2] or 0.6
+    local defaultB = color and color[3] or 0.6
+    local defaultA = color and (color[4] or 1) or 1
+
+    if not auraData then
+        return defaultR, defaultG, defaultB, defaultA
+    end
+
+    local isHarmful = auraData.isHarmful
+    if issecretvalue and issecretvalue(isHarmful) then
+        return defaultR, defaultG, defaultB, defaultA
+    end
+
+    if not isHarmful then
+        local auraConfig = UnitFrames.GetTargetFocusAuraConfig and UnitFrames.GetTargetFocusAuraConfig(button and button.unit)
+        local isLargeBuff = IsPlayerOrPetAuraSource(auraData.sourceUnit)
+        local buffColor = isLargeBuff and auraConfig and auraConfig.LargeBuffBorderColor or auraConfig and auraConfig.SmallBuffBorderColor
+        if type(buffColor) == "table" and type(buffColor[1]) == "number" and type(buffColor[2]) == "number" and type(buffColor[3]) == "number" then
+            return buffColor[1], buffColor[2], buffColor[3], buffColor[4] or defaultA
+        end
+        return defaultR, defaultG, defaultB, defaultA
+    end
+
+    local dispelType = auraData.dispelName
+    if issecretvalue and issecretvalue(dispelType) then
+        return defaultR, defaultG, defaultB, defaultA
+    end
+
+    local info = TARGET_FOCUS_DEBUFF_DISPLAY_INFO and (TARGET_FOCUS_DEBUFF_DISPLAY_INFO[dispelType] or TARGET_FOCUS_DEBUFF_DISPLAY_INFO.None)
+    local colorInfo = info and info.color
+    if colorInfo and colorInfo.GetRGBA then
+        return colorInfo:GetRGBA()
+    end
+
+    return defaultR, defaultG, defaultB, defaultA
+end
+
+local function EnsureAuraSkin(button)
+    local skin = UnitFrames:GetState(button, "AuraSkin", nil)
+    if skin then
+        return skin
+    end
+
+    skin = {}
+
+    local wrapper = CreateFrame("Frame", nil, button)
+    wrapper:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+    wrapper:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
+    skin.wrapper = wrapper
+
+    if button.Icon and button.Icon.GetTexture then
+        local skinnedIcon = wrapper:CreateTexture(nil, "BACKGROUND")
+        skinnedIcon:SetAllPoints(wrapper)
+        skinnedIcon:SetTexCoord(0.1, 0.9, 0.1, 0.9)
+        skinnedIcon:SetTexture(button.Icon:GetTexture())
+        button.Icon:SetAlpha(0)
+
+        RefineUI:HookOnce(UnitFrames:BuildHookKey(button.Icon, "SetTexture:TargetFocusAura"), button.Icon, "SetTexture", function(_, texture)
+            skinnedIcon:SetTexture(texture)
+        end)
+
+        skin.skinnedIcon = skinnedIcon
+    end
+
+    local cooldown = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
+    cooldown:SetReverse(true)
+    cooldown:SetDrawEdge(false)
+    cooldown:SetDrawBling(false)
+    cooldown:SetDrawSwipe(true)
+    cooldown:SetSwipeColor(0, 0, 0, 0.8)
+    cooldown:SetHideCountdownNumbers(true)
+
+    local swipeTexture = GetTargetFocusCooldownSwipeTexture()
+    if swipeTexture and cooldown.SetSwipeTexture then
+        cooldown:SetSwipeTexture(swipeTexture)
+    end
+
+    skin.cooldown = cooldown
+
+    UnitFrames:SetState(button, "AuraSkin", skin)
+    return skin
+end
+
+local function UpdateAuraSkin(button, auraData)
+    local skin = EnsureAuraSkin(button)
+    if not skin or not skin.wrapper then
+        return
+    end
+
+    local wrapper = skin.wrapper
+    wrapper:ClearAllPoints()
+    wrapper:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+    wrapper:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
+
+    if wrapper.SetFrameStrata then
+        wrapper:SetFrameStrata(button:GetFrameStrata() or "MEDIUM")
+    end
+    if wrapper.SetFrameLevel then
+        wrapper:SetFrameLevel(button:GetFrameLevel() or 0)
+    end
+
+    if skin.skinnedIcon and button.Icon and button.Icon.GetTexture then
+        skin.skinnedIcon:SetTexture(button.Icon:GetTexture())
+        button.Icon:SetAlpha(0)
+    end
+
+    RefineUI.CreateBorder(wrapper, TARGET_FOCUS_AURA_BORDER_INSET, TARGET_FOCUS_AURA_BORDER_INSET, TARGET_FOCUS_AURA_BORDER_EDGE)
+
+    if wrapper.border and wrapper.border.SetFrameStrata then
+        wrapper.border:SetFrameStrata(wrapper:GetFrameStrata() or "MEDIUM")
+    end
+    if wrapper.border and wrapper.border.SetFrameLevel then
+        wrapper.border:SetFrameLevel(max(0, (wrapper:GetFrameLevel() or 0) + 1))
+    end
+    if wrapper.border and wrapper.border.SetBackdropBorderColor then
+        wrapper.border:SetBackdropBorderColor(GetTargetFocusAuraBorderColor(button, auraData))
+    end
+
+    local cooldown = skin.cooldown
+    if not cooldown then
+        return
+    end
+
+    if cooldown.ClearAllPoints and cooldown.SetPoint then
+        cooldown:ClearAllPoints()
+        cooldown:SetPoint("TOPLEFT", wrapper, "TOPLEFT", -TARGET_FOCUS_AURA_COOLDOWN_OFFSET_X, TARGET_FOCUS_AURA_COOLDOWN_OFFSET_Y)
+        cooldown:SetPoint("BOTTOMRIGHT", wrapper, "BOTTOMRIGHT", TARGET_FOCUS_AURA_COOLDOWN_OFFSET_X, -TARGET_FOCUS_AURA_COOLDOWN_OFFSET_Y)
+    end
+    if cooldown.SetFrameStrata then
+        cooldown:SetFrameStrata(button:GetFrameStrata() or "MEDIUM")
+    end
+    if cooldown.SetFrameLevel then
+        cooldown:SetFrameLevel((button:GetFrameLevel() or 0) + 50)
+    end
+
+    if button.Cooldown and button.Cooldown ~= cooldown then
+        button.Cooldown:Hide()
+        RefineUI:HookOnce(UnitFrames:BuildHookKey(button.Cooldown, "Show:TargetFocusAura"), button.Cooldown, "Show", function(selfCooldown)
+            selfCooldown:Hide()
+        end)
+    end
+
+    local auraInstanceID = auraData and auraData.auraInstanceID or button.auraInstanceID
+    local auraDurationObj = nil
+    local didSetCooldown = false
+
+    if C_UnitAuras and C_UnitAuras.GetAuraDuration and auraInstanceID and button.unit then
+        auraDurationObj = C_UnitAuras.GetAuraDuration(button.unit, auraInstanceID)
+        if auraDurationObj and type(cooldown.SetCooldownFromDurationObject) == "function" then
+            local ok = pcall(cooldown.SetCooldownFromDurationObject, cooldown, auraDurationObj)
+            if ok then
+                didSetCooldown = true
+            end
+        end
+    end
+
+    if not didSetCooldown and auraData then
+        if type(cooldown.SetCooldownFromExpirationTime) == "function" then
+            local ok = pcall(cooldown.SetCooldownFromExpirationTime, cooldown, auraData.expirationTime, auraData.duration, 1)
+            if ok then
+                didSetCooldown = true
+            end
+        end
+    end
+
+    if didSetCooldown then
+        cooldown:Show()
+    else
+        if cooldown.Clear then
+            cooldown:Clear()
+        end
+        cooldown:Hide()
+    end
+end
+
+function UnitFrames.StyleAuraIcon(button)
+    if not button or button:IsForbidden() or UnitFrames:GetState(button, "AuraStyled", false) then
+        return
+    end
+
+    EnsureAuraSkin(button)
+
+    if button.Border then
+        button.Border:Hide()
+        RefineUI:HookOnce(UnitFrames:BuildHookKey(button.Border, "Show:AuraBorder"), button.Border, "Show", function(selfBorder)
+            selfBorder:Hide()
+        end)
+    end
+
+    if button.Stealable then
+        button.Stealable:Hide()
+        RefineUI:HookOnce(UnitFrames:BuildHookKey(button.Stealable, "Show:Stealable"), button.Stealable, "Show", function(selfStealable)
+            selfStealable:Hide()
+        end)
+    end
+
+    UnitFrames:SetState(button, "AuraStyled", true)
+end
+
+function UnitFrames.GetTargetFocusAuraConfig(frameOrUnit)
+    local unit = frameOrUnit
+    if type(frameOrUnit) == "table" then
+        if frameOrUnit == FocusFrame then
+            unit = "focus"
+        else
+            unit = frameOrUnit.unit
+        end
+    end
+
+    if unit == "focus" then
+        return Config.UnitFrames.FocusAuras or Config.UnitFrames.TargetAuras or Config.UnitFrames.Auras
+    end
+
+    return Config.UnitFrames.TargetAuras or Config.UnitFrames.Auras
+end
+
+local function EnsureTargetFocusAuraHolders(frame)
+    local data = UnitFrames:GetFrameData(frame)
+    if data.TargetFocusAuraHolders then
+        return data.TargetFocusAuraHolders
+    end
+
+    local holders = {}
+    holders.near = CreateFrame("Frame", nil, frame)
+    holders.far = CreateFrame("Frame", nil, frame)
+
+    for _, holder in pairs(holders) do
+        holder:SetSize(1, 1)
+        holder:Hide()
+        holder:SetFrameStrata(frame:GetFrameStrata() or "MEDIUM")
+        holder:SetFrameLevel((frame:GetFrameLevel() or 0) + 10)
+    end
+
+    data.TargetFocusAuraHolders = holders
+    return holders
+end
+
+local function HideTargetFocusAuraHolders(frame)
+    local data = UnitFrames:GetFrameData(frame)
+    local holders = data and data.TargetFocusAuraHolders
+    if not holders then
+        return
+    end
+
+    holders.near:Hide()
+    holders.far:Hide()
+end
+
+local function NormalizeAuraMetric(value, fallback, minimum)
+    if type(value) ~= "number" then
+        value = fallback
+    end
+
+    if minimum and value < minimum then
+        value = minimum
+    end
+
+    return value
+end
+
+local function GetTargetFocusAuraMetrics(frame)
+    local cfg = UnitFrames.GetTargetFocusAuraConfig(frame) or {}
+    local hasToT = frame.totFrame and frame.totFrame:IsShown()
+
+    return {
+        enabled = cfg.Enable ~= false,
+        size = NormalizeAuraMetric(cfg.Size, 14, 8),
+        largeSize = NormalizeAuraMetric(cfg.LargeSize, 18, 8),
+        spacingX = NormalizeAuraMetric(cfg.HorizontalSpacing, 2, 0),
+        spacingY = NormalizeAuraMetric(cfg.VerticalSpacing, 2, 0),
+        groupGap = NormalizeAuraMetric(cfg.GroupGap, 4, 0),
+        offsetX = NormalizeAuraMetric(cfg.OffsetX, 0),
+        offsetY = NormalizeAuraMetric(cfg.OffsetY, 4, 0),
+        wrapWidth = NormalizeAuraMetric(hasToT and cfg.WrapWidthWithToT or cfg.WrapWidth, hasToT and 101 or 122, 16),
+    }
+end
+
+local function GetTargetFocusPlayerDebuffAuraSet(frame)
+    if not frame or not frame.unit or not C_UnitAuras or type(C_UnitAuras.GetUnitAuras) ~= "function" then
+        return nil
+    end
+
+    local cfg = UnitFrames.GetTargetFocusAuraConfig(frame)
+    if not cfg or not cfg.OnlyPlayerDebuffsOnEnemies then
+        return nil
+    end
+
+    if not UnitCanAttack("player", frame.unit) then
+        return nil
+    end
+
+    local auraDataList = C_UnitAuras.GetUnitAuras(frame.unit, "HARMFUL|PLAYER")
+    if type(auraDataList) ~= "table" or #auraDataList == 0 then
+        return {}
+    end
+
+    local allowedAuraInstanceIDs = {}
+    for index = 1, #auraDataList do
+        local auraData = auraDataList[index]
+        local auraInstanceID = auraData and auraData.auraInstanceID
+        if auraInstanceID then
+            allowedAuraInstanceIDs[auraInstanceID] = true
+        end
+    end
+
+    return allowedAuraInstanceIDs
+end
+
+local function BuildOrderedTargetFocusAuraLists(frame)
+    local buttonByAuraInstanceID = {}
+    local buffs = {}
+    local debuffs = {}
+    local playerDebuffAuraSet = GetTargetFocusPlayerDebuffAuraSet(frame)
 
     for button in frame.auraPools:EnumerateActive() do
-        UF.StyleAuraIcon(button)
-        
-        local point, rel, relPoint, x, y = button:GetPoint()
-        
-        -- Robust check for the "Head" aura (anchored to portrait/frame instead of another aura)
-        local isAnchor = false
-        if rel and rel:IsObjectType("Texture") then
-            if frame.TargetFrameContent and frame.TargetFrameContent.TargetFrameContentContextual and rel:GetParent() == frame.TargetFrameContent.TargetFrameContentContextual then
-                 isAnchor = true
-            else
-                local atlas = rel:GetAtlas()
-                if atlas and (atlas:find("Target") or atlas:find("Portrait")) then
-                    isAnchor = true
+        if button and button.auraInstanceID then
+            buttonByAuraInstanceID[button.auraInstanceID] = button
+        end
+    end
+
+    if frame.activeBuffs and frame.activeBuffs.Iterate then
+        frame.activeBuffs:Iterate(function(auraInstanceID, auraData)
+            local button = buttonByAuraInstanceID[auraInstanceID]
+            if button and auraData then
+                buffs[#buffs + 1] = { button = button, auraData = auraData }
+            end
+        end)
+    end
+
+    if frame.activeDebuffs and frame.activeDebuffs.Iterate then
+        frame.activeDebuffs:Iterate(function(auraInstanceID, auraData)
+            local button = buttonByAuraInstanceID[auraInstanceID]
+            if button and auraData then
+                if not playerDebuffAuraSet or playerDebuffAuraSet[auraInstanceID] then
+                    debuffs[#debuffs + 1] = { button = button, auraData = auraData }
+                else
+                    button:Hide()
                 end
             end
+        end)
+    end
+
+    return buffs, debuffs
+end
+
+local function ApplyTargetFocusAuraButtonLayout(button, holder, growUp, xOffset, yOffset, size)
+    local point = growUp and "BOTTOMLEFT" or "TOPLEFT"
+    local relativePoint = point
+    local relativeY = growUp and yOffset or -yOffset
+
+    button:Show()
+    button:ClearAllPoints()
+    button:SetPoint(point, holder, relativePoint, xOffset, relativeY)
+    button:SetSize(size, size)
+end
+
+local function LayoutTargetFocusAuraGroup(holder, orderedAuras, metrics, growUp)
+    if not holder then
+        return 0, false
+    end
+
+    if #orderedAuras == 0 then
+        holder:Hide()
+        return 0, false
+    end
+
+    local currentRowWidth = 0
+    local currentRowHeight = 0
+    local totalHeight = 0
+    local usedWidth = 0
+    local xOffset = 0
+    local yOffset = 0
+
+    for index = 1, #orderedAuras do
+        local entry = orderedAuras[index]
+        local button = entry.button
+        local auraData = entry.auraData
+        local size = (auraData and IsPlayerOrPetAuraSource(auraData.sourceUnit)) and metrics.largeSize or metrics.size
+        local projectedWidth = currentRowWidth
+        if projectedWidth > 0 then
+            projectedWidth = projectedWidth + metrics.spacingX
+        end
+        projectedWidth = projectedWidth + size
+
+        if currentRowWidth > 0 and projectedWidth > metrics.wrapWidth then
+            totalHeight = totalHeight + currentRowHeight + metrics.spacingY
+            yOffset = totalHeight
+            xOffset = 0
+            currentRowWidth = 0
+            currentRowHeight = 0
+            projectedWidth = size
         end
 
-        if isAnchor then
-            button:ClearAllPoints()
-            -- FIXED OFFSET: 4 (x), -40 (y). Change these values to move the entire block.
-            if Config.UnitFrames.Auras.BuffsOnTop then
-                 button:SetPoint("BOTTOMLEFT", hpContainer, "TOPLEFT", 0, 4)
-            else
-                 button:SetPoint(point, hpContainer, "BOTTOMLEFT", 0, 35)
-            end
-        elseif rel and rel:IsObjectType("Button") and rel:GetParent() == button:GetParent() then
-            -- NEIGHBOR SPACING: Controls the gap between icons.
-            local spacing = Config.UnitFrames.Auras.Spacing or 4
-            
-            -- Preserve direction (horizontal vs vertical wrap)
-            -- If x was positive, keep it positive but use new spacing. Same for y.
-            local newX = (x == 0) and 0 or (x > 0 and spacing or -spacing)
-            local newY = (y == 0) and 0 or (y > 0 and spacing or -spacing)
-            
-            button:ClearAllPoints()
-            button:SetPoint(point, rel, relPoint, newX, newY)
+        if currentRowWidth > 0 then
+            xOffset = currentRowWidth + metrics.spacingX
+        else
+            xOffset = 0
         end
 
-        local size = button:GetWidth()
-        local isLarge = size > 20 or size == 0
-        local newSize = isLarge and Config.UnitFrames.Auras.LargeSize or Config.UnitFrames.Auras.Size
-        button:SetSize(newSize, newSize)
+        ApplyTargetFocusAuraButtonLayout(button, holder, growUp, xOffset, yOffset, size)
+
+        currentRowWidth = projectedWidth
+        currentRowHeight = max(currentRowHeight, size)
+        usedWidth = max(usedWidth, currentRowWidth)
+    end
+
+    totalHeight = totalHeight + currentRowHeight
+    holder:SetSize(max(usedWidth, 1), max(totalHeight, 1))
+    holder:Show()
+    return totalHeight, true
+end
+
+local function AnchorTargetFocusAuraHolder(holder, anchorFrame, growUp, offsetX, offsetY)
+    if growUp then
+        holder:ClearAllPoints()
+        holder:SetPoint("BOTTOMLEFT", anchorFrame, "TOPLEFT", offsetX, offsetY)
+    else
+        holder:ClearAllPoints()
+        holder:SetPoint("TOPLEFT", anchorFrame, "BOTTOMLEFT", offsetX, -offsetY)
+    end
+end
+
+local function AnchorSecondaryTargetFocusAuraHolder(holder, nearHolder, anchorFrame, growUp, offsetX, offsetY, groupGap, hasNearGroup)
+    holder:ClearAllPoints()
+
+    if hasNearGroup then
+        if growUp then
+            holder:SetPoint("BOTTOMLEFT", nearHolder, "TOPLEFT", 0, groupGap)
+        else
+            holder:SetPoint("TOPLEFT", nearHolder, "BOTTOMLEFT", 0, -groupGap)
+        end
+    else
+        AnchorTargetFocusAuraHolder(holder, anchorFrame, growUp, offsetX, offsetY)
+    end
+end
+
+local function ApplyTargetFocusAuraLayout(frame)
+    local _, _, hpContainer = UnitFrames:GetFrameContainers(frame)
+    if not hpContainer then
+        return
+    end
+
+    local buffs, debuffs = BuildOrderedTargetFocusAuraLists(frame)
+    for index = 1, #buffs do
+        UpdateAuraSkin(buffs[index].button, buffs[index].auraData)
+    end
+    for index = 1, #debuffs do
+        UpdateAuraSkin(debuffs[index].button, debuffs[index].auraData)
+    end
+
+    local metrics = GetTargetFocusAuraMetrics(frame)
+    local holders = EnsureTargetFocusAuraHolders(frame)
+
+    if not metrics.enabled then
+        HideTargetFocusAuraHolders(frame)
+        return
+    end
+
+    local isFriend = frame.unit and not UnitCanAttack("player", frame.unit)
+    local growUp = frame.buffsOnTop == true
+    local nearAuras = isFriend and buffs or debuffs
+    local farAuras = isFriend and debuffs or buffs
+
+    AnchorTargetFocusAuraHolder(holders.near, hpContainer, growUp, metrics.offsetX, metrics.offsetY)
+    local nearHeight, hasNearGroup = LayoutTargetFocusAuraGroup(holders.near, nearAuras, metrics, growUp)
+    if not hasNearGroup then
+        nearHeight = 0
+    end
+
+    AnchorSecondaryTargetFocusAuraHolder(holders.far, holders.near, hpContainer, growUp, metrics.offsetX, metrics.offsetY, metrics.groupGap, hasNearGroup and nearHeight > 0)
+    LayoutTargetFocusAuraGroup(holders.far, farAuras, metrics, growUp)
+end
+
+function UnitFrames.RefreshTargetFocusAuraLayout(frame)
+    if not frame or not frame.auraPools or (frame ~= TargetFrame and frame ~= FocusFrame) then
+        return
+    end
+
+    if frame.UpdateAuras then
+        pcall(frame.UpdateAuras, frame)
+    else
+        UnitFrames.UpdateUnitAuras(frame)
+    end
+end
+
+function UnitFrames.UpdateUnitAuras(frame)
+    if not frame or not frame.auraPools then
+        return
+    end
+
+    for button in frame.auraPools:EnumerateActive() do
+        UnitFrames.StyleAuraIcon(button)
+    end
+
+    if frame == TargetFrame or frame == FocusFrame then
+        ApplyTargetFocusAuraLayout(frame)
     end
 end

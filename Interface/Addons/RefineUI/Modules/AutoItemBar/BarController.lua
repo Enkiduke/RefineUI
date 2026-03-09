@@ -446,7 +446,7 @@ function AutoItemBar:EnsureEditModeTutorialFrame()
         frame.border:SetBackdropBorderColor(1, 0.82, 0, 0.95)
     end
 
-    local glow = RefineUI.CreateGlow and RefineUI.CreateGlow(frame, 8)
+    local glow = RefineUI.CreateGlow and RefineUI.CreateGlow(frame, 3)
     if glow then
         glow:SetFrameStrata(frame:GetFrameStrata())
         glow:SetFrameLevel(frame:GetFrameLevel() - 1)

@@ -102,7 +102,7 @@ local function ApplyIconColorState(frame, useClassColor, classToken)
 
     if useGlow then
         if not frame.glow then
-            RefineUI.CreateGlow(frame, 8)
+            RefineUI.CreateGlow(frame, 3)
         end
         if frame.glow and frame.glow.SetBackdropBorderColor then
             frame.glow:SetBackdropBorderColor(r, g, b, 0.95)

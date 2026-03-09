@@ -23,6 +23,7 @@ local Locale = RefineUI.Locale
 local type = type
 local tonumber = tonumber
 local format = string.format
+local pairs = pairs
 local C_Spell = C_Spell
 local GetSpellCooldown = GetSpellCooldown
 local GetTime = GetTime
@@ -44,6 +45,8 @@ local gcdWindowCache = {
     startSeconds = nil,
     durationSeconds = nil,
 }
+local borderColorTokenCache = {}
+local fontColorTokenCache = {}
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
@@ -130,6 +133,10 @@ end
 local function ColorToToken(color)
     local normalized = NormalizeColor(color)
     return format("%.3f:%.3f:%.3f:%.3f", normalized[1], normalized[2], normalized[3], normalized[4])
+end
+
+local function BuildVisualTokenCacheKey(layoutKey, cooldownID)
+    return tostring(layoutKey or "default") .. ":" .. tostring(cooldownID or 0)
 end
 
 
@@ -478,7 +485,15 @@ end
 
 
 function CDM:GetCooldownBorderColorToken(cooldownID, layoutKey)
-    return ColorToToken(self:GetCooldownBorderColor(cooldownID, layoutKey))
+    local cacheKey = BuildVisualTokenCacheKey(layoutKey or self:GetCurrentLayoutKey(), cooldownID)
+    local cached = borderColorTokenCache[cacheKey]
+    if type(cached) == "string" and cached ~= "" then
+        return cached
+    end
+
+    local token = ColorToToken(self:GetCooldownBorderColor(cooldownID, layoutKey))
+    borderColorTokenCache[cacheKey] = token
+    return token
 end
 
 
@@ -501,7 +516,15 @@ end
 
 
 function CDM:GetCooldownFontColorToken(cooldownID, layoutKey)
-    return ColorToToken(self:GetCooldownFontColor(cooldownID, layoutKey))
+    local cacheKey = BuildVisualTokenCacheKey(layoutKey or self:GetCurrentLayoutKey(), cooldownID)
+    local cached = fontColorTokenCache[cacheKey]
+    if type(cached) == "string" and cached ~= "" then
+        return cached
+    end
+
+    local token = ColorToToken(self:GetCooldownFontColor(cooldownID, layoutKey))
+    fontColorTokenCache[cacheKey] = token
+    return token
 end
 
 
@@ -546,8 +569,16 @@ end
 
 
 function CDM:OnVisualStylesChanged()
+    for key in pairs(borderColorTokenCache) do
+        borderColorTokenCache[key] = nil
+    end
+    for key in pairs(fontColorTokenCache) do
+        fontColorTokenCache[key] = nil
+    end
     self:InvalidateTrackerRenderSignatures()
-    self:RequestCooldownViewerVisualRefresh()
+    if self.RequestCooldownViewerVisualRefresh then
+        self:RequestCooldownViewerVisualRefresh()
+    end
     self:RequestRefresh(true)
     if self:IsSettingsFrameShown() and self.RefreshSettingsSection then
         self:RefreshSettingsSection()
@@ -671,3 +702,53 @@ function CDM:IsSkinCooldownViewerEnabled()
     return self:GetConfig().SkinCooldownViewer ~= false
 end
 
+local function ApplyCooldownTextColor(cooldown, color)
+    if not cooldown then
+        return
+    end
+
+    local normalized = NormalizeColor(color)
+    local applied = false
+
+    if type(cooldown.GetCountdownFontString) == "function" then
+        local ok, countdownText = pcall(cooldown.GetCountdownFontString, cooldown)
+        if ok and countdownText and type(countdownText.SetTextColor) == "function" then
+            countdownText:SetTextColor(normalized[1], normalized[2], normalized[3], normalized[4])
+            applied = true
+        end
+    end
+
+    if not applied and type(cooldown.GetRegions) == "function" then
+        local regions = { cooldown:GetRegions() }
+        for i = 1, #regions do
+            local region = regions[i]
+            if region and type(region.GetObjectType) == "function" and region:GetObjectType() == "FontString" then
+                region:SetTextColor(normalized[1], normalized[2], normalized[3], normalized[4])
+            end
+        end
+    end
+end
+
+function CDM:ApplyTrackerCooldownTextVisual(cooldown, cooldownID)
+    if not cooldown then
+        return
+    end
+
+    local textColor
+    if IsUsableCooldownID(cooldownID) then
+        textColor = self:GetCooldownFontColor(cooldownID)
+    else
+        textColor = self:GetDefaultFontColor()
+    end
+
+    ApplyCooldownTextColor(cooldown, textColor)
+end
+
+function CDM:RequestCooldownViewerVisualRefresh()
+end
+
+function CDM:InitializeVisuals()
+    if self.InstallVisualMenuHooks then
+        self:InstallVisualMenuHooks()
+    end
+end

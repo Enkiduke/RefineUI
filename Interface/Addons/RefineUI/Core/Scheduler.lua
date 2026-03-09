@@ -22,18 +22,26 @@ local schedulerFrame = CreateFrame("Frame")
 schedulerFrame:Hide()
 
 local jobs = {} -- jobs[key] = { key, fn, interval, elapsed, enabled, combatOnly, oocOnly, predicate, safe, disableOnError }
+local enabledJobCount = 0
 
-local function hasEnabledJobs()
-    for _, job in pairs(jobs) do
-        if job.enabled then
-            return true
-        end
+local function setJobEnabledState(job, enabled)
+    enabled = enabled and true or false
+    if job.enabled == enabled then
+        return false
     end
-    return false
+
+    job.enabled = enabled
+    if enabled then
+        enabledJobCount = enabledJobCount + 1
+    elseif enabledJobCount > 0 then
+        enabledJobCount = enabledJobCount - 1
+    end
+
+    return true
 end
 
 local function setFrameActiveIfNeeded()
-    if hasEnabledJobs() then
+    if enabledJobCount > 0 then
         schedulerFrame:Show()
     else
         schedulerFrame:Hide()
@@ -66,12 +74,17 @@ local function runJob(job, elapsed)
     if not ok then
         print("|cFFFF0000[RefineUI Scheduler]|r Error in job [" .. tostring(job.key) .. "]:", err)
         if job.disableOnError then
-            job.enabled = false
+            setJobEnabledState(job, false)
         end
     end
 end
 
 schedulerFrame:SetScript("OnUpdate", function(_, elapsed)
+    if enabledJobCount <= 0 then
+        schedulerFrame:Hide()
+        return
+    end
+
     local inCombat = InCombatLockdown()
 
     for _, job in pairs(jobs) do
@@ -82,15 +95,11 @@ schedulerFrame:SetScript("OnUpdate", function(_, elapsed)
             else
                 job.elapsed = (job.elapsed or 0) + elapsed
                 if job.elapsed >= interval then
-                    job.elapsed = 0
+                    job.elapsed = job.elapsed - interval
                     runJob(job, elapsed)
                 end
             end
         end
-    end
-
-    if not hasEnabledJobs() then
-        schedulerFrame:Hide()
     end
 end)
 
@@ -117,17 +126,21 @@ function RefineUI:RegisterUpdateJob(key, interval, fn, opts)
     opts = opts or {}
     local existing = jobs[key]
     local job = existing or {}
+    local desiredEnabled = (opts.enabled == nil) and true or (opts.enabled and true or false)
 
     job.key = key
     job.fn = fn
     job.interval = (type(interval) == "number" and interval >= 0) and interval or 0
     job.elapsed = 0
-    job.enabled = (opts.enabled == nil) and true or (opts.enabled and true or false)
     job.combatOnly = opts.combatOnly and true or false
     job.oocOnly = opts.oocOnly and true or false
     job.predicate = (type(opts.predicate) == "function") and opts.predicate or nil
     job.safe = (opts.safe == nil) and true or (opts.safe and true or false)
     job.disableOnError = (opts.disableOnError == nil) and true or (opts.disableOnError and true or false)
+    if existing == nil then
+        job.enabled = false
+    end
+    setJobEnabledState(job, desiredEnabled)
 
     jobs[key] = job
     setFrameActiveIfNeeded()
@@ -137,6 +150,10 @@ end
 function RefineUI:UnregisterUpdateJob(key)
     if type(key) ~= "string" or key == "" then
         return false, "invalid_key"
+    end
+    local job = jobs[key]
+    if job and job.enabled then
+        setJobEnabledState(job, false)
     end
     jobs[key] = nil
     setFrameActiveIfNeeded()
@@ -156,7 +173,7 @@ function RefineUI:SetUpdateJobEnabled(key, enabled, resetElapsed)
         return false, "job_missing"
     end
 
-    job.enabled = enabled and true or false
+    setJobEnabledState(job, enabled)
     if resetElapsed == nil or resetElapsed == true then
         job.elapsed = 0
     end

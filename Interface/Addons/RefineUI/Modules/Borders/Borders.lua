@@ -21,6 +21,7 @@ local type = type
 local pairs = pairs
 local tostring = tostring
 local pcall = pcall
+local wipe = wipe
 local floor = math.floor
 local find = string.find
 local unpack = unpack
@@ -53,8 +54,23 @@ local BAG_STATUS_ICON_ATLAS_UNKNOWN = "UI-QuestTracker-Objective-Fail"
 local BAG_UNKNOWN_ICON_SIZE = 16
 local BAG_UNKNOWN_ICON_INSET_X = 2
 local BAG_UNKNOWN_ICON_INSET_Y = 2
+local SQUISH_CURVE_ID = 92181
+local SQUISH_THRESHOLD = 250
+local COLLECTIBLE_CACHE_EVENT_KEY_PREFIX = "Borders:CollectibleCache:"
+local COLLECTIBLE_CACHE_INVALIDATION_EVENTS = {
+    "COMPANION_LEARNED",
+    "COMPANION_UNLEARNED",
+    "COMPANION_UPDATE",
+    "PET_JOURNAL_LIST_UPDATE",
+    "NEW_MOUNT_ADDED",
+    "NEW_TOY_ADDED",
+    "TOYS_UPDATED",
+    "TRANSMOG_COLLECTION_UPDATED",
+}
 local FRAME_BORDER_CACHE = setmetatable({}, { __mode = "k" })
 local ITEM_LEVEL_CACHE = {}
+local COLLECTIBLE_STATE_CACHE = {}
+local PENDING_ITEM_DATA_REQUESTS = {}
 
 Borders.CharSlots = CHAR_SLOTS
 
@@ -103,12 +119,89 @@ function Borders:GetQualityColor(quality)
     return nil
 end
 
+function Borders:InvalidateCollectibleStateCache()
+    wipe(COLLECTIBLE_STATE_CACHE)
+end
+
+local function GetPostSquishItemLevel(preSquishItemLevel)
+    if not preSquishItemLevel then
+        return 0
+    end
+    if C_CurveUtil and C_CurveUtil.EvaluateGameCurve then
+        local squished = C_CurveUtil.EvaluateGameCurve(SQUISH_CURVE_ID, preSquishItemLevel)
+        if squished and squished > 0 then
+            return floor(squished)
+        end
+    end
+    return preSquishItemLevel
+end
+
+local function RequestItemDataByIDOnce(itemID)
+    if type(itemID) ~= "number" or itemID <= 0 then
+        return
+    end
+    if not C_Item or type(C_Item.RequestLoadItemDataByID) ~= "function" then
+        return
+    end
+    if PENDING_ITEM_DATA_REQUESTS[itemID] then
+        return
+    end
+
+    PENDING_ITEM_DATA_REQUESTS[itemID] = true
+    C_Item.RequestLoadItemDataByID(itemID)
+end
+
+local function GetCollectibleCacheKey(itemLink, itemID)
+    if type(itemLink) == "string" and itemLink ~= "" then
+        return itemLink
+    end
+    if type(itemID) == "number" and itemID > 0 then
+        return itemID
+    end
+    return nil
+end
+
+local function GetCachedCollectibleKnownState(itemLink, itemID)
+    local cacheKey = GetCollectibleCacheKey(itemLink, itemID)
+    local cached = cacheKey and COLLECTIBLE_STATE_CACHE[cacheKey]
+    if not cached then
+        return nil, nil
+    end
+
+    return cached.applicable, cached.known
+end
+
+local function CacheCollectibleKnownState(itemLink, itemID, applicable, known)
+    if applicable ~= true then
+        return applicable, known
+    end
+
+    local cacheKey = GetCollectibleCacheKey(itemLink, itemID)
+    if cacheKey ~= nil then
+        COLLECTIBLE_STATE_CACHE[cacheKey] = {
+            applicable = true,
+            known = known == true,
+        }
+    end
+
+    if type(itemID) == "number" and itemID > 0 then
+        PENDING_ITEM_DATA_REQUESTS[itemID] = nil
+    end
+
+    return applicable, known
+end
+
 local function ResolveCollectibleKnownState(itemLink, itemID)
+    local cachedApplicable, cachedKnown = GetCachedCollectibleKnownState(itemLink, itemID)
+    if cachedApplicable ~= nil then
+        return cachedApplicable, cachedKnown
+    end
+
     if itemID and C_MountJournal and C_MountJournal.GetMountFromItem and C_MountJournal.GetMountInfoByID then
         local mountID = C_MountJournal.GetMountFromItem(itemID)
         if mountID then
             local _, _, _, _, _, _, _, _, _, _, isCollected = C_MountJournal.GetMountInfoByID(mountID)
-            return true, isCollected == true
+            return CacheCollectibleKnownState(itemLink, itemID, true, isCollected == true)
         end
     end
 
@@ -116,14 +209,14 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
         local _, _, _, _, _, _, _, _, _, _, _, _, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
         if type(speciesID) == "number" then
             local owned = C_PetJournal.GetNumCollectedInfo(speciesID)
-            return true, (owned or 0) > 0
+            return CacheCollectibleKnownState(itemLink, itemID, true, (owned or 0) > 0)
         end
     end
 
     if itemID and C_ToyBox and C_ToyBox.GetToyInfo and C_ToyBox.PlayerHasToy then
         local toyName = C_ToyBox.GetToyInfo(itemID)
         if toyName then
-            return true, C_ToyBox.PlayerHasToy(itemID) == true
+            return CacheCollectibleKnownState(itemLink, itemID, true, C_ToyBox.PlayerHasToy(itemID) == true)
         end
     end
 
@@ -131,22 +224,22 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
         local toyLink = C_ToyBox.GetToyLink(itemID)
         if toyLink then
             if C_ToyBox.PlayerHasToy then
-                return true, C_ToyBox.PlayerHasToy(itemID) == true
+                return CacheCollectibleKnownState(itemLink, itemID, true, C_ToyBox.PlayerHasToy(itemID) == true)
             end
             if PlayerHasToy then
-                return true, PlayerHasToy(itemID) == true
+                return CacheCollectibleKnownState(itemLink, itemID, true, PlayerHasToy(itemID) == true)
             end
         end
     end
 
     if itemID and PlayerHasToy then
         if C_ToyBox and C_ToyBox.GetToyInfo and C_ToyBox.GetToyInfo(itemID) then
-            return true, PlayerHasToy(itemID) == true
+            return CacheCollectibleKnownState(itemLink, itemID, true, PlayerHasToy(itemID) == true)
         end
     end
 
-    if itemID and C_Item and C_Item.RequestLoadItemDataByID then
-        C_Item.RequestLoadItemDataByID(itemID)
+    if itemID then
+        RequestItemDataByIDOnce(itemID)
     end
 
     if itemLink and C_TransmogCollection and C_TransmogCollection.GetItemInfo and C_TransmogCollection.GetSourceInfo then
@@ -154,7 +247,7 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
         if sourceID then
             local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
             if sourceInfo then
-                return true, sourceInfo.isCollected == true
+                return CacheCollectibleKnownState(itemLink, itemID, true, sourceInfo.isCollected == true)
             end
         end
     end
@@ -188,19 +281,34 @@ local function ResolveItemLevel(itemLink, itemID)
         itemLevel = GetDetailedItemLevelInfo(itemID)
     end
 
+    if itemLevel and itemLevel > SQUISH_THRESHOLD then
+        itemLevel = GetPostSquishItemLevel(itemLevel)
+    end
+
     if itemLevel and itemLevel > 1 then
         ITEM_LEVEL_CACHE[cacheKey] = itemLevel
+        if itemID then
+            PENDING_ITEM_DATA_REQUESTS[itemID] = nil
+        end
         return itemLevel
     end
 
     -- ID-only sources (like equipment flyouts) may not be cached yet; do not sticky-cache misses.
     if itemLink then
         ITEM_LEVEL_CACHE[cacheKey] = false
-    elseif itemID and C_Item and C_Item.RequestLoadItemDataByID then
-        C_Item.RequestLoadItemDataByID(itemID)
+    elseif itemID then
+        RequestItemDataByIDOnce(itemID)
     end
 
     return nil
+end
+
+local function IsFrameCacheMatch(frameCache, itemLink, itemID, borderInset, borderEdgeSize)
+    return frameCache
+        and frameCache.itemLink == itemLink
+        and frameCache.itemID == itemID
+        and frameCache.borderInset == borderInset
+        and frameCache.borderEdgeSize == borderEdgeSize
 end
 
 local function CreateItemLevelText(frame)
@@ -496,6 +604,8 @@ end
 function Borders:ApplyItemBorder(frame, itemLink, itemID, borderStyle)
     if not frame then return end
     local isRefineBagSlot = IsRefineBagSlot(frame)
+    local sourceItemLink = itemLink
+    local sourceItemID = itemID
 
     local borderInset = DEFAULT_BORDER_INSET
     local borderEdgeSize = nil
@@ -510,9 +620,8 @@ function Borders:ApplyItemBorder(frame, itemLink, itemID, borderStyle)
         forceRefresh = borderStyle.forceRefresh == true
     end
 
-    local signature = tostring(itemLink or "") .. "|" .. tostring(itemID or 0) .. "|" .. tostring(borderInset) .. "|" .. tostring(borderEdgeSize or "")
     local frameCache = FRAME_BORDER_CACHE[frame]
-    if not forceRefresh and frameCache and frameCache.signature == signature then
+    if not forceRefresh and IsFrameCacheMatch(frameCache, sourceItemLink, sourceItemID, borderInset, borderEdgeSize) then
         UpdateBagStatusIcon(frame)
         return
     end
@@ -583,7 +692,10 @@ function Borders:ApplyItemBorder(frame, itemLink, itemID, borderStyle)
     end
 
     FRAME_BORDER_CACHE[frame] = FRAME_BORDER_CACHE[frame] or {}
-    FRAME_BORDER_CACHE[frame].signature = signature
+    FRAME_BORDER_CACHE[frame].itemLink = sourceItemLink
+    FRAME_BORDER_CACHE[frame].itemID = sourceItemID
+    FRAME_BORDER_CACHE[frame].borderInset = borderInset
+    FRAME_BORDER_CACHE[frame].borderEdgeSize = borderEdgeSize
     UpdateBagStatusIcon(frame)
 end
 
@@ -591,6 +703,18 @@ end
 -- Lifecycle
 ----------------------------------------------------------------------------------------
 function Borders:OnEnable()
+    if not self.collectibleCacheEventsRegistered then
+        self.collectibleCacheEventsRegistered = true
+
+        for index = 1, #COLLECTIBLE_CACHE_INVALIDATION_EVENTS do
+            local eventName = COLLECTIBLE_CACHE_INVALIDATION_EVENTS[index]
+            local eventKey = COLLECTIBLE_CACHE_EVENT_KEY_PREFIX .. eventName
+            RefineUI:RegisterEventCallback(eventName, function()
+                self:InvalidateCollectibleStateCache()
+            end, eventKey)
+        end
+    end
+
     for i = 1, #pipeOrder do
         local key = pipeOrder[i]
         local fn = pipes[key]

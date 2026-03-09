@@ -28,6 +28,9 @@ local CreateFramePool = CreateFramePool
 local Pool_HideAndClearAnchors = Pool_HideAndClearAnchors
 local C_TaskQuest = C_TaskQuest
 local C_QuestLog = C_QuestLog
+local C_QuestInfoSystem = C_QuestInfoSystem
+local C_Reputation = C_Reputation
+local C_Spell = C_Spell
 local C_SuperTrack = C_SuperTrack
 local C_PlayerInfo = C_PlayerInfo
 local C_Item = C_Item
@@ -38,16 +41,31 @@ local QuestUtils_IsQuestWithinLowTimeThreshold = QuestUtils_IsQuestWithinLowTime
 local QuestUtils_IsQuestWithinCriticalTimeThreshold = QuestUtils_IsQuestWithinCriticalTimeThreshold
 local GetNumQuestLogRewards = GetNumQuestLogRewards
 local GetQuestLogRewardInfo = GetQuestLogRewardInfo
+local GetQuestLogRewardXP = GetQuestLogRewardXP
 local GetQuestLogRewardMoney = GetQuestLogRewardMoney
+local GetQuestLogRewardArtifactXP = GetQuestLogRewardArtifactXP
+local GetQuestLogRewardHonor = GetQuestLogRewardHonor
 local GetQuestLogItemLink = GetQuestLogItemLink
+local GetQuestObjectiveInfo = GetQuestObjectiveInfo
 local GetDifficultyColor = GetDifficultyColor
+local GetSpellInfo = GetSpellInfo
+local GetSpellTexture = GetSpellTexture
 local BreakUpLargeNumbers = BreakUpLargeNumbers
 local UnitLevel = UnitLevel
 local IsShiftKeyDown = IsShiftKeyDown
 local InCombatLockdown = InCombatLockdown
 local PlaySound = PlaySound
+local SetTooltipMoney = SetTooltipMoney
+local GameTooltip = _G.GameTooltip
+local GameTooltip_SetTitle = _G.GameTooltip_SetTitle
+local GameTooltip_SetTooltipWaitingForData = _G.GameTooltip_SetTooltipWaitingForData
+local GameTooltip_AddColoredLine = _G.GameTooltip_AddColoredLine
+local GameTooltip_AddQuestTimeToTooltip = _G.GameTooltip_AddQuestTimeToTooltip
+local QuestUtils_AddQuestTypeToTooltip = _G.QuestUtils_AddQuestTypeToTooltip
 local QuestUtil = _G.QuestUtil
 local ChatFrameUtil = _G.ChatFrameUtil
+local ColorManager = _G.ColorManager
+local EventRegistry = _G.EventRegistry
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -70,6 +88,8 @@ if Enum and Enum.WorldQuestQuality then
     QuestRarityOffset[Enum.WorldQuestQuality.Rare] = 3
     QuestRarityOffset[Enum.WorldQuestQuality.Epic] = 10
 end
+
+local WORLD_QUEST_TOOLTIP_REWARD_HEADER = QUEST_REWARDS or REWARDS or "Rewards"
 
 ----------------------------------------------------------------------------------------
 -- Helpers
@@ -160,6 +180,7 @@ end
 
 function Maps:EnsureWorldQuestListState()
     self._worldQuestRewardCache = self._worldQuestRewardCache or {}
+    self._worldQuestRewardItemCache = self._worldQuestRewardItemCache or {}
     self._worldQuestItemLevelCache = self._worldQuestItemLevelCache or {}
     self._worldQuestTagCache = self._worldQuestTagCache or {}
     self._worldQuestEntries = self._worldQuestEntries or {}
@@ -170,6 +191,7 @@ function Maps:InvalidateWorldQuestListCaches()
     self:EnsureWorldQuestListState()
 
     wipe(self._worldQuestRewardCache)
+    wipe(self._worldQuestRewardItemCache)
     wipe(self._worldQuestItemLevelCache)
     wipe(self._worldQuestTagCache)
 end
@@ -439,6 +461,370 @@ function Maps:GetCachedWorldQuestReward(questID)
     return rewardDisplay
 end
 
+function Maps:GetCachedWorldQuestRewardItem(questID)
+    local cached = self._worldQuestRewardItemCache[questID]
+    if cached ~= nil then
+        return cached or nil
+    end
+
+    local rewardItem = false
+    local numRewards = GetNumQuestLogRewards and GetNumQuestLogRewards(questID) or 0
+    if numRewards > 0 and GetQuestLogRewardInfo then
+        for rewardIndex = 1, numRewards do
+            local itemName, itemTexture, quantity, quality, _, itemID = GetQuestLogRewardInfo(rewardIndex, questID)
+            local itemLink = GetQuestLogItemLink and GetQuestLogItemLink("reward", rewardIndex, questID)
+            if (itemLink and itemLink ~= "") or itemID then
+                rewardItem = {
+                    itemID = itemID,
+                    itemLink = itemLink,
+                    itemName = itemName,
+                    itemTexture = itemTexture,
+                    quantity = quantity,
+                    quality = quality,
+                }
+                break
+            end
+        end
+    end
+
+    self._worldQuestRewardItemCache[questID] = rewardItem
+    return rewardItem or nil
+end
+
+function Maps:GetWorldQuestRewardTooltip()
+    local primaryShoppingTooltip = _G.ShoppingTooltip1
+    local secondaryShoppingTooltip = _G.ShoppingTooltip2
+
+    if self._worldQuestRewardTooltip and self._worldQuestRewardTooltip.SetOwner then
+        if primaryShoppingTooltip and secondaryShoppingTooltip and not self._worldQuestRewardTooltip.shoppingTooltips then
+            self._worldQuestRewardTooltip.shoppingTooltips = { primaryShoppingTooltip, secondaryShoppingTooltip }
+        end
+        return self._worldQuestRewardTooltip
+    end
+
+    local rewardTooltip = CreateFrame("GameTooltip", "RefineUIWorldQuestRewardTooltip", UIParent, "GameTooltipTemplate")
+    rewardTooltip:SetFrameStrata("TOOLTIP")
+    if primaryShoppingTooltip and secondaryShoppingTooltip then
+        rewardTooltip.shoppingTooltips = { primaryShoppingTooltip, secondaryShoppingTooltip }
+    end
+    rewardTooltip:Hide()
+    self._worldQuestRewardTooltip = rewardTooltip
+    return rewardTooltip
+end
+
+function Maps:HideWorldQuestRewardTooltip()
+    local rewardTooltip = self._worldQuestRewardTooltip
+    if not rewardTooltip then
+        return
+    end
+
+    if rewardTooltip.shoppingTooltips then
+        for index = 1, #rewardTooltip.shoppingTooltips do
+            local shoppingTooltip = rewardTooltip.shoppingTooltips[index]
+            if shoppingTooltip then
+                shoppingTooltip:Hide()
+            end
+        end
+    end
+
+    rewardTooltip:Hide()
+end
+
+local function AddWorldQuestTooltipLine(tooltip, text, color)
+    if not tooltip or not text or text == "" then
+        return
+    end
+
+    local r, g, b = GetColorRGB(color, 1, 1, 1)
+    tooltip:AddLine(text, r, g, b, true)
+end
+
+local function AddWorldQuestTooltipRewardHeader(tooltip)
+    tooltip:AddLine(" ")
+
+    if GameTooltip_AddColoredLine then
+        GameTooltip_AddColoredLine(tooltip, WORLD_QUEST_TOOLTIP_REWARD_HEADER, NORMAL_FONT_COLOR, true)
+        return
+    end
+
+    AddWorldQuestTooltipLine(tooltip, WORLD_QUEST_TOOLTIP_REWARD_HEADER, NORMAL_FONT_COLOR)
+end
+
+function Maps:AddWorldQuestRewardsToTooltip(tooltip, questID)
+    if not tooltip or not questID then
+        return
+    end
+
+    local hasRewards = false
+    local headerAdded = false
+
+    local function EnsureHeader()
+        if headerAdded then
+            return
+        end
+
+        AddWorldQuestTooltipRewardHeader(tooltip)
+        headerAdded = true
+    end
+
+    local function AddRewardLine(text, color)
+        if not text or text == "" then
+            return
+        end
+
+        EnsureHeader()
+        AddWorldQuestTooltipLine(tooltip, text, color or HIGHLIGHT_FONT_COLOR)
+        hasRewards = true
+    end
+
+    if GetQuestLogRewardXP then
+        local _, baseXP = GetQuestLogRewardXP(questID)
+        if baseXP and baseXP > 0 then
+            AddRewardLine(BONUS_OBJECTIVE_EXPERIENCE_FORMAT:format(baseXP), HIGHLIGHT_FONT_COLOR)
+        end
+    end
+
+    if GetQuestLogRewardArtifactXP then
+        local artifactXP = GetQuestLogRewardArtifactXP(questID)
+        if artifactXP and artifactXP > 0 then
+            AddRewardLine(BONUS_OBJECTIVE_ARTIFACT_XP_FORMAT:format(artifactXP), HIGHLIGHT_FONT_COLOR)
+        end
+    end
+
+    if C_QuestInfoSystem and C_QuestInfoSystem.GetQuestLogRewardFavor then
+        local favor = C_QuestInfoSystem.GetQuestLogRewardFavor(questID)
+        if favor and favor > 0 and BONUS_OBJECTIVE_HOUSING_FAVOR_FORMAT and HOUSING_DASHBOARD_REWARD_ESTATE_XP then
+            AddRewardLine(BONUS_OBJECTIVE_HOUSING_FAVOR_FORMAT:format(favor, HOUSING_DASHBOARD_REWARD_ESTATE_XP), HIGHLIGHT_FONT_COLOR)
+        end
+    end
+
+    if C_QuestLog and C_QuestLog.GetQuestRewardCurrencies then
+        local currencyRewards = C_QuestLog.GetQuestRewardCurrencies(questID)
+        if currencyRewards then
+            for index = 1, #currencyRewards do
+                local currencyReward = currencyRewards[index]
+                local name = currencyReward and currencyReward.name
+                local texture = currencyReward and currencyReward.texture
+                local amount = currencyReward and (currencyReward.totalRewardAmount or currencyReward.quantity or currencyReward.amount)
+
+                if name and texture and amount and amount > 0 then
+                    local amountText = BreakUpLargeNumbers and BreakUpLargeNumbers(amount) or tostring(amount)
+                    local coloredAmount = HIGHLIGHT_FONT_COLOR and HIGHLIGHT_FONT_COLOR.WrapTextInColorCode
+                        and HIGHLIGHT_FONT_COLOR:WrapTextInColorCode(amountText)
+                        or amountText
+                    AddRewardLine(BONUS_OBJECTIVE_REWARD_WITH_COUNT_FORMAT:format(texture, coloredAmount, name), HIGHLIGHT_FONT_COLOR)
+                end
+            end
+        end
+    end
+
+    if GetQuestLogRewardHonor then
+        local honorAmount = GetQuestLogRewardHonor(questID)
+        if honorAmount and honorAmount > 0 and BONUS_OBJECTIVE_REWARD_WITH_COUNT_FORMAT and HONOR then
+            AddRewardLine(
+                BONUS_OBJECTIVE_REWARD_WITH_COUNT_FORMAT:format("Interface\\ICONS\\Achievement_LegionPVPTier4", honorAmount, HONOR),
+                HIGHLIGHT_FONT_COLOR
+            )
+        end
+    end
+
+    if GetQuestLogRewardMoney then
+        local money = GetQuestLogRewardMoney(questID)
+        if money and money > 0 and SetTooltipMoney then
+            EnsureHeader()
+            SetTooltipMoney(tooltip, money, nil)
+            hasRewards = true
+        end
+    end
+
+    if GetNumQuestLogRewards and GetQuestLogRewardInfo then
+        local numRewards = GetNumQuestLogRewards(questID) or 0
+        for rewardIndex = 1, numRewards do
+            local itemName, itemTexture, quantity, quality = GetQuestLogRewardInfo(rewardIndex, questID)
+            if itemName and itemTexture then
+                local text
+                if quantity and quantity > 1 then
+                    local amountText = BreakUpLargeNumbers and BreakUpLargeNumbers(quantity) or tostring(quantity)
+                    local coloredAmount = HIGHLIGHT_FONT_COLOR and HIGHLIGHT_FONT_COLOR.WrapTextInColorCode
+                        and HIGHLIGHT_FONT_COLOR:WrapTextInColorCode(amountText)
+                        or amountText
+                    text = BONUS_OBJECTIVE_REWARD_WITH_COUNT_FORMAT:format(itemTexture, coloredAmount, itemName)
+                else
+                    text = BONUS_OBJECTIVE_REWARD_FORMAT:format(itemTexture, itemName)
+                end
+
+                local colorData = ColorManager and ColorManager.GetColorDataForItemQuality and ColorManager.GetColorDataForItemQuality(quality)
+                AddRewardLine(text, colorData or NORMAL_FONT_COLOR)
+            end
+        end
+    end
+
+    if C_QuestInfoSystem and C_QuestInfoSystem.GetQuestRewardSpells then
+        local spellRewards = C_QuestInfoSystem.GetQuestRewardSpells(questID)
+        if spellRewards then
+            for index = 1, #spellRewards do
+                local spellID = spellRewards[index]
+                local spellName = GetSpellInfo and GetSpellInfo(spellID)
+                local spellTexture = GetSpellTexture and GetSpellTexture(spellID)
+
+                if not spellName and C_Spell and C_Spell.GetSpellName then
+                    spellName = C_Spell.GetSpellName(spellID)
+                end
+                if not spellTexture and C_Spell and C_Spell.GetSpellTexture then
+                    spellTexture = C_Spell.GetSpellTexture(spellID)
+                end
+
+                if spellName then
+                    if spellTexture then
+                        AddRewardLine(BONUS_OBJECTIVE_REWARD_FORMAT:format(spellTexture, spellName), HIGHLIGHT_FONT_COLOR)
+                    else
+                        AddRewardLine(spellName, HIGHLIGHT_FONT_COLOR)
+                    end
+                end
+            end
+        end
+    end
+
+    return hasRewards
+end
+
+function Maps:ShowWorldQuestTooltip(button)
+    if not GameTooltip or not button or not button.questID then
+        return
+    end
+
+    GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+    if GameTooltip.ClearLines then
+        GameTooltip:ClearLines()
+    end
+
+    local questID = button.questID
+    if not HaveQuestData or not HaveQuestData(questID) then
+        if GameTooltip_SetTitle then
+            GameTooltip_SetTitle(GameTooltip, RETRIEVING_DATA, RED_FONT_COLOR)
+        else
+            AddWorldQuestTooltipLine(GameTooltip, RETRIEVING_DATA, RED_FONT_COLOR)
+        end
+
+        if GameTooltip_SetTooltipWaitingForData then
+            GameTooltip_SetTooltipWaitingForData(GameTooltip, true)
+        end
+
+        GameTooltip:Show()
+        return
+    end
+
+    local title, factionID, capped = C_TaskQuest.GetQuestInfoByQuestID(questID)
+    title = title or button.questName or ""
+    if GameTooltip_SetTooltipWaitingForData then
+        GameTooltip_SetTooltipWaitingForData(GameTooltip, false)
+    end
+
+    local tagInfo = self:GetCachedQuestTagInfo(questID)
+    local quality = tagInfo and tagInfo.quality or (Enum and Enum.WorldQuestQuality and Enum.WorldQuestQuality.Common)
+    local colorData = ColorManager and ColorManager.GetColorDataForWorldQuestQuality and ColorManager.GetColorDataForWorldQuestQuality(quality)
+
+    if GameTooltip_SetTitle then
+        if colorData and colorData.color then
+            GameTooltip_SetTitle(GameTooltip, title, colorData.color)
+        else
+            GameTooltip_SetTitle(GameTooltip, title, NORMAL_FONT_COLOR)
+        end
+    else
+        AddWorldQuestTooltipLine(GameTooltip, title, (colorData and colorData.color) or NORMAL_FONT_COLOR)
+    end
+
+    if C_QuestLog and C_QuestLog.IsAccountQuest and C_QuestLog.IsAccountQuest(questID) then
+        AddWorldQuestTooltipLine(GameTooltip, ACCOUNT_QUEST_LABEL, ACCOUNT_WIDE_FONT_COLOR)
+    end
+
+    if QuestUtils_AddQuestTypeToTooltip then
+        QuestUtils_AddQuestTypeToTooltip(GameTooltip, questID, NORMAL_FONT_COLOR)
+    end
+
+    if factionID and C_Reputation and C_Reputation.GetFactionDataByID then
+        local factionData = C_Reputation.GetFactionDataByID(factionID)
+        if factionData and factionData.name then
+            local awardsReputation = C_QuestLog
+                and C_QuestLog.DoesQuestAwardReputationWithFaction
+                and C_QuestLog.DoesQuestAwardReputationWithFaction(questID, factionID)
+            local reputationYieldsRewards = (not capped)
+                or (C_Reputation.IsFactionParagonForCurrentPlayer and C_Reputation.IsFactionParagonForCurrentPlayer(factionID))
+            local factionColor = (awardsReputation and reputationYieldsRewards) and NORMAL_FONT_COLOR or GRAY_FONT_COLOR
+            AddWorldQuestTooltipLine(GameTooltip, factionData.name, factionColor)
+        end
+    end
+
+    if GameTooltip_AddQuestTimeToTooltip then
+        GameTooltip_AddQuestTimeToTooltip(GameTooltip, questID)
+    end
+
+    local numObjectives = button.numbObjectives
+        or button.numObjectives
+        or (C_QuestLog and C_QuestLog.GetNumQuestObjectives and C_QuestLog.GetNumQuestObjectives(questID))
+        or 0
+
+    if GetQuestObjectiveInfo then
+        for objectiveIndex = 1, numObjectives do
+            local objectiveText, _, finished = GetQuestObjectiveInfo(questID, objectiveIndex, false)
+            if objectiveText and objectiveText ~= "" then
+                local objectiveColor = finished and GRAY_FONT_COLOR or HIGHLIGHT_FONT_COLOR
+                AddWorldQuestTooltipLine(GameTooltip, QUEST_DASH .. objectiveText, objectiveColor)
+            end
+        end
+    end
+
+    self:AddWorldQuestRewardsToTooltip(GameTooltip, questID)
+    GameTooltip:Show()
+
+    if EventRegistry and EventRegistry.TriggerEvent then
+        EventRegistry:TriggerEvent("TaskPOI.TooltipShown", button, questID, button)
+    end
+end
+
+function Maps:ShowWorldQuestRewardTooltip(button)
+    local questID = button and button.questID
+    if not questID then
+        self:HideWorldQuestRewardTooltip()
+        return
+    end
+
+    local rewardItem = self:GetCachedWorldQuestRewardItem(questID)
+    if not rewardItem then
+        self:HideWorldQuestRewardTooltip()
+        return
+    end
+
+    local rewardTooltip = self:GetWorldQuestRewardTooltip()
+    if not rewardTooltip then
+        return
+    end
+
+    rewardTooltip:SetOwner(GameTooltip, "ANCHOR_NONE")
+    rewardTooltip:ClearAllPoints()
+    rewardTooltip:SetPoint("TOPLEFT", GameTooltip, "TOPRIGHT", 8, 0)
+
+    local shown = false
+    if rewardItem.itemLink and rewardItem.itemLink ~= "" and rewardTooltip.SetHyperlink then
+        rewardTooltip:SetHyperlink(rewardItem.itemLink)
+        shown = true
+    elseif rewardItem.itemID and rewardTooltip.SetItemByID then
+        rewardTooltip:SetItemByID(rewardItem.itemID)
+        shown = true
+    end
+
+    if not shown then
+        self:HideWorldQuestRewardTooltip()
+        return
+    end
+
+    if _G.GameTooltip_ShowCompareItem and rewardTooltip.shoppingTooltips and rewardTooltip.shoppingTooltips[1] and rewardTooltip.shoppingTooltips[2] then
+        _G.GameTooltip_ShowCompareItem(rewardTooltip)
+    end
+
+    rewardTooltip:Show()
+end
+
 ----------------------------------------------------------------------------------------
 -- Rows / Header
 ----------------------------------------------------------------------------------------
@@ -456,9 +842,11 @@ function Maps:EnsureWorldQuestFrames()
             button.questID = nil
             button.mapID = nil
             button.numObjectives = nil
+            button.numbObjectives = nil
             button.infoX = nil
             button.infoY = nil
             button.info = nil
+            button.questName = nil
 
             if button.RewardText then
                 button.RewardText:SetText("")
@@ -518,7 +906,6 @@ function Maps:InitializeWorldQuestRow(button)
     end
 
     button.worldQuest = true
-    button.questRewardTooltipStyle = TOOLTIP_QUEST_REWARDS_STYLE_WORLD_QUEST
     button.OnLegendPinMouseEnter = function() end
     button.OnLegendPinMouseLeave = function() end
     button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -688,6 +1075,7 @@ function Maps:SetupWorldQuestRow(button, entry)
     button.questID = questID
     button.mapID = entry.mapID
     button.numObjectives = info.numObjectives
+    button.numbObjectives = info.numObjectives
     button.infoX = info.x
     button.infoY = info.y
 
@@ -696,6 +1084,7 @@ function Maps:SetupWorldQuestRow(button, entry)
     end
 
     local title = entry.title or ""
+    button.questName = title
     button.Text:SetText(title)
     if button.Text.SetWordWrap then
         button.Text:SetWordWrap(false)
@@ -842,10 +1231,8 @@ function Maps:OnWorldQuestRowEnter(button)
         button.HighlightTexture:Show()
     end
 
-    if _G.TaskPOI_OnEnter then
-        _G.TaskPOI_OnEnter(button)
-    end
-
+    self:ShowWorldQuestTooltip(button)
+    self:ShowWorldQuestRewardTooltip(button)
 end
 
 function Maps:OnWorldQuestRowLeave(button)
@@ -858,8 +1245,10 @@ function Maps:OnWorldQuestRowLeave(button)
         button.HighlightTexture:Hide()
     end
 
-    if _G.TaskPOI_OnLeave then
-        _G.TaskPOI_OnLeave(button)
+    self:HideWorldQuestRewardTooltip()
+
+    if GameTooltip then
+        GameTooltip:Hide()
     end
 
 end

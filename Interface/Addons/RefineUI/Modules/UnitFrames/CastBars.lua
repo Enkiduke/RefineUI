@@ -3,9 +3,12 @@
 -- Description: Skins and attaches castbars to unitframes
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
+local UnitFrames = RefineUI:GetModule("UnitFrames")
+if not UnitFrames then
+    return
+end
+
 local Config = RefineUI.Config
-RefineUI.UnitFrames = RefineUI.UnitFrames or {}
-local UF = RefineUI.UnitFrames
 
 ----------------------------------------------------------------------------------------
 -- Lib Globals
@@ -19,8 +22,6 @@ local UnitChannelDuration = UnitChannelDuration
 local InCombatLockdown = InCombatLockdown
 local math = math
 local GetTime = GetTime
-local type = type
-local tostring = tostring
 local pairs = pairs
 local next = next
 local setmetatable = setmetatable
@@ -56,18 +57,8 @@ local TEX_BACKGROUND = TEXTURE_PATH .. "HealthBackground.blp"
 local TEX_PORTRAIT_BORDER = TEXTURE_PATH .. "PortraitBorder.blp"
 local TEX_MASK = TEXTURE_PATH .. "PortraitMask.blp"
 
-local function GetHookOwnerId(owner)
-    if type(owner) == "table" and owner.GetName then
-        local name = owner:GetName()
-        if name and name ~= "" then
-            return name
-        end
-    end
-    return tostring(owner)
-end
-
 local function BuildUnitCastHookKey(owner, method)
-    return "UnitFramesCastBars:" .. GetHookOwnerId(owner) .. ":" .. method
+    return UnitFrames:BuildHookKey(owner, "CastBar:" .. method)
 end
 
 local function IsBossUnitFrame(frame)
@@ -79,14 +70,14 @@ end
 local function GetBossCastBarAnchor(frame)
     if not frame then return nil end
 
-    local unitFrameData = RefineUI.UnitFrameData and RefineUI.UnitFrameData[frame]
+    local unitFrameData = UnitFrames:GetFrameData(frame)
     local refineUF = unitFrameData and unitFrameData.RefineUF
     if refineUF and refineUF.Texture then
         return refineUF.Texture
     end
 
-    if UF and UF.GetFrameContainers then
-        local _, _, hpContainer, manaBar = UF.GetFrameContainers(frame)
+    if UnitFrames.GetFrameContainers then
+        local _, _, hpContainer, manaBar = UnitFrames:GetFrameContainers(frame)
         if manaBar then
             return manaBar
         end
@@ -343,7 +334,7 @@ end
 -- Style Function
 ----------------------------------------------------------------------------------------
 
-function RefineUI.StyleCastBar(castbar, attachedFrame)
+function UnitFrames:StyleCastBar(castbar, attachedFrame)
     if not castbar then return end
     
     local data = GetCastBarData(castbar)

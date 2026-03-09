@@ -8,6 +8,7 @@ if not EncounterTimeline then
     return
 end
 
+----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
@@ -35,6 +36,12 @@ local DEFAULT_OFFSET_X = 0
 local DEFAULT_OFFSET_Y = -180
 local BIG_ICON_REFRESH_INTERVAL = 0.05
 local COOLDOWN_FONT_SIZE = 24
+local BIG_ICON_COOLDOWN_OFFSET_X = 2
+local BIG_ICON_COOLDOWN_OFFSET_Y = 2
+local BIG_ICON_BORDER_COLOR_R = 1
+local BIG_ICON_BORDER_COLOR_G = 0
+local BIG_ICON_BORDER_COLOR_B = 0
+local BIG_ICON_BORDER_COLOR_A = 1
 local BIG_ICON_ROLE_MASK_FALLBACK = 896 -- tank/healer/dps
 local BIG_ICON_INDICATOR_COUNT_ROLE = 2
 local BIG_ICON_INDICATOR_COUNT_OTHER = 2
@@ -633,6 +640,9 @@ function EncounterTimeline:CreateBigIconSlot(slotIndex)
     slot:SetFrameLevel(GetSafeFrameLevel(frame, 220) + 2)
     RefineUI.SetTemplate(slot, "Icon")
     RefineUI.CreateBorder(slot, 6, 6, 16)
+    if slot.border and slot.border.SetBackdropBorderColor then
+        slot.border:SetBackdropBorderColor(BIG_ICON_BORDER_COLOR_R, BIG_ICON_BORDER_COLOR_G, BIG_ICON_BORDER_COLOR_B, BIG_ICON_BORDER_COLOR_A)
+    end
 
     slot.IconTexture = slot:CreateTexture(nil, "ARTWORK")
     RefineUI.SetInside(slot.IconTexture, slot, 1, 1)
@@ -662,7 +672,9 @@ function EncounterTimeline:CreateBigIconSlot(slotIndex)
     end
 
     slot.Cooldown = CreateFrame("Cooldown", nil, slot, "CooldownFrameTemplate")
-    slot.Cooldown:SetAllPoints(slot.IconTexture)
+    slot.Cooldown:ClearAllPoints()
+    slot.Cooldown:SetPoint("TOPLEFT", slot.IconTexture, "TOPLEFT", -BIG_ICON_COOLDOWN_OFFSET_X, BIG_ICON_COOLDOWN_OFFSET_Y)
+    slot.Cooldown:SetPoint("BOTTOMRIGHT", slot.IconTexture, "BOTTOMRIGHT", BIG_ICON_COOLDOWN_OFFSET_X, -BIG_ICON_COOLDOWN_OFFSET_Y)
     slot.Cooldown:SetFrameStrata(GetSafeFrameStrata(slot, "DIALOG"))
     slot.Cooldown:SetFrameLevel(GetSafeFrameLevel(slot, 0) + 5)
     slot.Cooldown:EnableMouse(false)

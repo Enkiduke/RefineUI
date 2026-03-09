@@ -8,4 +8,5 @@
 	<Script file="LSToasts.lua"/>
 	<Script file="SCT.lua"/>
 	<Script file="StatusBars.lua"/>
+	<Script file="ZoneText.lua"/>
 </Ui>

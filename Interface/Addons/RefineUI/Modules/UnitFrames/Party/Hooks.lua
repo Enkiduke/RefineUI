@@ -4,8 +4,13 @@
 --              lifecycle entry point for Compact Party/Raid frame handling.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
-local UF = RefineUI.UnitFrames
-local P = UF._party
+local UnitFrames = RefineUI:GetModule("UnitFrames")
+if not UnitFrames then
+    return
+end
+
+local UF = UnitFrames
+local P = UnitFrames:GetPrivate().Party
 if not P then return end
 
 ----------------------------------------------------------------------------------------
@@ -39,7 +44,7 @@ end
 -- Hook Registration
 ----------------------------------------------------------------------------------------
 function UF.InitPartyHooks()
-    if UF._partyHooksRegistered then return end
+    if UnitFrames:GetState(UnitFrames, "PartyHooksRegistered", false) then return end
 
     P.EnsureManualOrderIncludesAllEntries()
     P.HookTrackedBuffSettingsDialog()
@@ -125,7 +130,7 @@ function UF.InitPartyHooks()
     end
 
     if RegisterCompactPartyHooks() then
-        UF._partyHooksRegistered = true
+        UnitFrames:SetState(UnitFrames, "PartyHooksRegistered", true)
     end
     
     if CompactPartyFrameTitle then
@@ -146,7 +151,7 @@ function UF.InitPartyHooks()
          P.HookTrackedBuffSettingsDialog()
          if event == "ADDON_LOADED" and (addon == "Blizzard_CompactRaidFrames" or addon == "Blizzard_UnitFrame") then
               if RegisterCompactPartyHooks() then
-                  UF._partyHooksRegistered = true
+                  UnitFrames:SetState(UnitFrames, "PartyHooksRegistered", true)
               end
               
               ForEachCompactPartyRaidFrame(true, true, function(frame)

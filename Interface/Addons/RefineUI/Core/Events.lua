@@ -14,12 +14,13 @@ local pcall = pcall
 local debug = debug
 local format = string.format
 local issecretvalue = _G and _G.issecretvalue
+local wipe = wipe
 
 ----------------------------------------------------------------------------------------
 -- State
 ----------------------------------------------------------------------------------------
 local eventFrame = CreateFrame("Frame")
-local handlers = {}  -- handlers[event] = { [key] = fn, ... }
+local handlers = {}  -- handlers[event] = { map = {}, count = 0, ordered = {}, dirty = false }
 
 RefineUI.Observability = RefineUI.Observability or {
     enabled = false,
@@ -39,21 +40,23 @@ local observability = RefineUI.Observability
 ----------------------------------------------------------------------------------------
 -- Internal
 ----------------------------------------------------------------------------------------
-local function hasHandlers(event)
+local function getBucket(event, create)
     local bucket = handlers[event]
-    if not bucket then return false end
-    for _ in pairs(bucket) do return true end
-    return false
+    if not bucket and create then
+        bucket = {
+            map = {},
+            count = 0,
+            ordered = {},
+            dirty = false,
+        }
+        handlers[event] = bucket
+    end
+    return bucket
 end
 
-local function countHandlers(event)
+local function hasHandlers(event)
     local bucket = handlers[event]
-    if not bucket then return 0 end
-    local count = 0
-    for _ in pairs(bucket) do
-        count = count + 1
-    end
-    return count
+    return bucket ~= nil and bucket.count > 0
 end
 
 local function incrementCounter(map, key)
@@ -62,7 +65,36 @@ end
 
 local function trackHandlerCount(event)
     if not observability.enabled then return end
-    observability.events.handlers[event] = countHandlers(event)
+    local bucket = handlers[event]
+    observability.events.handlers[event] = bucket and bucket.count or 0
+end
+
+local function markBucketDirty(bucket)
+    if bucket then
+        bucket.dirty = true
+    end
+end
+
+local function rebuildDispatchList(bucket)
+    if not bucket or not bucket.dirty then
+        return
+    end
+
+    local ordered = bucket.ordered
+    if wipe then
+        wipe(ordered)
+    else
+        for i = 1, #ordered do
+            ordered[i] = nil
+        end
+    end
+
+    for key, fn in pairs(bucket.map) do
+        ordered[#ordered + 1] = key
+        ordered[#ordered + 1] = fn
+    end
+
+    bucket.dirty = false
 end
 
 local function DispatchEventHandler(fn, event, ...)
@@ -81,37 +113,44 @@ end
 
 local function dispatch(_, event, ...)
     local bucket = handlers[event]
-    if not bucket then return end
+    if not bucket or bucket.count == 0 then return end
 
     if observability.enabled then
         incrementCounter(observability.events.fired, event)
     end
 
-    for key, fn in pairs(bucket) do
-        local ok, err = DispatchEventHandler(fn, event, ...)
-        if not ok then
-            -- Secret-safe error reporting with source hints.
-            local function SafeString(v)
-                if issecretvalue and issecretvalue(v) then
-                    return "<secret>"
-                end
-                local sOk, s = pcall(tostring, v)
-                if sOk then
-                    return s
-                end
-                return "<unprintable>"
-            end
+    rebuildDispatchList(bucket)
 
-            local handlerLabel = SafeString(key)
-            if type(fn) == "function" and debug and debug.getinfo then
-                local info = debug.getinfo(fn, "Sl")
-                if info and info.short_src and info.linedefined then
-                    handlerLabel = format("%s:%d", info.short_src, info.linedefined)
+    local ordered = bucket.ordered
+    for i = 1, #ordered, 2 do
+        local key = ordered[i]
+        local fn = ordered[i + 1]
+        if bucket.map[key] == fn then
+            local ok, err = DispatchEventHandler(fn, event, ...)
+            if not ok then
+                -- Secret-safe error reporting with source hints.
+                local function SafeString(v)
+                    if issecretvalue and issecretvalue(v) then
+                        return "<secret>"
+                    end
+                    local sOk, s = pcall(tostring, v)
+                    if sOk then
+                        return s
+                    end
+                    return "<unprintable>"
                 end
-            end
 
-            local errText = SafeString(err)
-            print(format("|cFFFF0000[RefineUI EventBus]|r Error in handler [%s] for event [%s]: %s", handlerLabel, SafeString(event), errText))
+                local handlerLabel = SafeString(key)
+                if type(fn) == "function" and debug and debug.getinfo then
+                    local info = debug.getinfo(fn, "Sl")
+                    if info and info.short_src and info.linedefined then
+                        handlerLabel = format("%s:%d", info.short_src, info.linedefined)
+                    end
+                end
+
+                local errText = SafeString(err)
+                print(format("|cFFFF0000[RefineUI EventBus]|r Error in handler [%s] for event [%s]: %s", handlerLabel, SafeString(event), errText))
+            end
         end
     end
 end
@@ -131,12 +170,17 @@ function RefineUI:RegisterEventCallback(event, fn, key)
     if type(fn) ~= "function" or not event then return end
     key = key or tostring(fn)
 
-    if not handlers[event] then
-        handlers[event] = {}
+    local bucket = getBucket(event, true)
+    if bucket.count == 0 then
         eventFrame:RegisterEvent(event)
     end
 
-    handlers[event][key] = fn
+    if bucket.map[key] == nil then
+        bucket.count = bucket.count + 1
+    end
+
+    bucket.map[key] = fn
+    markBucketDirty(bucket)
 
     if observability.enabled then
         incrementCounter(observability.events.registered, event)
@@ -180,7 +224,9 @@ end
 -- @param event string The WoW event name
 -- @param key string The key used during registration
 function RefineUI:OffEvent(event, key)
-    if not event or not handlers[event] then return end
+    local bucket = handlers[event]
+    if not event or not bucket then return end
+
     if key == nil then
         handlers[event] = nil
         eventFrame:UnregisterEvent(event)
@@ -189,9 +235,14 @@ function RefineUI:OffEvent(event, key)
         end
         return
     end
-    handlers[event][key] = nil
 
-    if not hasHandlers(event) then
+    if bucket.map[key] ~= nil then
+        bucket.map[key] = nil
+        bucket.count = bucket.count - 1
+        markBucketDirty(bucket)
+    end
+
+    if bucket.count <= 0 then
         handlers[event] = nil
         eventFrame:UnregisterEvent(event)
         if observability.enabled then
@@ -232,8 +283,8 @@ local function syncActiveHandlerSnapshot()
     observability.events.handlers = {}
     if not observability.enabled then return end
 
-    for event in pairs(handlers) do
-        observability.events.handlers[event] = countHandlers(event)
+    for event, bucket in pairs(handlers) do
+        observability.events.handlers[event] = bucket.count
     end
 end
 

@@ -9,6 +9,8 @@ local _, RefineUI = ...
 -- Lib Globals
 ----------------------------------------------------------------------------------------
 local _G = _G
+local floor = math.floor
+local min = math.min
 local select = select
 local unpack = unpack
 local type = type
@@ -23,7 +25,7 @@ local STYLE_STATE_REGISTRY = "CoreStyleState"
 local StyleState = RefineUI:CreateDataRegistry(STYLE_STATE_REGISTRY, "k")
 
 -- Forward Declarations
-local AddAPI
+local AddAPI, CreateGlow, GetSafeFrameLevel, GetSafeFrameStrata
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals
@@ -33,13 +35,16 @@ local CreateFrame = CreateFrame
 ----------------------------------------------------------------------------------------
 -- Theme Caching (Performance + Refresh Support)
 ----------------------------------------------------------------------------------------
-local BORDER_FILE, EDGE_SIZE
+local BORDER_FILE, GLOW_FILE, EDGE_SIZE
 local BR, BG, BB, BA  -- Border color
 local DR, DG, DB, DA  -- Backdrop color
+local DEFAULT_GLOW_SPREAD = 4
+local GLOW_TEXTURE_ALIGNMENT_OFFSET = 2
 
 local function RefreshTheme()
     local textures = RefineUI.Media and RefineUI.Media.Textures
     BORDER_FILE = (textures and (textures.RefineBorder or textures.Border)) or [[Interface\AddOns\RefineUI\Media\Textures\RefineBorder.blp]]
+    GLOW_FILE = (textures and textures.Glow) or [[Interface\AddOns\RefineUI\Media\Textures\RefineGlow2.blp]]
     EDGE_SIZE = 12
     
     if RefineUI.Config and RefineUI.Config.General and RefineUI.Config.General.BorderColor then
@@ -129,6 +134,24 @@ local function ResolveManagedRefineBorder(owner)
     local legacyBorder = owner.border
     if legacyBorder ~= refineBorder and IsManagedRefineBorder(legacyBorder, owner) then
         return legacyBorder
+    end
+
+    return nil
+end
+
+local function ResolveManagedRefineGlow(owner)
+    if not CanAccessObject(owner) then
+        return nil
+    end
+
+    local refineGlow = owner.RefineGlow
+    if CanCreateBorderPieces(refineGlow) and refineGlow._refineGlowOwner == owner then
+        return refineGlow
+    end
+
+    local legacyGlow = owner.glow
+    if legacyGlow ~= refineGlow and CanCreateBorderPieces(legacyGlow) and legacyGlow._refineGlowOwner == owner then
+        return legacyGlow
     end
 
     return nil
@@ -480,7 +503,72 @@ local function Point(self, anchor, parent, anchor2, x, y)
     self:SetPoint(anchor, parent, anchor2, RefineUI:Scale(x or 0), RefineUI:Scale(y or 0))
 end
 
-local function GetSafeFrameLevel(frame, fallback)
+local function GetGlowBorder(owner)
+    return ResolveManagedRefineBorder(owner)
+end
+
+local function GetGlowSpread(size)
+    if type(size) ~= "number" then
+        return DEFAULT_GLOW_SPREAD
+    end
+
+    if size < 0 then
+        return 0
+    end
+
+    return size
+end
+
+local function PixelSnapForFrame(frame, value)
+    if type(value) ~= "number" then
+        return 0
+    end
+
+    local scale = frame and frame.GetEffectiveScale and frame:GetEffectiveScale() or 1
+    if type(scale) ~= "number" or scale <= 0 then
+        return value
+    end
+
+    return floor(value * scale + 0.5) / scale
+end
+
+local function AnchorGlowToBorder(glowFrame, borderFrame, spreadOffset)
+    if not glowFrame or not borderFrame then
+        return
+    end
+
+    spreadOffset = type(spreadOffset) == "number" and spreadOffset or 0
+    if glowFrame.ClearAllPoints then
+        glowFrame:ClearAllPoints()
+    end
+    glowFrame:SetPoint("TOPLEFT", borderFrame, "TOPLEFT", -spreadOffset, spreadOffset)
+    glowFrame:SetPoint("BOTTOMRIGHT", borderFrame, "BOTTOMRIGHT", spreadOffset, -spreadOffset)
+end
+
+local function GetGlowEdgeSize(borderFrame, spread)
+    local edgeSize = EDGE_SIZE
+    if CanAccessObject(borderFrame) and type(borderFrame.__es) == "number" and borderFrame.__es > 0 then
+        edgeSize = borderFrame.__es
+    end
+
+    return edgeSize
+end
+
+local function GetGlowSpreadOffset(borderFrame, glowEdgeSize)
+    local offset = GLOW_TEXTURE_ALIGNMENT_OFFSET
+    local width = borderFrame and borderFrame.GetWidth and borderFrame:GetWidth() or 0
+    local height = borderFrame and borderFrame.GetHeight and borderFrame:GetHeight() or 0
+
+    if type(width) == "number" and type(height) == "number" and width > 0 and height > 0 then
+        local shortSide = min(width, height)
+        local availableOutset = max(0, (shortSide - (glowEdgeSize * 2)) * 0.5)
+        offset = min(offset, availableOutset)
+    end
+
+    return PixelSnapForFrame(borderFrame, offset)
+end
+
+GetSafeFrameLevel = function(frame, fallback)
     local safeFallback = type(fallback) == "number" and fallback or 0
     if not CanAccessObject(frame) or type(frame.GetFrameLevel) ~= "function" then
         return safeFallback
@@ -494,7 +582,7 @@ local function GetSafeFrameLevel(frame, fallback)
     return frameLevel
 end
 
-local function GetSafeFrameStrata(frame, fallback)
+GetSafeFrameStrata = function(frame, fallback)
     local safeFallback = (type(fallback) == "string" and fallback ~= "") and fallback or "MEDIUM"
     if not CanAccessObject(frame) or type(frame.GetFrameStrata) ~= "function" then
         return safeFallback
@@ -506,6 +594,66 @@ local function GetSafeFrameStrata(frame, fallback)
     end
 
     return strata
+end
+
+local function CreateManagedGlow(self, size)
+    if not CanAccessObject(self) then return end
+    if self.IsForbidden and self:IsForbidden() then return end
+
+    local border = GetGlowBorder(self)
+    if not border then
+        return nil
+    end
+
+    local spread = GetGlowSpread(size)
+    local glowEdgeSize = GetGlowEdgeSize(border, spread)
+    local spreadOffset = GetGlowSpreadOffset(border, glowEdgeSize)
+    local edgeFile = GLOW_FILE or [[Interface\AddOns\RefineUI\Media\Textures\RefineGlow2.blp]]
+
+    local g = ResolveManagedRefineGlow(self)
+    if g then
+        if not CanAccessObject(g) then
+            return nil
+        end
+
+        if g.__gb ~= border or g.__go ~= spreadOffset then
+            AnchorGlowToBorder(g, border, spreadOffset)
+            g.__gb = border
+            g.__go = spreadOffset
+        end
+        g.__gs = spread
+        if (g.__es ~= glowEdgeSize) or (g.__edgeFile ~= edgeFile) or not g._refineBorderPieces then
+            g.__es = glowEdgeSize
+            g.__edgeFile = edgeFile
+            EnsureBorderTexture(g, edgeFile, "ADD")
+        end
+
+        g:SetFrameLevel(max(0, GetSafeFrameLevel(border, GetSafeFrameLevel(self, 0) + 1) - 1))
+        g:SetFrameStrata(GetSafeFrameStrata(border, GetSafeFrameStrata(self, "MEDIUM")))
+        EnsureBorderCompatMethods(g)
+        return g
+    end
+
+    g = CreateFrame("Frame", nil, self)
+    g:SetFrameLevel(max(0, GetSafeFrameLevel(border, GetSafeFrameLevel(self, 0) + 1) - 1))
+    g:SetFrameStrata(GetSafeFrameStrata(border, GetSafeFrameStrata(self, "MEDIUM")))
+    AnchorGlowToBorder(g, border, spreadOffset)
+
+    g.__es = glowEdgeSize
+    g.__gb = border
+    g.__go = spreadOffset
+    g.__gs = spread
+    g.__edgeFile = edgeFile
+    g._refineGlowOwner = self
+    EnsureBorderTexture(g, edgeFile, "ADD")
+    EnsureBorderCompatMethods(g)
+    g:SetBackdropBorderColor(1, 0.82, 0, 1)
+    g:Hide()
+
+    self.glow = g
+    self.RefineGlow = g
+    AddAPI(g)
+    return g
 end
 
 ----------------------------------------------------------------------------------------
@@ -587,6 +735,10 @@ local function CreateBorder(self, insetX, insetY, edgeSize)
         b._refineBorderOwner = self
         self.RefineBorder = b
         self.border = b
+        local glow = ResolveManagedRefineGlow(self)
+        if glow then
+            CreateGlow(self, glow.__gs or DEFAULT_GLOW_SPREAD)
+        end
         
         return b
     end
@@ -610,6 +762,10 @@ local function CreateBorder(self, insetX, insetY, edgeSize)
     end
     self.border = b
     self.RefineBorder = b -- Safe unique alias
+    local glow = ResolveManagedRefineGlow(self)
+    if glow then
+        CreateGlow(self, glow.__gs or DEFAULT_GLOW_SPREAD)
+    end
     return b
 end
 
@@ -635,51 +791,8 @@ end
 ----------------------------------------------------------------------------------------
 -- CreateGlow (Idempotent - creates/updates glow backdrop)
 ----------------------------------------------------------------------------------------
-local function CreateGlow(self, size)
-    if not CanAccessObject(self) then return end
-    if self.IsForbidden and self:IsForbidden() then return end
-    size = size or 6
-    local edgeFile = (RefineUI.Media and RefineUI.Media.Textures and RefineUI.Media.Textures.Glow) or [[Interface\AddOns\RefineUI\Media\Textures\Glow.tga]]
-
-    local g = self.glow
-    if g then
-        if not CanAccessObject(g) then
-            return nil
-        end
-
-        if g.__gs ~= size then
-            RefineUI.SetOutside(g, self, size, size)
-            g.__gs = size
-        end
-        if (g.__es ~= size) or (g.__edgeFile ~= edgeFile) or not g._refineBorderPieces then
-            g.__es = size
-            g.__edgeFile = edgeFile
-            EnsureBorderTexture(g, edgeFile, "ADD")
-        end
-
-        g:SetFrameLevel(max(0, GetSafeFrameLevel(self, 0) - 1)) -- Behind by default
-        g:SetFrameStrata(GetSafeFrameStrata(self, "MEDIUM"))
-        EnsureBorderCompatMethods(g)
-        return g
-    end
-
-    local g = CreateFrame("Frame", nil, self)
-    g:SetFrameLevel(max(0, GetSafeFrameLevel(self, 0) - 1)) -- Behind by default
-    g:SetFrameStrata(GetSafeFrameStrata(self, "MEDIUM"))
-    RefineUI.SetOutside(g, self, size, size)
-
-    g.__es = size
-    g.__gs = size
-    g.__edgeFile = edgeFile
-    EnsureBorderTexture(g, edgeFile, "ADD")
-    EnsureBorderCompatMethods(g)
-    g:SetBackdropBorderColor(1, 0.82, 0, 1) -- RefineUI Gold
-    g:Hide()
-    
-    self.glow = g
-    self.RefineGlow = g
-    AddAPI(g)
-    return g
+CreateGlow = function(self, size)
+    return CreateManagedGlow(self, size)
 end
 
 ----------------------------------------------------------------------------------------
@@ -853,30 +966,29 @@ end
 
 -- API Injection (Fixed: Safe Instance Injection)
 ----------------------------------------------------------------------------------------
+local API_INJECT = {
+    Kill = Kill,
+    StripTextures = StripTextures,
+    SetOutside = SetOutside,
+    SetInside = SetInside,
+    Size = Size,
+    Point = Point,
+    Font = Font,
+    CreateBorder = CreateBorder,
+    SetTemplate = SetTemplate,
+    CreateBackdrop = CreateBackdrop,
+    StyleButton = StyleButton,
+    SkinButton = SkinButton,
+    CreatePulse = CreatePulse,
+    CreateGlow = CreateGlow,
+    FadeIn = function(self, duration, alpha) RefineUI:FadeIn(self, duration, alpha) end,
+    FadeOut = function(self, duration, alpha) RefineUI:FadeOut(self, duration, alpha) end,
+}
+
 AddAPI = function(self, object)
     if not object or type(object) ~= "table" then object = self end
-    
-    -- All functions MUST be defined before this point!
-    local inject = {
-        Kill = Kill,
-        StripTextures = StripTextures,
-        SetOutside = SetOutside,
-        SetInside = SetInside,
-        Size = Size,
-        Point = Point,
-        Font = Font,
-        CreateBorder = CreateBorder,
-        SetTemplate = SetTemplate,
-        CreateBackdrop = CreateBackdrop,
-        StyleButton = StyleButton,
-        SkinButton = SkinButton,
-        CreatePulse = CreatePulse,
-        CreateGlow = CreateGlow,
-        FadeIn = function(self, duration, alpha) RefineUI:FadeIn(self, duration, alpha) end,
-        FadeOut = function(self, duration, alpha) RefineUI:FadeOut(self, duration, alpha) end,
-    }
-    
-    for k, func in pairs(inject) do
+
+    for k, func in pairs(API_INJECT) do
         if object[k] == nil then
             object[k] = func
         end

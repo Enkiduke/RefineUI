@@ -82,4 +82,7 @@ function Skins:OnEnable()
     if self.SetupStatusBars then
         self:SetupStatusBars()
     end
+    if self.SetupZoneTextSkin then
+        self:SetupZoneTextSkin()
+    end
 end

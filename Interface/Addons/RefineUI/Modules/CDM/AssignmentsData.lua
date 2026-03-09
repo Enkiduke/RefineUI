@@ -31,10 +31,8 @@ local tremove = table.remove
 
 local UnitClass = UnitClass
 local GetCVarBool = GetCVarBool
-local C_CooldownViewer = C_CooldownViewer
 local C_SpecializationInfo = C_SpecializationInfo
 local C_Spell = C_Spell
-local InCombatLockdown = InCombatLockdown
 local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
@@ -45,7 +43,6 @@ local TRACKED_BAR = Enum and Enum.CooldownViewerCategory and Enum.CooldownViewer
 local HIDDEN_AURA = (Enum and Enum.CooldownViewerCategory and Enum.CooldownViewerCategory.HiddenAura) or -2
 
 local ALL_AURA_CATEGORIES = { TRACKED_BUFF, TRACKED_BAR, HIDDEN_AURA }
-local LAYOUT_STATUS_SUCCESS = Enum and Enum.CooldownLayoutStatus and Enum.CooldownLayoutStatus.Success
 local validAuraIDsCache = {}
 local cooldownDisplayNameCache = {}
 local cooldownDisplayNameLowerCache = {}
@@ -68,10 +65,6 @@ local function IsUsableCooldownID(value)
         return false
     end
     return type(value) == "number" and value > 0
-end
-
-local function IsSecret(value)
-    return issecretvalue and issecretvalue(value)
 end
 
 local function ClampInsertIndex(index, count)
@@ -120,30 +113,10 @@ local function ToSet(values)
 end
 
 local function GetLayoutIDFromManager()
-    local settingsFrame = CDM:GetCooldownViewerSettingsFrame()
-    if not settingsFrame or type(settingsFrame.GetLayoutManager) ~= "function" then
-        return 0
-    end
-
-    local layoutManager = settingsFrame:GetLayoutManager()
-    if not layoutManager then
-        return 0
-    end
-
-    if type(layoutManager.GetActiveLayout) == "function" then
-        local accessOnly = Enum and Enum.CDMLayoutMode and Enum.CDMLayoutMode.AccessOnly
-        local layout = layoutManager:GetActiveLayout(accessOnly)
-        if layout and type(_G.CooldownManagerLayout_GetID) == "function" then
-            local layoutID = _G.CooldownManagerLayout_GetID(layout)
-            if type(layoutID) == "number" then
-                return layoutID
-            end
-        end
-    end
-
-    if type(layoutManager.GetActiveLayoutID) == "function" then
-        local layoutID = layoutManager:GetActiveLayoutID()
-        if type(layoutID) == "number" then
+    local lib = RefineUI.LibEditMode
+    if lib and type(lib.GetActiveLayout) == "function" then
+        local layoutID = lib:GetActiveLayout()
+        if type(layoutID) == "number" and layoutID > 0 then
             return layoutID
         end
     end
@@ -208,12 +181,6 @@ end
 
 
 function CDM:GetCurrentClassSpecTag()
-    if _G.CooldownViewerUtil and type(_G.CooldownViewerUtil.GetCurrentClassAndSpecTag) == "function" then
-        local tag = _G.CooldownViewerUtil.GetCurrentClassAndSpecTag()
-        if tag then
-            return tag
-        end
-    end
     return GetFallbackClassSpecTag()
 end
 
@@ -243,22 +210,6 @@ function CDM:GetCurrentAssignments()
 end
 
 
-function CDM:GetCooldownViewerDataProvider()
-    local settingsFrame = self:GetCooldownViewerSettingsFrame()
-    if settingsFrame and type(settingsFrame.GetDataProvider) == "function" then
-        local provider = settingsFrame:GetDataProvider()
-        if provider then
-            return provider, settingsFrame
-        end
-    end
-    local provider = _G.CooldownViewerDataProvider
-    if provider then
-        return provider, settingsFrame
-    end
-    return nil, settingsFrame
-end
-
-
 function CDM:GetAssignedIDSet(assignments)
     local assigned = {}
     local scoped = assignments or self:GetCurrentAssignments()
@@ -274,24 +225,9 @@ end
 
 
 function CDM:GetCooldownInfo(cooldownID)
-    local settingsFrame = self:GetCooldownViewerSettingsFrame()
-    if settingsFrame and type(settingsFrame.GetDataProvider) == "function" then
-        local provider = settingsFrame:GetDataProvider()
-        if provider and type(provider.GetCooldownInfoForID) == "function" then
-            local info = provider:GetCooldownInfoForID(cooldownID)
-            if info and not IsSecret(info) then
-                return info
-            end
-        end
+    if self.GetCooldownCatalogInfo then
+        return self:GetCooldownCatalogInfo(cooldownID)
     end
-
-    if C_CooldownViewer and type(C_CooldownViewer.GetCooldownViewerCooldownInfo) == "function" then
-        local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
-        if info and not IsSecret(info) then
-            return info
-        end
-    end
-
     return nil
 end
 
@@ -367,9 +303,6 @@ end
 
 
 function CDM:GetSourceCategoryList()
-    if self.GetSourceScope and self:GetSourceScope() == "buffs_exact" then
-        return { TRACKED_BUFF, HIDDEN_AURA }
-    end
     return ALL_AURA_CATEGORIES
 end
 
@@ -380,7 +313,7 @@ function CDM:GetValidAuraCooldownIDs(includeUnlearned)
         showUnlearned = GetCVarBool and GetCVarBool("cooldownViewerShowUnlearned") or false
     end
 
-    local sourceScope = self.GetSourceScope and self:GetSourceScope() or "buffs_exact"
+    local sourceScope = self.GetSourceScope and self:GetSourceScope() or "all_auras"
     local cacheKey = tostring(self:GetCurrentLayoutKey()) .. ":" .. tostring(sourceScope) .. ":" .. (showUnlearned and "1" or "0")
     local cachedIDs = validAuraIDsCache[cacheKey]
     if type(cachedIDs) == "table" then
@@ -391,36 +324,16 @@ function CDM:GetValidAuraCooldownIDs(includeUnlearned)
     local seen = {}
 
     local categoryList = self:GetSourceCategoryList()
-    local settingsFrame = self:GetCooldownViewerSettingsFrame()
-    local provider = settingsFrame and settingsFrame.GetDataProvider and settingsFrame:GetDataProvider()
-    if provider and type(provider.GetOrderedCooldownIDsForCategory) == "function" then
-        for i = 1, #categoryList do
-            local category = categoryList[i]
-            if category ~= nil then
-                local ids = provider:GetOrderedCooldownIDsForCategory(category, showUnlearned)
-                if type(ids) == "table" then
-                    for n = 1, #ids do
-                        local cooldownID = ids[n]
-                        if IsUsableCooldownID(cooldownID) and not seen[cooldownID] then
-                            seen[cooldownID] = true
-                            tinsert(orderedIDs, cooldownID)
-                        end
-                    end
-                end
-            end
-        end
-    elseif C_CooldownViewer and type(C_CooldownViewer.GetCooldownViewerCategorySet) == "function" then
-        for i = 1, #categoryList do
-            local category = categoryList[i]
-            if type(category) == "number" then
-                local ids = C_CooldownViewer.GetCooldownViewerCategorySet(category, showUnlearned)
-                if type(ids) == "table" then
-                    for n = 1, #ids do
-                        local cooldownID = ids[n]
-                        if IsUsableCooldownID(cooldownID) and not seen[cooldownID] then
-                            seen[cooldownID] = true
-                            tinsert(orderedIDs, cooldownID)
-                        end
+    for i = 1, #categoryList do
+        local category = categoryList[i]
+        if type(category) == "number" and self.GetCooldownCategorySet then
+            local ids = self:GetCooldownCategorySet(category, showUnlearned)
+            if type(ids) == "table" then
+                for n = 1, #ids do
+                    local cooldownID = ids[n]
+                    if IsUsableCooldownID(cooldownID) and not seen[cooldownID] then
+                        seen[cooldownID] = true
+                        tinsert(orderedIDs, cooldownID)
                     end
                 end
             end
@@ -455,7 +368,6 @@ function CDM:AssignCooldownToBucket(cooldownID, bucketName, destIndex, layoutKey
     if self.MarkReloadRecommendationPending then
         self:MarkReloadRecommendationPending()
     end
-    self:RequestTrackedBuffSync(layoutKey)
     return true
 end
 
@@ -474,7 +386,6 @@ function CDM:UnassignCooldownID(cooldownID, layoutKey)
         if self.MarkAssignedCooldownSnapshotDirty then
             self:MarkAssignedCooldownSnapshotDirty()
         end
-        self:RequestTrackedBuffSync(layoutKey)
     end
     return changed
 end

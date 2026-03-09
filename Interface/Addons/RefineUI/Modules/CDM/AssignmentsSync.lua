@@ -71,23 +71,9 @@ function CDM:SyncAssignedCooldownsToTrackedBuff(layoutKey)
         return false, false
     end
 
-    if type(InCombatLockdown) == "function" and InCombatLockdown() then
+    local provider, settingsFrame, layoutManager = self:GetBlizzardLayoutSyncContext()
+    if not provider or type(provider.SetCooldownToCategory) ~= "function" or not settingsFrame then
         return false, false
-    end
-
-    local provider, settingsFrame = self:GetCooldownViewerDataProvider()
-    if not provider or type(provider.SetCooldownToCategory) ~= "function" then
-        return false, false
-    end
-    if not settingsFrame or not settingsFrame:IsShown() then
-        return false, false
-    end
-
-    local layoutManager = nil
-    if settingsFrame and type(settingsFrame.GetLayoutManager) == "function" then
-        layoutManager = settingsFrame:GetLayoutManager()
-    elseif type(provider.GetLayoutManager) == "function" then
-        layoutManager = provider:GetLayoutManager()
     end
 
     if self:IsLayoutManagerBusy(layoutManager) then
@@ -213,16 +199,11 @@ function CDM:ProcessPendingTrackedBuffSync()
         return true
     end
 
-    if type(InCombatLockdown) == "function" and InCombatLockdown() then
+    if not self:IsBlizzardMutationAllowed(self.BLIZZARD_MUTATION_KIND.LAYOUT_SYNC) then
         return false
     end
 
-    local settingsFrame = self:GetCooldownViewerSettingsFrame()
-    if not settingsFrame or not settingsFrame:IsShown() then
-        return false
-    end
-
-    local provider = self:GetCooldownViewerDataProvider()
+    local provider, settingsFrame = self:GetBlizzardLayoutSyncContext()
     if not provider then
         return false
     end
@@ -243,23 +224,9 @@ function CDM:ClearBlizzardTrackedBuffCategory()
         return false, false
     end
 
-    if type(InCombatLockdown) == "function" and InCombatLockdown() then
+    local provider, settingsFrame, layoutManager = self:GetBlizzardLayoutSyncContext()
+    if not provider or type(provider.SetCooldownToCategory) ~= "function" or not settingsFrame then
         return false, false
-    end
-
-    local provider, settingsFrame = self:GetCooldownViewerDataProvider()
-    if not provider or type(provider.SetCooldownToCategory) ~= "function" then
-        return false, false
-    end
-    if not settingsFrame or not settingsFrame:IsShown() then
-        return false, false
-    end
-
-    local layoutManager = nil
-    if settingsFrame and type(settingsFrame.GetLayoutManager) == "function" then
-        layoutManager = settingsFrame:GetLayoutManager()
-    elseif type(provider.GetLayoutManager) == "function" then
-        layoutManager = provider:GetLayoutManager()
     end
 
     if self:IsLayoutManagerBusy(layoutManager) then
@@ -367,4 +334,3 @@ function CDM:ProcessPendingInitialTrackedBuffClear()
 
     return self:RequestInitialTrackedBuffClear()
 end
-

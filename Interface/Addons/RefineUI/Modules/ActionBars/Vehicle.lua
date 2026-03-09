@@ -1,11 +1,13 @@
 ----------------------------------------------------------------------------------------
--- Vehicle Exit Buttons for RefineUI
-----------------------------------------------------------------------------------------
--- Vehicle Action Bars
+-- ActionBars Vehicle
+-- Description: Vehicle exit button, override bar, and seat indicator styling.
 ----------------------------------------------------------------------------------------
 
-local AddOnName, RefineUI = ...
-local Module = RefineUI:GetModule("ActionBars")
+local _, RefineUI = ...
+local ActionBars = RefineUI:GetModule("ActionBars")
+if not ActionBars then
+    return
+end
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
@@ -13,39 +15,35 @@ local Module = RefineUI:GetModule("ActionBars")
 local Positions = RefineUI.Positions
 
 ----------------------------------------------------------------------------------------
--- Constants
-----------------------------------------------------------------------------------------
-local ACTION_BARS_VEHICLE_STATE_REGISTRY = "ActionBarsVehicle:State"
-
-----------------------------------------------------------------------------------------
--- External State (Secure-safe)
-----------------------------------------------------------------------------------------
-local VehicleState = RefineUI:CreateDataRegistry(ACTION_BARS_VEHICLE_STATE_REGISTRY, "k")
-
-----------------------------------------------------------------------------------------
--- Lua / WoW Upvalues 
+-- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
-local type = type
-local tostring = tostring
+local ipairs = ipairs
+
+----------------------------------------------------------------------------------------
+-- Constants
+----------------------------------------------------------------------------------------
+local ACTION_BARS_VEHICLE_STATE_REGISTRY = "ActionBarsVehicle:State"
+local OVERRIDE_BAR_HIDE_FRAMES = {
+    "OverrideActionBarEndCapL", "OverrideActionBarEndCapR",
+    "OverrideActionBarMicroBGL", "OverrideActionBarMicroBGR", "OverrideActionBarMicroBGMid",
+    "OverrideActionBarExpBar", "OverrideActionBarHealthBar", "OverrideActionBarPowerBar",
+    "OverrideActionBarLeaveFrameExitBG", "OverrideActionBarDivider2", "OverrideActionBarLeaveFrameDivider3",
+    "OverrideActionBarButtonBGL", "OverrideActionBarButtonBGMid", "OverrideActionBarButtonBGR",
+    "OverrideActionBarBG", "OverrideActionBarBorder",
+}
+
+----------------------------------------------------------------------------------------
+-- Shared State
+----------------------------------------------------------------------------------------
+local private = ActionBars.Private
+local VehicleState = RefineUI:CreateDataRegistry(ACTION_BARS_VEHICLE_STATE_REGISTRY, "k")
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
 ----------------------------------------------------------------------------------------
-
-local function BuildVehicleHookKey(owner, method)
-	local ownerId
-	if type(owner) == "table" and owner.GetName then
-		ownerId = owner:GetName()
-	end
-	if not ownerId or ownerId == "" then
-		ownerId = tostring(owner)
-	end
-	return "ActionBarsVehicle:" .. ownerId .. ":" .. method
-end
-
 local function GetVehicleState(owner)
     local state = VehicleState[owner]
     if not state then
@@ -67,6 +65,7 @@ local function StyleDefaultVehicleExitButton()
     end
 
     leaveButton:SetAlpha(1)
+
     local state = GetVehicleState(leaveButton)
     if not state.isStyled then
         RefineUI.SetTemplate(leaveButton, "Default")
@@ -75,86 +74,73 @@ local function StyleDefaultVehicleExitButton()
 end
 
 local function SkinOverrideBar()
-	local hideFrames = {
-		"OverrideActionBarEndCapL", "OverrideActionBarEndCapR",
-		"OverrideActionBarMicroBGL", "OverrideActionBarMicroBGR", "OverrideActionBarMicroBGMid",
-		"OverrideActionBarExpBar", "OverrideActionBarHealthBar", "OverrideActionBarPowerBar",
-		"OverrideActionBarLeaveFrameExitBG", "OverrideActionBarDivider2", "OverrideActionBarLeaveFrameDivider3",
-		"OverrideActionBarButtonBGL", "OverrideActionBarButtonBGMid", "OverrideActionBarButtonBGR",
-		"OverrideActionBarBG", "OverrideActionBarBorder"
-	}
-
-	for _, name in pairs(hideFrames) do
-		local frame = _G[name]
-		if frame and not frame:IsForbidden() then
-			-- MODIFIED: Use ONLY SetAlpha(0). NEVER Hide() secure frames.
-			frame:SetAlpha(0)
-		end
-	end
+    for _, name in ipairs(OVERRIDE_BAR_HIDE_FRAMES) do
+        local frame = _G[name]
+        if frame and not frame:IsForbidden() then
+            frame:SetAlpha(0)
+        end
+    end
 end
 
 local function SkinVehicleIndicator()
-	local anchor = CreateFrame("Frame", "RefineVehicleAnchor", UIParent)
-	local pos = Positions and Positions["Vehicle"] or { "BOTTOM", UIParent, "BOTTOM", 0, 320 }
-	RefineUI.Point(anchor, pos[1], pos[2], pos[3], pos[4], pos[5])
-	RefineUI.Size(anchor, 130, 130)
+    if not VehicleSeatIndicator then
+        return
+    end
 
-	-- Non-destructive positioning hook
-	RefineUI:HookOnce(BuildVehicleHookKey(VehicleSeatIndicator, "SetPoint"), VehicleSeatIndicator, "SetPoint", function(self, _, parent)
-		if parent ~= anchor and not InCombatLockdown() then
-			self:ClearAllPoints()
-			RefineUI.Point(self, "BOTTOM", anchor, "BOTTOM", 0, 24)
-		end
-	end)
+    local anchor = _G.RefineVehicleAnchor or CreateFrame("Frame", "RefineVehicleAnchor", UIParent)
+    local position = Positions and Positions["Vehicle"] or { "BOTTOM", UIParent, "BOTTOM", 0, 320 }
+    RefineUI.Point(anchor, position[1], position[2], position[3], position[4], position[5])
+    RefineUI.Size(anchor, 130, 130)
+
+    RefineUI:HookOnce(private.BuildHookKey(VehicleSeatIndicator, "SetPoint", "VehicleIndicator"), VehicleSeatIndicator, "SetPoint", function(frame, _, parent)
+        if parent ~= anchor and not InCombatLockdown() then
+            frame:ClearAllPoints()
+            RefineUI.Point(frame, "BOTTOM", anchor, "BOTTOM", 0, 24)
+        end
+    end)
+end
+
+local function StyleMainMenuBarVehicleLeaveButton()
+    local button = _G.MainMenuBarVehicleLeaveButton
+    if not button then
+        return
+    end
+
+    local state = GetVehicleState(button)
+    if state.isStyled then
+        return
+    end
+
+    RefineUI.StripTextures(button)
+
+    local icon = button.Icon or button:GetNormalTexture()
+    if icon then
+        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        icon:ClearAllPoints()
+        RefineUI.Point(icon, "TOPLEFT", button, "TOPLEFT", 1, -1)
+        RefineUI.Point(icon, "BOTTOMRIGHT", button, "BOTTOMRIGHT", -1, 1)
+    end
+
+    RefineUI.SetTemplate(button, "Icon")
+    state.isStyled = true
 end
 
 ----------------------------------------------------------------------------------------
 -- Public Methods
 ----------------------------------------------------------------------------------------
-local function StyleMainMenuBarVehicleLeaveButton()
-    local btn = _G.MainMenuBarVehicleLeaveButton
-    if not btn then return end
-
-    local state = GetVehicleState(btn)
-    if state.isStyled then return end
-
-    RefineUI.StripTextures(btn)
-
-    local icon = btn.Icon or btn:GetNormalTexture()
-    if icon then
-        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        icon:ClearAllPoints()
-        RefineUI.Point(icon, "TOPLEFT", btn, "TOPLEFT", 1, -1)
-        RefineUI.Point(icon, "BOTTOMRIGHT", btn, "BOTTOMRIGHT", -1, 1)
-    end
-
-    RefineUI.SetTemplate(btn, "Icon")
-    state.isStyled = true
-end
-
-function Module:SetupVehicleActionBars()
-	StyleDefaultVehicleExitButton()
-	SkinOverrideBar()
-	SkinVehicleIndicator()
-	StyleMainMenuBarVehicleLeaveButton()
+function ActionBars:SetupVehicleActionBars()
+    StyleDefaultVehicleExitButton()
+    SkinOverrideBar()
+    SkinVehicleIndicator()
+    StyleMainMenuBarVehicleLeaveButton()
 
     local leaveButton = _G.OverrideActionBarLeaveFrameLeaveButton
-    if leaveButton and type(leaveButton.HookScript) == "function" then
-        RefineUI:HookScriptOnce(
-            BuildVehicleHookKey(leaveButton, "OnShow"),
-            leaveButton,
-            "OnShow",
-            StyleDefaultVehicleExitButton
-        )
+    if leaveButton and leaveButton.HookScript then
+        RefineUI:HookScriptOnce(private.BuildHookKey(leaveButton, "OnShow", "VehicleExit"), leaveButton, "OnShow", StyleDefaultVehicleExitButton)
     end
 
-    local vehicleBtn = _G.MainMenuBarVehicleLeaveButton
-    if vehicleBtn and type(vehicleBtn.HookScript) == "function" then
-        RefineUI:HookScriptOnce(
-            BuildVehicleHookKey(vehicleBtn, "OnShow"),
-            vehicleBtn,
-            "OnShow",
-            StyleMainMenuBarVehicleLeaveButton
-        )
+    local vehicleButton = _G.MainMenuBarVehicleLeaveButton
+    if vehicleButton and vehicleButton.HookScript then
+        RefineUI:HookScriptOnce(private.BuildHookKey(vehicleButton, "OnShow", "VehicleLeave"), vehicleButton, "OnShow", StyleMainMenuBarVehicleLeaveButton)
     end
 end

@@ -119,6 +119,38 @@ C.UnitFrames = {
         CompactPartyRaidSpacing = 6, -- Extra spacing for Blizzard compact party/raid aura icons
     },
 
+    TargetAuras = {
+        Enable = true,
+        OnlyPlayerDebuffsOnEnemies = true,
+        Size = 16,
+        LargeSize = 18,
+        HorizontalSpacing = 5,
+        VerticalSpacing = 4,
+        GroupGap = 4,
+        OffsetX = 6,
+        OffsetY = 16,
+        WrapWidth = 126,
+        WrapWidthWithToT = 101,
+        SmallBuffBorderColor = { 0.6, 0.6, 0.6 },
+        LargeBuffBorderColor = { 0.1, 0.8, 0.1 },
+    },
+
+    FocusAuras = {
+        Enable = true,
+        OnlyPlayerDebuffsOnEnemies = true,
+        Size = 16,
+        LargeSize = 18,
+        HorizontalSpacing = 5,
+        VerticalSpacing = 4,
+        GroupGap = 4,
+        OffsetX = 6,
+        OffsetY = 16,
+        WrapWidth = 126,
+        WrapWidthWithToT = 101,
+        SmallBuffBorderColor = { 0.6, 0.6, 0.6 },
+        LargeBuffBorderColor = { 0.1, 0.8, 0.1 },
+    },
+
     ClassBuffs = {
         ImportantSort = "MANUAL", -- MANUAL, ASCENDING, DESCENDING
         ManualOrder = {},
@@ -289,13 +321,11 @@ C.BuffReminder = {
 ----------------------------------------------------------------------------------------
 C.CDM = {
     Enable = true,
+    SchemaVersion = 2,
+    MigrationState = {},
     IconSize = 44,
     IconScale = 1,
     Spacing = 6,
-    SkinCooldownViewer = true,
-    SyncStrategy = "auto_safe", -- settings-flow CDM sync mode
-    SourceScope = "buffs_exact", -- "buffs_exact" or "all_auras"
-    PayloadGhostTTL = 0.20,
     BucketSettings = {
         Left = {
             IconScale = 1,
@@ -316,7 +346,6 @@ C.CDM = {
             Direction = "LEFT",
         },
     },
-    HideNativeAuraViewers = true,
     AuraMode = "refineui", -- "refineui" or "blizzard"
     LayoutAssignments = {},
     VisualOverrides = {},
@@ -339,6 +368,14 @@ C.EncounterTimeline = {
     BigIconOrientation = "HORIZONTAL", -- HORIZONTAL, VERTICAL
     BigIconGrowDirection = "RIGHT", -- Horizontal: RIGHT, LEFT, CENTERED. Vertical: UP, DOWN, CENTERED
     BigIconIconFallback = 134400,
+}
+
+----------------------------------------------------------------------------------------
+-- 9.7 Entrance Difficulty
+----------------------------------------------------------------------------------------
+C.EntranceDifficulty = {
+    Enable = true,
+    TriggerDistanceYards = 24,
 }
 
 ----------------------------------------------------------------------------------------
@@ -568,12 +605,17 @@ C.Quests = {
 ----------------------------------------------------------------------------------------
 C.Toasts = {
     Enable = true,
-    SkinBlizzard = true, -- Restyle Blizzard alert toasts after their setup functions run
+    SkinBlizzard = true, -- Route covered Blizzard alert toasts through the RefineUI renderer
     ShowCurrency = true, -- Add custom currency-delta toasts into AlertFrame pipeline
     ShowMoney = true, -- Add custom money-delta toasts into AlertFrame pipeline
     ShowNegative = true, -- Show spent/lost values in addition to gains
     MinimumCurrencyChange = 1, -- Absolute minimum change to show a currency toast
     MinimumMoneyChange = 1, -- Copper threshold (1 = show all money changes)
+    Scale = 1.0, -- Global toast scale
+    VisibleCount = 4, -- Max visible RefineUI toasts
+    Spacing = 12, -- Vertical spacing between stacked toasts
+    Duration = 4.0, -- Seconds before a toast fades out
+    Sound = true, -- Play toast sounds for RefineUI-rendered toasts
 }
 
 ----------------------------------------------------------------------------------------

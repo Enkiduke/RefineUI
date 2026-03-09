@@ -4,9 +4,14 @@
 --              Party/Raid frame handling.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
+local UnitFrames = RefineUI:GetModule("UnitFrames")
+if not UnitFrames then
+    return
+end
+
 local Config = RefineUI.Config
-RefineUI.UnitFrames = RefineUI.UnitFrames or {}
-local UF = RefineUI.UnitFrames
+local UF = UnitFrames
+local Private = UnitFrames:GetPrivate()
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases
@@ -60,21 +65,8 @@ local function GetPartyAuraData(auraFrame)
     return data
 end
 
-----------------------------------------------------------------------------------------
--- Hook Key Helpers
-----------------------------------------------------------------------------------------
-local function GetPartyHookOwnerId(owner)
-    if type(owner) == "table" and owner.GetName then
-        local name = owner:GetName()
-        if name and name ~= "" then
-            return name
-        end
-    end
-    return tostring(owner)
-end
-
 local function BuildPartyHookKey(owner, method)
-    return "UnitFramesParty:" .. GetPartyHookOwnerId(owner) .. ":" .. method
+    return UnitFrames:BuildHookKey(owner, "Party:" .. tostring(method))
 end
 
 ----------------------------------------------------------------------------------------
@@ -235,8 +227,7 @@ end
 
 local function HookSpacing(frame)
     RefineUI:HookOnce(BuildPartyHookKey(frame, "SetPoint:Spacing"), frame, "SetPoint", function(self, point, relTo, relPoint, x, y)
-        local d = GetPartyData(self)
-        if d.changing or InCombatLockdown() or IsEditModeActiveNow() then return end
+        if UnitFrames:GetState(self, "PartySpacingChange", false) or InCombatLockdown() or IsEditModeActiveNow() then return end
         
         if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
              local desiredGap = GetCompactFrameVerticalGap(self)
@@ -244,9 +235,9 @@ local function HookSpacing(frame)
              local currentX = type(x) == "number" and x or 0
              local currentY = type(y) == "number" and y or 0
              if currentY ~= -desiredGap and abs(currentY) <= GAP then
-                 d.changing = true
-                 self:SetPoint(point, relTo, relPoint, currentX, -desiredGap)
-                 d.changing = false
+                 UnitFrames:WithStateGuard(self, "PartySpacingChange", function()
+                     self:SetPoint(point, relTo, relPoint, currentX, -desiredGap)
+                 end)
              end
         end
     end)
@@ -257,15 +248,14 @@ local function ForceRestoreSpacing()
     for i = 1, 5 do
         local frame = _G["CompactPartyFrameMember"..i]
         if frame and frame:IsShown() then
-            local data = GetPartyData(frame)
             local point, relTo, relPoint, x, y = frame:GetPoint()
             if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
                  local desiredGap = GetCompactFrameVerticalGap(frame)
                  if not (IsUnreadableNumber(x) or IsUnreadableNumber(y)) then
                      if type(y) == "number" and y ~= -desiredGap and abs(y) <= GAP then
-                         data.changing = true
-                         frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
-                         data.changing = false
+                         UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
+                             frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
+                         end)
                      end
                  end
             end
@@ -275,15 +265,14 @@ local function ForceRestoreSpacing()
     for i = 1, 5 do
         local frame = _G["CompactPartyFramePet"..i]
         if frame and frame:IsShown() then
-            local data = GetPartyData(frame)
             local point, relTo, relPoint, x, y = frame:GetPoint()
             if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
                  local desiredGap = GetCompactFrameVerticalGap(frame)
                  if not (IsUnreadableNumber(x) or IsUnreadableNumber(y)) then
                      if type(y) == "number" and y ~= -desiredGap and abs(y) <= GAP then
-                         data.changing = true
-                         frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
-                         data.changing = false
+                         UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
+                             frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
+                         end)
                      end
                  end
             end
@@ -356,8 +345,8 @@ end
 ----------------------------------------------------------------------------------------
 -- Shared Internal Export Table
 ----------------------------------------------------------------------------------------
-local P = {}
-UF._party = P
+Private.Party = Private.Party or {}
+local P = Private.Party
 
 P.GetData               = GetPartyData
 P.GetAuraData            = GetPartyAuraData

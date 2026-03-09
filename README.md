@@ -39,7 +39,7 @@ As previously mentioned, there isn't a gigantic options panel to overwhelm you. 
 
 ## Status
 
-- Latest Version: `2026.02.27-beta`
+- Latest Version: `2026.03.08-beta`
 - Game version (TOC): `120000` (Retail)
 
 ## Discord / Support

@@ -213,6 +213,5 @@ function Install:OnInitialize()
 end
 
 function Install:OnEnable()
-    -- Check immediately on login in case we missed PEW
-    self:OnEvent("PLAYER_ENTERING_WORLD")
+    -- PEW is registered during OnInitialize and remains the single login path.
 end

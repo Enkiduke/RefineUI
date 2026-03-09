@@ -1,0 +1,7 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Script file="Shared.lua"/>
+	<Script file="Segmented.lua"/>
+	<Script file="StatusBars.lua"/>
+	<Script file="Totems.lua"/>
+	<Script file="Builder.lua"/>
+</Ui>

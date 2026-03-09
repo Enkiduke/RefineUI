@@ -66,6 +66,8 @@ local RUNTIME_VIEWERS = {
     "BuffBarCooldownViewer",
 }
 
+local GetTrackedBarNameRegion
+
 ----------------------------------------------------------------------------------------
 -- Private Helpers
 ----------------------------------------------------------------------------------------
@@ -368,6 +370,188 @@ local function GetCooldownRegion(frame)
 end
 
 
+local function IsInjectedSettingsItem(frame)
+    return CDM.StateGet and CDM:StateGet(frame, "categoryFrame") ~= nil
+end
+
+
+local function IsBlizzardRuntimeViewerItem(frame)
+    return not IsInjectedSettingsItem(frame)
+end
+
+
+local function CapturePointSnapshot(region)
+    if not region or type(region.GetNumPoints) ~= "function" or type(region.GetPoint) ~= "function" then
+        return nil
+    end
+
+    local snapshot = {}
+    local pointCount = region:GetNumPoints() or 0
+    for pointIndex = 1, pointCount do
+        local point, relativeTo, relativePoint, xOffset, yOffset = region:GetPoint(pointIndex)
+        snapshot[#snapshot + 1] = {
+            point = point,
+            relativeTo = relativeTo,
+            relativePoint = relativePoint,
+            xOffset = xOffset,
+            yOffset = yOffset,
+        }
+    end
+
+    return snapshot
+end
+
+
+local function RestorePointSnapshot(region, snapshot)
+    if not region or type(region.ClearAllPoints) ~= "function" or type(region.SetPoint) ~= "function" then
+        return
+    end
+
+    region:ClearAllPoints()
+    if type(snapshot) ~= "table" then
+        return
+    end
+
+    for i = 1, #snapshot do
+        local pointData = snapshot[i]
+        region:SetPoint(pointData.point, pointData.relativeTo, pointData.relativePoint, pointData.xOffset, pointData.yOffset)
+    end
+end
+
+
+local function EnsureOriginalLayoutState(frame, stateSuffix, region)
+    if not frame or not region then
+        return nil
+    end
+
+    local stateKey = "originalAnchorSnapshot:" .. stateSuffix
+    local snapshot = CDM:StateGet(frame, stateKey)
+    if snapshot then
+        return snapshot
+    end
+
+    snapshot = {
+        points = CapturePointSnapshot(region),
+    }
+
+    if type(region.GetWidth) == "function" and type(region.GetHeight) == "function" then
+        snapshot.width = region:GetWidth()
+        snapshot.height = region:GetHeight()
+    end
+    if type(region.GetFrameStrata) == "function" then
+        snapshot.frameStrata = GetSafeFrameStrata(region)
+    end
+    if type(region.GetFrameLevel) == "function" then
+        snapshot.frameLevel = GetSafeFrameLevel(region)
+    end
+    if type(region.GetDrawLayer) == "function" then
+        local okLayer, drawLayer, drawSubLevel = pcall(region.GetDrawLayer, region)
+        if okLayer then
+            snapshot.drawLayer = drawLayer
+            snapshot.drawSubLevel = drawSubLevel
+        end
+    end
+
+    CDM:StateSet(frame, stateKey, snapshot)
+    return snapshot
+end
+
+
+local function RestoreOriginalLayoutState(frame, stateSuffix, region)
+    if not frame or not region then
+        return
+    end
+
+    local snapshot = CDM:StateGet(frame, "originalAnchorSnapshot:" .. stateSuffix)
+    if type(snapshot) ~= "table" then
+        return
+    end
+
+    RestorePointSnapshot(region, snapshot.points)
+
+    if snapshot.width and snapshot.height and type(region.SetSize) == "function" then
+        region:SetSize(snapshot.width, snapshot.height)
+    end
+    if snapshot.frameStrata and type(region.SetFrameStrata) == "function" then
+        region:SetFrameStrata(snapshot.frameStrata)
+    end
+    if snapshot.frameLevel and type(region.SetFrameLevel) == "function" then
+        region:SetFrameLevel(snapshot.frameLevel)
+    end
+    if snapshot.drawLayer and type(region.SetDrawLayer) == "function" then
+        region:SetDrawLayer(snapshot.drawLayer, snapshot.drawSubLevel)
+    end
+end
+
+
+local function EnsureTrackedBarOriginalLayout(frame, iconRegion, barRegion, cooldown)
+    EnsureOriginalLayoutState(frame, "trackedBarIconRegion", iconRegion)
+    local _, iconTexture = GetIconAnchorRegion(frame)
+    if iconTexture then
+        EnsureOriginalLayoutState(frame, "trackedBarIconTexture", iconTexture)
+    end
+    EnsureOriginalLayoutState(frame, "trackedBarBarRegion", barRegion)
+    EnsureOriginalLayoutState(frame, "trackedBarCooldownRegion", cooldown)
+    local nameRegion = GetTrackedBarNameRegion(frame)
+    if nameRegion then
+        EnsureOriginalLayoutState(frame, "trackedBarNameRegion", nameRegion)
+    end
+end
+
+
+local function RestoreTrackedBarOriginalLayout(frame)
+    if not frame then
+        return
+    end
+
+    local cooldown = GetCooldownRegion(frame)
+    if cooldown then
+        RestoreOriginalLayoutState(frame, "trackedBarCooldownRegion", cooldown)
+    end
+
+    local iconContainer = frame.Icon
+    if type(iconContainer) == "table" and type(iconContainer.SetSize) == "function" then
+        RestoreOriginalLayoutState(frame, "trackedBarIconRegion", iconContainer)
+    else
+        local _, iconTexture = GetIconAnchorRegion(frame)
+        if iconTexture then
+            RestoreOriginalLayoutState(frame, "trackedBarIconRegion", iconTexture)
+        end
+    end
+    local _, iconTexture = GetIconAnchorRegion(frame)
+    if iconTexture then
+        RestoreOriginalLayoutState(frame, "trackedBarIconTexture", iconTexture)
+    end
+
+    local barRegion = GetBarRegion(frame)
+    if barRegion then
+        RestoreOriginalLayoutState(frame, "trackedBarBarRegion", barRegion)
+    end
+
+    local nameRegion = GetTrackedBarNameRegion(frame)
+    if nameRegion then
+        RestoreOriginalLayoutState(frame, "trackedBarNameRegion", nameRegion)
+    end
+end
+
+
+local function EnsureBlizzardRuntimeFramePrepared(frame)
+    if not IsBlizzardRuntimeViewerItem(frame) then
+        return true
+    end
+    if CDM:StateGet(frame, "visualInitPrepared", false) then
+        return true
+    end
+    if not CDM:IsBlizzardMutationAllowed(CDM.BLIZZARD_MUTATION_KIND.VIEWER_VISUALS) then
+        CDM:StateSet(frame, "pendingVisualRefresh", true)
+        return false
+    end
+
+    CDM:StateSet(frame, "visualInitPrepared", true)
+    return true
+end
+
+
 local function GetGCDRecheckTimerKey(frame)
     return VISUAL_GCD_RECHECK_TIMER_PREFIX .. ":" .. tostring(frame)
 end
@@ -420,7 +604,8 @@ local function QueueGCDRecheck(frame, cooldownID)
     end
 
     RefineUI:After(GetGCDRecheckTimerKey(frame), remainingSeconds + 0.02, function()
-        CDM:ApplyVisualsToCooldownFrame(frame)
+        CDM:StateSet(frame, "pendingVisualRefresh", true)
+        CDM:RequestCooldownViewerVisualRefresh()
     end)
 end
 
@@ -439,6 +624,10 @@ local function ApplyFrameCooldownAnchors(frame, cooldown)
     local anchorToken = "v2:" .. tostring(anchorTarget) .. ":" .. tostring(SWIPE_OVERLAY_INSET)
     if CDM:StateGet(frame, "visualSwipeAnchorToken") == anchorToken then
         return
+    end
+
+    if IsBlizzardRuntimeViewerItem(frame) then
+        EnsureOriginalLayoutState(frame, "visualCooldownRegion", cooldown)
     end
 
     cooldown:ClearAllPoints()
@@ -710,7 +899,7 @@ local function EnsureTrackedBarBarBorderFrame(frame)
 end
 
 
-local function GetTrackedBarNameRegion(frame)
+GetTrackedBarNameRegion = function(frame)
     if not frame then
         return nil
     end
@@ -817,6 +1006,7 @@ local function HideTrackedBarCustomVisuals(frame)
 
     CDM:StateClear(frame, "trackedBarIconPortraitBorderToken")
     CDM:StateClear(frame, "trackedBarBarBorderToken")
+    RestoreTrackedBarOriginalLayout(frame)
 end
 
 
@@ -849,7 +1039,7 @@ end
 
 
 local function ApplyFrameBorderVisual(frame, cooldownID, skinEnabled)
-    local isSettingsItem = CDM.StateGet and CDM:StateGet(frame, "categoryFrame")
+    local isSettingsItem = IsInjectedSettingsItem(frame)
     if CDM:IsTrackedBarFrame(frame, cooldownID) and not isSettingsItem then
         local genericOverlay = CDM:StateGet(frame, "visualBorderOverlay")
         if genericOverlay then
@@ -867,6 +1057,7 @@ local function ApplyFrameBorderVisual(frame, cooldownID, skinEnabled)
         local barRegion = GetBarRegion(frame)
 
         if iconTexture and barRegion then
+            EnsureTrackedBarOriginalLayout(frame, type(frame.Icon) == "table" and frame.Icon or iconTexture, barRegion, GetCooldownRegion(frame))
             ApplyTrackedBarGeometry(frame, iconTexture, barRegion)
         end
 
@@ -874,22 +1065,8 @@ local function ApplyFrameBorderVisual(frame, cooldownID, skinEnabled)
             local iconBorder = EnsureTrackedBarIconPortraitBorder(frame)
             EnsureTrackedBarIconMask(frame, iconTexture)
 
-            local iconParent = nil
-            if type(iconTexture.GetParent) == "function" then
-                iconParent = iconTexture:GetParent()
-            end
-            if iconParent then
-                local iconParentLevel = GetSafeFrameLevel(iconParent)
-                local baseLevel = GetSafeFrameLevel(frame)
-                if iconParentLevel and baseLevel then
-                    local desiredLevel = baseLevel + 8
-                    if iconParentLevel < desiredLevel then
-                        iconParent:SetFrameLevel(desiredLevel)
-                    end
-                end
-            end
-
             if type(iconTexture.SetDrawLayer) == "function" then
+                EnsureOriginalLayoutState(frame, "trackedBarIconTexture", iconTexture)
                 iconTexture:SetDrawLayer("OVERLAY", 6)
             end
 
@@ -914,20 +1091,10 @@ local function ApplyFrameBorderVisual(frame, cooldownID, skinEnabled)
             elseif frameStrata then
                 barBorder:SetFrameStrata(frameStrata)
             end
-            local iconParentLevel = nil
-            if iconTexture and type(iconTexture.GetParent) == "function" then
-                local iconParent = iconTexture:GetParent()
-                if iconParent then
-                    iconParentLevel = GetSafeFrameLevel(iconParent)
-                end
-            end
             local barRegionLevel = GetSafeFrameLevel(barRegion)
             local frameLevel = GetSafeFrameLevel(frame)
             if barRegionLevel or frameLevel then
                 local desiredLevel = ((barRegionLevel or frameLevel or 1) + 1)
-                if type(iconParentLevel) == "number" and desiredLevel >= iconParentLevel then
-                    desiredLevel = iconParentLevel - 1
-                end
                 if desiredLevel < 1 then
                     desiredLevel = 1
                 end
@@ -944,22 +1111,6 @@ local function ApplyFrameBorderVisual(frame, cooldownID, skinEnabled)
                 CDM:StateSet(frame, "trackedBarBarBorderToken", barToken)
             end
             barBorder:Show()
-
-            if iconTexture and type(iconTexture.GetParent) == "function" then
-                local iconParent = iconTexture:GetParent()
-                if iconParent and type(iconParent.SetFrameStrata) == "function" and type(iconParent.SetFrameLevel) == "function" then
-                    local barBorderStrata = GetSafeFrameStrata(barBorder)
-                    if barBorderStrata then
-                        iconParent:SetFrameStrata(barBorderStrata)
-                    end
-                    local barBorderLevel = GetSafeFrameLevel(barBorder)
-                    local frameLevel = GetSafeFrameLevel(frame)
-                    local parentLevel = barBorderLevel or frameLevel
-                    if parentLevel then
-                        iconParent:SetFrameLevel(parentLevel + 2)
-                    end
-                end
-            end
         end
 
         return
@@ -1186,6 +1337,12 @@ local function ClearFrameVisualState(frame, restoreDefaultTextColor)
     CDM:StateClear(frame, "visualDefaultBarColor")
     CDM:StateClear(frame, "visualSwipeToken")
     CDM:StateClear(frame, "visualSwipeAnchorToken")
+    if IsBlizzardRuntimeViewerItem(frame) then
+        local cooldown = GetCooldownRegion(frame)
+        if cooldown then
+            RestoreOriginalLayoutState(frame, "visualCooldownRegion", cooldown)
+        end
+    end
 
     if restoreDefaultTextColor ~= false then
         local cooldown = GetCooldownRegion(frame)
@@ -1199,6 +1356,10 @@ end
 
 function CDM:ApplyVisualsToCooldownFrame(frame)
     if not frame then
+        return
+    end
+
+    if not EnsureBlizzardRuntimeFramePrepared(frame) then
         return
     end
 
@@ -1220,6 +1381,7 @@ function CDM:ApplyVisualsToCooldownFrame(frame)
     ApplyFrameCooldownSwipe(frame, skinEnabled)
     ApplyFrameCooldownTextVisual(frame, cooldownID, skinEnabled)
     SuppressFrameCooldownFlash(frame)
+    self:StateClear(frame, "pendingVisualRefresh")
     QueueGCDRecheck(frame, cooldownID)
 end
 
@@ -1302,10 +1464,6 @@ end
 
 
 function CDM:ApplyCooldownViewerVisuals()
-    if type(InCombatLockdown) == "function" and InCombatLockdown() then
-        return
-    end
-
     for i = 1, #RUNTIME_VIEWERS do
         ApplyViewerVisuals(_G[RUNTIME_VIEWERS[i]])
     end
@@ -1315,23 +1473,17 @@ end
 
 
 function CDM:RequestCooldownViewerVisualRefresh()
-    if type(InCombatLockdown) == "function" and InCombatLockdown() then
-        return
-    end
-
     if self.visualRefreshQueued then
         return
     end
 
     self.visualRefreshQueued = true
     local function RunVisualRefresh()
-        if type(InCombatLockdown) == "function" and InCombatLockdown() then
+        CDM:RunOrDeferBlizzardMutation(VISUAL_REFRESH_TIMER_KEY, CDM.BLIZZARD_MUTATION_KIND.VIEWER_VISUALS, function()
             CDM.visualRefreshQueued = nil
-            return
-        end
-
-        CDM.visualRefreshQueued = nil
-        CDM:ApplyCooldownViewerVisuals()
+            CDM:ApplyCooldownViewerVisuals()
+            return true
+        end)
     end
 
     if RefineUI.After then
@@ -1379,17 +1531,6 @@ local function InstallVisualEventCallbacks()
             CDM:RequestCooldownViewerVisualRefresh()
         end, CDM)
     end
-
-    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_event, addonName)
-        if addonName == "Blizzard_CooldownViewer" then
-            CDM.viewerVisualHooksInstalled = nil
-            InstallViewerVisualHooks()
-            if CDM.InstallVisualMenuHooks then
-                CDM:InstallVisualMenuHooks()
-            end
-            CDM:RequestCooldownViewerVisualRefresh()
-        end
-    end, "CDM:Visuals:AddonLoaded")
 
     CDM.visualEventCallbacksInstalled = true
 end

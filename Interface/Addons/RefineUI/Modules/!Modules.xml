@@ -6,6 +6,7 @@
     <Include file="CDM\!CDM.xml"/>
     <Include file="EncounterAchievements\!EncounterAchievements.xml"/>
     <Include file="EncounterTimeline\!EncounterTimeline.xml"/>
+    <Include file="EntranceDifficulty\!EntranceDifficulty.xml"/>
     <Include file="Chat\!Chat.xml"/>
     <Include file="Maps\!Maps.xml"/>
     <Include file="UnitFrames\!UnitFrames.xml"/>

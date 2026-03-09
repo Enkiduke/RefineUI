@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------------------------
 -- CDM Component: SettingsDragDrop
--- Description: Drag-and-drop behavior for injected settings assignment ordering.
+-- Description: Standalone drag-and-drop behavior for settings assignment ordering.
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
@@ -10,46 +10,18 @@ if not CDM then
 end
 
 ----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
-
-----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
 local type = type
-local tinsert = table.insert
-local wipe = _G.wipe or table.wipe
-local strfind = string.find
-local strlower = string.lower
-local max = math.max
 local CreateFrame = CreateFrame
 local UIParent = UIParent
-local PlaySound = PlaySound
-local SOUNDKIT = _G.SOUNDKIT
 local GetCursorPosition = GetCursorPosition
 local GetAppropriateTopLevelParent = GetAppropriateTopLevelParent
 local GameTooltip = GameTooltip
 local GameTooltip_SetTitle = GameTooltip_SetTitle
 local GameTooltip_Hide = GameTooltip_Hide
-local GetCVarBool = GetCVarBool
-local SetCVar = SetCVar
-
-----------------------------------------------------------------------------------------
--- Constants
-----------------------------------------------------------------------------------------
-local SETTINGS_BUCKET_ORDER = { "Left", "Right", "Bottom", CDM.NOT_TRACKED_KEY }
-local CUSTOM_DISPLAY_MODE = "refineui"
-local CUSTOM_TAB_TOOLTIP = "RefineUI"
-local CUSTOM_TAB_ATLAS = "minimap-genericevent-hornicon-small"
-local CUSTOM_TAB_TEXTURE = (RefineUI.Media and RefineUI.Media.Logo) or [[Interface\AddOns\RefineUI\Media\Logo\Logo.blp]]
-local AURA_MODE_REFINED = "refineui"
-local AURA_MODE_BLIZZARD = "blizzard"
-local DRAG_MARKER_UPDATE_JOB_KEY = CDM:BuildKey("Settings", "DragMarkerUpdate")
+local InCombatLockdown = InCombatLockdown
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
@@ -63,7 +35,6 @@ local function GetSettingsState(self, settingsFrame)
     return state
 end
 
-
 local function EnsureDragWatcher(self)
     if self.dragWatcher then
         return self.dragWatcher
@@ -73,8 +44,12 @@ local function EnsureDragWatcher(self)
     frame:Hide()
     frame:SetScript("OnEvent", function(_, event, ...)
         if event == "GLOBAL_MOUSE_UP" then
-            local button = ...
-            CDM:OnInjectedGlobalMouseUp(button)
+            CDM:OnInjectedGlobalMouseUp(...)
+        end
+    end)
+    frame:SetScript("OnUpdate", function()
+        if self.dragState then
+            self:UpdateInjectedReorderMarker()
         end
     end)
 
@@ -82,101 +57,114 @@ local function EnsureDragWatcher(self)
     return frame
 end
 
-
-local function EnsureDragMarkerUpdateJob(self)
-    if self.dragMarkerUpdateJobRegistered then
-        return true
-    end
-    if not RefineUI.RegisterUpdateJob then
-        return false
-    end
-
-    local ok = RefineUI:RegisterUpdateJob(DRAG_MARKER_UPDATE_JOB_KEY, 0, function()
-        CDM:UpdateInjectedReorderMarker()
-    end, {
-        enabled = false,
-        safe = true,
-        disableOnError = true,
-    })
-    if ok then
-        self.dragMarkerUpdateJobRegistered = true
-        return true
-    end
-    return false
-end
-
-
-local function SetDragMarkerUpdateEnabled(self, enabled)
-    if not EnsureDragMarkerUpdateJob(self) then
-        return
-    end
-    if RefineUI.SetUpdateJobEnabled then
-        RefineUI:SetUpdateJobEnabled(DRAG_MARKER_UPDATE_JOB_KEY, enabled, true)
-    end
-    if enabled and RefineUI.RunUpdateJobNow then
-        RefineUI:RunUpdateJobNow(DRAG_MARKER_UPDATE_JOB_KEY)
-    end
-end
-
-
 local function EnsureDragCursor(self)
     if self.dragCursor then
         return self.dragCursor
     end
 
-    local cursor = CreateFrame("Frame", nil, GetAppropriateTopLevelParent(), "CooldownViewerSettingsDraggedItemTemplate")
+    local cursor = nil
+    local ok, templateCursor = pcall(CreateFrame, "Frame", nil, GetAppropriateTopLevelParent(), "CooldownViewerSettingsDraggedItemTemplate")
+    if ok and templateCursor then
+        cursor = templateCursor
+    else
+        cursor = CreateFrame("Frame", nil, GetAppropriateTopLevelParent())
+        cursor:SetSize(38, 38)
+
+        cursor.Bg = cursor:CreateTexture(nil, "BACKGROUND")
+        cursor.Bg:SetAllPoints()
+        cursor.Bg:SetTexture([[Interface\Buttons\WHITE8x8]])
+        cursor.Bg:SetVertexColor(0.02, 0.02, 0.02, 0.92)
+
+        cursor.Icon = cursor:CreateTexture(nil, "ARTWORK")
+        cursor.Icon:SetPoint("TOPLEFT", cursor, "TOPLEFT", 5, -5)
+        cursor.Icon:SetPoint("BOTTOMRIGHT", cursor, "BOTTOMRIGHT", -5, 5)
+        cursor.Icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+        cursor.Border = cursor:CreateTexture(nil, "OVERLAY")
+        cursor.Border:SetAllPoints()
+        cursor.Border:SetTexture([[Interface\Buttons\UI-Quickslot2]])
+    end
+
+    cursor:SetFrameStrata("TOOLTIP")
+    cursor:EnableMouse(false)
     cursor:Hide()
+    if not cursor.Icon then
+        cursor.Icon = cursor:CreateTexture(nil, "ARTWORK")
+        cursor.Icon:SetPoint("TOPLEFT", cursor, "TOPLEFT", 5, -5)
+        cursor.Icon:SetPoint("BOTTOMRIGHT", cursor, "BOTTOMRIGHT", -5, 5)
+        cursor.Icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    end
+
+    function cursor:SetToCursor(itemFrame)
+        if not itemFrame or not itemFrame.Icon then
+            self:Hide()
+            return
+        end
+
+        self.Icon:SetTexture(itemFrame.Icon:GetTexture())
+        self:ClearAllPoints()
+        local cursorX, cursorY = GetCursorPosition()
+        local scale = UIParent:GetScale()
+        self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cursorX / scale, cursorY / scale)
+        self:Show()
+    end
+
+    cursor:SetScript("OnUpdate", function(selfFrame)
+        if not CDM.dragState then
+            selfFrame:Hide()
+            return
+        end
+
+        local cursorX, cursorY = GetCursorPosition()
+        local scale = UIParent:GetScale()
+        selfFrame:ClearAllPoints()
+        selfFrame:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cursorX / scale, cursorY / scale)
+    end)
+
     self.dragCursor = cursor
     return cursor
 end
-
 
 local function EnsureReorderMarker(self, settingsFrame)
     if self.reorderMarker then
         return self.reorderMarker
     end
 
-    local state = GetSettingsState(self, settingsFrame)
-    local panel = state.panel
-    local marker = panel and panel.ReorderMarker
-    if not marker and _G.CooldownViewerSettingsReorderMarkerTemplate then
-        local ok, created = pcall(CreateFrame, "Frame", nil, panel, "CooldownViewerSettingsReorderMarkerTemplate")
-        if ok then
-            marker = created
-        end
-    end
-
-    if not marker then
-        marker = CreateFrame("Frame", nil, panel)
-        marker:SetSize(8, 52)
+    local marker = nil
+    local ok, templateMarker = pcall(CreateFrame, "Frame", nil, settingsFrame, "CooldownViewerSettingsReorderMarkerTemplate")
+    if ok and templateMarker then
+        marker = templateMarker
+    else
+        marker = CreateFrame("Frame", nil, settingsFrame)
         marker.Texture = marker:CreateTexture(nil, "OVERLAY")
         marker.Texture:SetAllPoints()
-        marker.Texture:SetColorTexture(1, 1, 1, 0.85)
+        marker.Texture:SetColorTexture(1, 0.82, 0, 0.9)
     end
-
-    if not marker.SetVertical then
-        function marker:SetVertical()
-            self:SetSize(8, 52)
-            if self.Texture and self.Texture.SetAtlas then
-                self.Texture:SetAtlas("cdm-vertical", true)
-            end
-        end
-    end
-
-    if not marker.SetHorizontal then
-        function marker:SetHorizontal()
-            self:SetSize(52, 8)
-            if self.Texture and self.Texture.SetAtlas then
-                self.Texture:SetAtlas("cdm-horizontal", true)
-            end
-        end
-    end
-
+    marker:SetFrameStrata("TOOLTIP")
     marker:Hide()
+    if not marker.Texture then
+        marker.Texture = marker:CreateTexture(nil, "OVERLAY")
+        marker.Texture:SetAllPoints()
+        marker.Texture:SetColorTexture(1, 0.82, 0, 0.9)
+    end
+
+    function marker:SetVertical()
+        self:SetSize(4, 42)
+        if self.Texture and self.Texture.SetAtlas then
+            self.Texture:SetAtlas("cdm-vertical", true)
+        end
+    end
+
+    function marker:SetHorizontal()
+        self:SetSize(42, 4)
+        if self.Texture and self.Texture.SetAtlas then
+            self.Texture:SetAtlas("cdm-horizontal", true)
+        end
+    end
+
     self.reorderMarker = marker
     return marker
 end
-
 
 ----------------------------------------------------------------------------------------
 -- Public Methods
@@ -185,6 +173,7 @@ function CDM:GetInjectedItemData(item)
     if not item then
         return nil
     end
+
     return {
         bucketKey = self:StateGet(item, "bucketKey"),
         cooldownID = self:StateGet(item, "cooldownID"),
@@ -193,7 +182,6 @@ function CDM:GetInjectedItemData(item)
         assignmentIndex = self:StateGet(item, "assignmentIndex"),
     }
 end
-
 
 function CDM:SetInjectedDragTarget(categoryFrame, itemFrame)
     local drag = self.dragState
@@ -207,11 +195,9 @@ function CDM:SetInjectedDragTarget(categoryFrame, itemFrame)
     drag.targetItem = itemFrame
 end
 
-
 function CDM:OnInjectedCategoryEnter(categoryFrame)
     self:SetInjectedDragTarget(categoryFrame, nil)
 end
-
 
 function CDM:OnInjectedItemEnter(itemFrame)
     local categoryFrame = self:StateGet(itemFrame, "categoryFrame")
@@ -238,34 +224,16 @@ function CDM:OnInjectedItemEnter(itemFrame)
     end
 end
 
-
 function CDM:OnInjectedItemLeave()
     GameTooltip_Hide()
 end
 
-
-function CDM:OnInjectedGlobalMouseUp(button)
-    local drag = self.dragState
-    if not drag then
+function CDM:OnInjectedGlobalMouseUp(_button)
+    if not self.dragState then
         return
     end
-
-    if drag.eatNextGlobalMouseUp == button then
-        drag.eatNextGlobalMouseUp = nil
-        return
-    end
-
-    if PlaySound and SOUNDKIT and SOUNDKIT.UI_CURSOR_DROP_OBJECT then
-        PlaySound(SOUNDKIT.UI_CURSOR_DROP_OBJECT)
-    end
-
-    if button == "LeftButton" then
-        self:EndInjectedOrderChange(true)
-    elseif button == "RightButton" then
-        self:EndInjectedOrderChange(false)
-    end
+    self:EndInjectedOrderChange(true)
 end
-
 
 function CDM:UpdateInjectedReorderMarker()
     local drag = self.dragState
@@ -307,7 +275,6 @@ function CDM:UpdateInjectedReorderMarker()
     end
 end
 
-
 function CDM:EndInjectedOrderChange(applyDrop)
     local drag = self.dragState
     if not drag then
@@ -318,7 +285,7 @@ function CDM:EndInjectedOrderChange(applyDrop)
     local targetCategoryData = drag.targetCategory and self:StateGet(drag.targetCategory, "categoryData")
     local targetItemData = self:GetInjectedItemData(drag.targetItem)
 
-    if applyDrop and sourceData and sourceData.cooldownID and targetCategoryData then
+    if applyDrop and not self:IsStandaloneSettingsReadOnly() and sourceData and sourceData.cooldownID and targetCategoryData then
         local cooldownID = sourceData.cooldownID
         local sourceBucket = sourceData.bucketKey
         local sourceAssignmentIndex = sourceData.assignmentIndex
@@ -343,7 +310,7 @@ function CDM:EndInjectedOrderChange(applyDrop)
         end
     end
 
-    if drag.sourceItem and drag.sourceItem.RefreshIconState then
+    if drag.sourceItem then
         drag.sourceItem:SetReorderLocked(false)
     end
 
@@ -357,15 +324,16 @@ function CDM:EndInjectedOrderChange(applyDrop)
         self.dragWatcher:UnregisterEvent("GLOBAL_MOUSE_UP")
         self.dragWatcher:Hide()
     end
-    SetDragMarkerUpdateEnabled(self, false)
 
     self.dragState = nil
-    self:RequestRefresh()
+    self:RequestRefresh(true)
 end
 
-
-function CDM:BeginInjectedOrderChange(settingsFrame, itemFrame, eatNextGlobalMouseUp)
-    if self.dragState then
+function CDM:BeginInjectedOrderChange(settingsFrame, itemFrame)
+    if self.dragState or not settingsFrame or not itemFrame then
+        return
+    end
+    if self:IsStandaloneSettingsReadOnly() or (type(InCombatLockdown) == "function" and InCombatLockdown()) then
         return
     end
 
@@ -384,7 +352,6 @@ function CDM:BeginInjectedOrderChange(settingsFrame, itemFrame, eatNextGlobalMou
         targetCategory = self:StateGet(itemFrame, "categoryFrame"),
         targetItem = itemFrame,
         reorderOffset = 0,
-        eatNextGlobalMouseUp = eatNextGlobalMouseUp,
     }
 
     itemFrame:SetReorderLocked(true)
@@ -393,6 +360,4 @@ function CDM:BeginInjectedOrderChange(settingsFrame, itemFrame, eatNextGlobalMou
 
     watcher:RegisterEvent("GLOBAL_MOUSE_UP")
     watcher:Show()
-    SetDragMarkerUpdateEnabled(self, true)
 end
-

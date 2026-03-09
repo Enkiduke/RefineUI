@@ -93,6 +93,7 @@ function Module:OnEnable()
     -- Ensure layout for already-installed users.
     -- Do not auto-create here; installer handles missing-layout recovery.
     self:EnsureRefineUILayout(false, false)
+    self:HookExitEditMode()
 end
 
 function Module:RegisterCustomFrames()
@@ -232,6 +233,7 @@ function Module:ConfigureRefineUILayout()
             LibEditModeOverride:SetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.SortPlayersBy, Enum.SortPlayersBy.Role)
             LibEditModeOverride:SetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.FrameWidth, 72)
             LibEditModeOverride:SetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.FrameHeight, 28)
+            LibEditModeOverride:SetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.AuraOrganizationType, Enum.RaidAuraOrganizationType.BuffsRightDebuffsLeft)
         end
         
         -- Set BuffFrame settings
@@ -404,7 +406,7 @@ function Module:ShowReloadPrompt()
     f:EnableMouse(true)
     
     -- Golden Glow
-    local PulseGlow = RefineUI.CreateGlow and RefineUI.CreateGlow(f, 6)
+    local PulseGlow = RefineUI.CreateGlow and RefineUI.CreateGlow(f, 2)
     if PulseGlow then
         PulseGlow:SetFrameStrata(f:GetFrameStrata())
         PulseGlow:SetFrameLevel(f:GetFrameLevel() + 5)
@@ -464,18 +466,13 @@ function Module:ShowReloadPrompt()
 end
 
 function Module:HookExitEditMode()
-    if EditModeManagerFrame then
-        hooksecurefunc(EditModeManagerFrame, "ExitEditMode", function()
-            C_Timer.After(0.5, function()
-                Module:ShowReloadPrompt()
-            end)
-        end)
+    if not EditModeManagerFrame then
+        return
     end
-end
 
--- Init Hook
-local originalEnable = Module.OnEnable
-function Module:OnEnable()
-    originalEnable(self)
-    self:HookExitEditMode()
+    RefineUI:HookOnce("Core:EditMode:EditModeManagerFrame:ExitEditMode", EditModeManagerFrame, "ExitEditMode", function()
+        C_Timer.After(0.5, function()
+            Module:ShowReloadPrompt()
+        end)
+    end)
 end

@@ -44,15 +44,16 @@ local GameTooltip = _G.GameTooltip
 local STORAGE_KEY = "TooltipItemCount"
 local ITEM_COUNT_TEXT = "Item Count:"
 local YOU_TEXT = "You"
-local BAG_UPDATE_DEBOUNCE_KEY = "Tooltip:ItemCount:BagUpdate"
 
 local ITEM_COUNT_HANDLER_KEY = "ItemCount"
+local ITEM_COUNT_RENDER_FLAG = "Tooltip:ItemCount:Added"
 
 local ITEM_COUNT_EVENT_WORLD_KEY = "Tooltip:ItemCount:PLAYER_ENTERING_WORLD"
-local ITEM_COUNT_EVENT_BAG_KEY = "Tooltip:ItemCount:BAG_UPDATE"
+local ITEM_COUNT_EVENT_BAG_KEY = "Tooltip:ItemCount:BAG_UPDATE_DELAYED"
 local ITEM_COUNT_EVENT_BANK_OPEN_KEY = "Tooltip:ItemCount:BANKFRAME_OPENED"
 local ITEM_COUNT_EVENT_BANK_SLOTS_KEY = "Tooltip:ItemCount:PLAYERBANKSLOTS_CHANGED"
 local ITEM_COUNT_EVENT_EQUIPMENT_KEY = "Tooltip:ItemCount:PLAYER_EQUIPMENT_CHANGED"
+local ITEM_COUNT_LINES_CACHE = {}
 
 ----------------------------------------------------------------------------------------
 -- Storage Helpers
@@ -93,6 +94,10 @@ local function AddCount(countTable, itemID, count)
     countTable[itemID] = (countTable[itemID] or 0) + count
 end
 
+local function InvalidateItemCountLineCache()
+    wipe(ITEM_COUNT_LINES_CACHE)
+end
+
 local function UpdateBagCounts()
     if not C_Container then
         return
@@ -103,6 +108,7 @@ local function UpdateBagCounts()
         return
     end
 
+    InvalidateItemCountLineCache()
     wipe(storage.bags)
     for bag = BACKPACK_CONTAINER, NUM_BAG_SLOTS do
         local numSlots = C_Container.GetContainerNumSlots(bag)
@@ -127,6 +133,7 @@ local function UpdateBankCounts()
         return
     end
 
+    InvalidateItemCountLineCache()
     wipe(storage.bank)
 
     local bankContainer = rawget(_G, "BANK_CONTAINER") or -1
@@ -158,6 +165,7 @@ local function UpdateEquippedCounts()
         return
     end
 
+    InvalidateItemCountLineCache()
     wipe(storage.equipped)
 
     local firstEquipped = _G.INVSLOT_FIRST_EQUIPPED or 1
@@ -202,14 +210,20 @@ end
 local function GetItemCountLines(itemID)
     itemID = tonumber(itemID)
     if not itemID then
-        return {}
+        return nil
+    end
+
+    local cachedLines = ITEM_COUNT_LINES_CACHE[itemID]
+    if cachedLines ~= nil then
+        return cachedLines ~= false and cachedLines or nil
     end
 
     local db = _G.RefineDB
     local realm = GetRealmName()
     local realmData = db and db[realm]
     if type(realmData) ~= "table" then
-        return {}
+        ITEM_COUNT_LINES_CACHE[itemID] = false
+        return nil
     end
 
     local currentPlayer = UnitName("player")
@@ -233,18 +247,24 @@ local function GetItemCountLines(itemID)
                         class = storage.class,
                         total = total,
                         isCurrent = playerName == currentPlayer,
+                        sortName = strlower(playerName or ""),
                     }
                 end
             end
         end
     end
 
+    if #entries <= 0 then
+        ITEM_COUNT_LINES_CACHE[itemID] = false
+        return nil
+    end
+
     sort(entries, function(a, b)
         if a.isCurrent ~= b.isCurrent then
             return a.isCurrent
         end
-        local aLower = strlower(a.name or "")
-        local bLower = strlower(b.name or "")
+        local aLower = a.sortName or ""
+        local bLower = b.sortName or ""
         if aLower == bLower then
             return (a.name or "") < (b.name or "")
         end
@@ -259,29 +279,20 @@ local function GetItemCountLines(itemID)
         lines[#lines + 1] = format("%s%s|r: %d", colorPrefix, displayName, entry.total)
     end
 
+    ITEM_COUNT_LINES_CACHE[itemID] = lines
     return lines
 end
 
-local function TooltipHasItemCountHeader(tooltip)
-    if not Tooltip:IsGameTooltipFrameSafe(tooltip) then
-        return false
-    end
-    local tooltipName = Tooltip:GetTooltipNameSafe(tooltip)
-    if not tooltipName or type(tooltip.NumLines) ~= "function" then
-        return false
-    end
+local function HasRenderFlag(context, key)
+    local flags = context and context.flags
+    return type(flags) == "table" and flags[key] == true
+end
 
-    for lineIndex = 1, tooltip:NumLines() do
-        local line = _G[tooltipName .. "TextLeft" .. lineIndex]
-        if line and line.GetText then
-            local text = line:GetText()
-            if type(text) == "string" and text == ITEM_COUNT_TEXT then
-                return true
-            end
-        end
+local function SetRenderFlag(context, key)
+    local flags = context and context.flags
+    if type(flags) == "table" then
+        flags[key] = true
     end
-
-    return false
 end
 
 ----------------------------------------------------------------------------------------
@@ -295,19 +306,17 @@ end
 
 function Tooltip:InitializeItemCount()
     RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
-        RefineUI:Debounce(BAG_UPDATE_DEBOUNCE_KEY, 0.1, UpdateBagCounts)
+        UpdateBagCounts()
         UpdateEquippedCounts()
     end, ITEM_COUNT_EVENT_WORLD_KEY)
 
-    RefineUI:RegisterEventCallback("BAG_UPDATE", function()
-        RefineUI:Debounce(BAG_UPDATE_DEBOUNCE_KEY, 0.1, UpdateBagCounts)
-    end, ITEM_COUNT_EVENT_BAG_KEY)
+    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", UpdateBagCounts, ITEM_COUNT_EVENT_BAG_KEY)
 
     RefineUI:RegisterEventCallback("BANKFRAME_OPENED", UpdateBankCounts, ITEM_COUNT_EVENT_BANK_OPEN_KEY)
     RefineUI:RegisterEventCallback("PLAYERBANKSLOTS_CHANGED", UpdateBankCounts, ITEM_COUNT_EVENT_BANK_SLOTS_KEY)
     RefineUI:RegisterEventCallback("PLAYER_EQUIPMENT_CHANGED", UpdateEquippedCounts, ITEM_COUNT_EVENT_EQUIPMENT_KEY)
 
-    Tooltip:RegisterItemHandler(ITEM_COUNT_HANDLER_KEY, function(tooltip, data)
+    Tooltip:RegisterItemHandler(ITEM_COUNT_HANDLER_KEY, function(tooltip, data, context)
         if tooltip ~= GameTooltip then
             return
         end
@@ -316,10 +325,10 @@ function Tooltip:InitializeItemCount()
         end
 
         local lines = GetItemCountLines(data and data.id)
-        if #lines <= 0 then
+        if not lines or #lines <= 0 then
             return
         end
-        if TooltipHasItemCountHeader(tooltip) then
+        if HasRenderFlag(context, ITEM_COUNT_RENDER_FLAG) then
             return
         end
 
@@ -328,5 +337,7 @@ function Tooltip:InitializeItemCount()
         for index = 1, #lines do
             tooltip:AddLine(lines[index])
         end
+
+        SetRenderFlag(context, ITEM_COUNT_RENDER_FLAG)
     end)
 end

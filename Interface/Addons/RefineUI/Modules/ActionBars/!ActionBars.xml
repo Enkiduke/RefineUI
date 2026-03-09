@@ -1,5 +1,10 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
 	<Script file="ActionBars.lua"/>
+    <Script file="Common.lua"/>
+    <Script file="State.lua"/>
+    <Script file="Skin.lua"/>
+    <Script file="Hooks.lua"/>
+    <Script file="EditMode.lua"/>
     <Script file="Extra.lua"/>
     <Script file="Vehicle.lua"/>
 </Ui>

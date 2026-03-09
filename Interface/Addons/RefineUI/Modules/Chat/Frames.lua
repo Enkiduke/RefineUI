@@ -5,7 +5,10 @@
 
 local _, RefineUI = ...
 
-local Chat = RefineUI:GetModule("Chat") or RefineUI:RegisterModule("Chat")
+local Chat = RefineUI:GetModule("Chat")
+if not Chat then
+    return
+end
 
 function Chat:OnInitialize()
     self.db = RefineUI.DB and RefineUI.DB.Chat or RefineUI.Config.Chat

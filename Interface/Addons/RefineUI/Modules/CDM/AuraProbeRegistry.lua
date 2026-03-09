@@ -24,6 +24,7 @@ local _G = _G
 local type = type
 local pcall = pcall
 local pairs = pairs
+local next = next
 local setmetatable = setmetatable
 local tostring = tostring
 local wipe = _G.wipe or table.wipe
@@ -54,10 +55,15 @@ local AURA_VIEWER_NAMES = {
 local cooldownIconCache = {}
 local ghostPayloadByCooldownID = {}
 local cooldownIDLookupScratch = {}
+local registeredFramesByCooldownID = {}
+local registeredFrameCooldownID = setmetatable({}, { __mode = "k" })
+local registeredFrameSpellIDs = setmetatable({}, { __mode = "k" })
+local hiddenFrameGraceExpiry = setmetatable({}, { __mode = "k" })
 local registryReconcileQueued = nil
 local registryDirty = true
 local dataChangedCallbackRegistered = false
 local hookedViewers = setmetatable({}, { __mode = "k" })
+local hookedFrames = setmetatable({}, { __mode = "k" })
 local MarkRegistryDirty
 local QueueRegistryReconcile
 
@@ -187,6 +193,128 @@ local function ResolveFrameCooldownID(frame, hintedCooldownID)
     return nil
 end
 
+local function AddResolvedSpellID(spellIDs, seen, spellID)
+    if IsNonSecretNumber(spellID) and spellID > 0 and not seen[spellID] then
+        seen[spellID] = true
+        spellIDs[#spellIDs + 1] = spellID
+    end
+end
+
+local function ResolveFrameAssociatedSpellIDs(frame)
+    local cached = registeredFrameSpellIDs[frame]
+    if type(cached) == "table" then
+        return cached
+    end
+
+    local spellIDs = {}
+    local seen = {}
+    if not frame then
+        return spellIDs
+    end
+
+    local function TryMethod(methodName)
+        if type(frame[methodName]) ~= "function" then
+            return
+        end
+
+        local ok, value = pcall(frame[methodName], frame)
+        if ok then
+            AddResolvedSpellID(spellIDs, seen, value)
+        end
+    end
+
+    TryMethod("GetAuraSpellID")
+    TryMethod("GetLinkedSpell")
+    TryMethod("GetSpellID")
+    TryMethod("GetBaseSpellID")
+
+    local okAuraSpellID, auraSpellID = pcall(function()
+        return frame.auraSpellID
+    end)
+    if okAuraSpellID then
+        AddResolvedSpellID(spellIDs, seen, auraSpellID)
+    end
+
+    local okSpellID, rawSpellID = pcall(function()
+        return frame.spellID
+    end)
+    if okSpellID then
+        AddResolvedSpellID(spellIDs, seen, rawSpellID)
+    end
+
+    local okRangeSpellID, rangeSpellID = pcall(function()
+        return frame.rangeCheckSpellID
+    end)
+    if okRangeSpellID then
+        AddResolvedSpellID(spellIDs, seen, rangeSpellID)
+    end
+
+    if type(frame.GetCooldownInfo) == "function" then
+        local okInfo, cooldownInfo = pcall(frame.GetCooldownInfo, frame)
+        if okInfo and type(cooldownInfo) == "table" then
+            AddResolvedSpellID(spellIDs, seen, cooldownInfo.linkedSpellID)
+            AddResolvedSpellID(spellIDs, seen, cooldownInfo.overrideTooltipSpellID)
+            AddResolvedSpellID(spellIDs, seen, cooldownInfo.overrideSpellID)
+            AddResolvedSpellID(spellIDs, seen, cooldownInfo.spellID)
+            if type(cooldownInfo.linkedSpellIDs) == "table" then
+                for i = 1, #cooldownInfo.linkedSpellIDs do
+                    AddResolvedSpellID(spellIDs, seen, cooldownInfo.linkedSpellIDs[i])
+                end
+            end
+        end
+    end
+
+    registeredFrameSpellIDs[frame] = spellIDs
+    return spellIDs
+end
+
+local function ResolveUniqueLookupCooldownID(cooldownIDSet)
+    if type(cooldownIDSet) ~= "table" then
+        return nil
+    end
+
+    local resolvedCooldownID
+    for cooldownID in pairs(cooldownIDSet) do
+        if not IsNonSecretNumber(cooldownID) or cooldownID <= 0 then
+            return nil
+        end
+        if resolvedCooldownID and resolvedCooldownID ~= cooldownID then
+            return nil
+        end
+        resolvedCooldownID = cooldownID
+    end
+
+    return resolvedCooldownID
+end
+
+local function ResolveUniqueSpellMatchedCooldownID(frame, spellIDLookup)
+    if not frame or type(spellIDLookup) ~= "table" then
+        return nil
+    end
+
+    -- Hidden Blizzard viewer items sometimes expose multiple related spell IDs.
+    -- Only accept spell-based fallback when they collapse to one Refine assignment.
+    local frameSpellIDs = ResolveFrameAssociatedSpellIDs(frame)
+    local matchedCooldownID
+
+    for i = 1, #frameSpellIDs do
+        local spellID = frameSpellIDs[i]
+        local spellCooldownIDs = spellIDLookup[spellID]
+        if spellCooldownIDs then
+            local resolvedCooldownID = ResolveUniqueLookupCooldownID(spellCooldownIDs)
+            if not resolvedCooldownID then
+                return nil
+            end
+            if matchedCooldownID and matchedCooldownID ~= resolvedCooldownID then
+                return nil
+            end
+            matchedCooldownID = resolvedCooldownID
+        end
+    end
+
+    return matchedCooldownID
+end
+
 local function ForEachViewerItemFrame(viewer, callback)
     if not viewer or type(callback) ~= "function" then
         return
@@ -210,12 +338,183 @@ local function ForEachViewerItemFrame(viewer, callback)
     end
 end
 
+local function BuildTrackedCooldownIDSet(cooldownIDs)
+    if wipe then
+        wipe(cooldownIDLookupScratch)
+    else
+        for key in pairs(cooldownIDLookupScratch) do
+            cooldownIDLookupScratch[key] = nil
+        end
+    end
+
+    if type(cooldownIDs) ~= "table" then
+        return cooldownIDLookupScratch
+    end
+
+    for i = 1, #cooldownIDs do
+        local cooldownID = cooldownIDs[i]
+        if IsNonSecretNumber(cooldownID) and cooldownID > 0 then
+            cooldownIDLookupScratch[cooldownID] = true
+        end
+    end
+
+    return cooldownIDLookupScratch
+end
+
+local function ClearFrameRegistration(frame)
+    if not frame then
+        return
+    end
+
+    local cooldownID = registeredFrameCooldownID[frame]
+    if IsNonSecretNumber(cooldownID) and cooldownID > 0 then
+        local frameSet = registeredFramesByCooldownID[cooldownID]
+        if type(frameSet) == "table" then
+            frameSet[frame] = nil
+            if next(frameSet) == nil then
+                registeredFramesByCooldownID[cooldownID] = nil
+            end
+        end
+    end
+
+    registeredFrameCooldownID[frame] = nil
+    registeredFrameSpellIDs[frame] = nil
+    hiddenFrameGraceExpiry[frame] = nil
+end
+
+local function RegisterFrameForCooldown(frame, cooldownID)
+    if not frame then
+        return
+    end
+    if not IsNonSecretNumber(cooldownID) or cooldownID <= 0 then
+        ClearFrameRegistration(frame)
+        return
+    end
+
+    local currentCooldownID = registeredFrameCooldownID[frame]
+    if currentCooldownID == cooldownID then
+        local currentSet = registeredFramesByCooldownID[cooldownID]
+        if type(currentSet) ~= "table" then
+            currentSet = {}
+            registeredFramesByCooldownID[cooldownID] = currentSet
+        end
+        currentSet[frame] = true
+        return
+    end
+
+    ClearFrameRegistration(frame)
+
+    local frameSet = registeredFramesByCooldownID[cooldownID]
+    if type(frameSet) ~= "table" then
+        frameSet = {}
+        registeredFramesByCooldownID[cooldownID] = frameSet
+    end
+
+    frameSet[frame] = true
+    registeredFrameCooldownID[frame] = cooldownID
+    hiddenFrameGraceExpiry[frame] = nil
+end
+
+local function ClearRegistryFrames()
+    for frame in pairs(registeredFrameCooldownID) do
+        ClearFrameRegistration(frame)
+    end
+end
+
+local function GetAssignedSpellLookup()
+    local snapshot = CDM.GetAssignedCooldownSnapshot and CDM:GetAssignedCooldownSnapshot() or nil
+    if type(snapshot) ~= "table" or type(snapshot.associatedSpellToCooldownIDs) ~= "table" then
+        return {}
+    end
+    return snapshot.associatedSpellToCooldownIDs
+end
+
+local function ResolveTrackedCooldownIDForFrame(frame, trackedCooldownIDSet, spellLookup)
+    local directCooldownID = ResolveFrameCooldownID(frame, registeredFrameCooldownID[frame])
+    if IsNonSecretNumber(directCooldownID) and trackedCooldownIDSet[directCooldownID] then
+        return directCooldownID
+    end
+
+    return ResolveUniqueSpellMatchedCooldownID(frame, spellLookup)
+end
+
+local function GetFrameHideGraceDuration()
+    local ttl = CDM.GetPayloadGhostTTL and CDM:GetPayloadGhostTTL() or 0.20
+    if type(ttl) ~= "number" then
+        ttl = 0.20
+    end
+    if ttl < 0.20 then
+        ttl = 0.20
+    elseif ttl > 0.35 then
+        ttl = 0.35
+    end
+    return ttl
+end
+
+local function MarkFrameHidden(frame)
+    if not frame then
+        return
+    end
+
+    hiddenFrameGraceExpiry[frame] = GetTime() + GetFrameHideGraceDuration()
+end
+
+local function RefreshRegisteredFrame(frame, trackedCooldownIDSet, spellLookup)
+    if not frame then
+        return nil
+    end
+
+    registeredFrameSpellIDs[frame] = nil
+
+    if type(frame.IsShown) == "function" then
+        local okShown, shown = pcall(frame.IsShown, frame)
+        if okShown and shown == false then
+            local expiresAt = hiddenFrameGraceExpiry[frame]
+            if type(expiresAt) ~= "number" then
+                MarkFrameHidden(frame)
+                return registeredFrameCooldownID[frame]
+            end
+            if expiresAt > GetTime() then
+                return registeredFrameCooldownID[frame]
+            end
+            ClearFrameRegistration(frame)
+            return nil
+        end
+    end
+
+    hiddenFrameGraceExpiry[frame] = nil
+    local cooldownID = ResolveTrackedCooldownIDForFrame(frame, trackedCooldownIDSet, spellLookup)
+    RegisterFrameForCooldown(frame, cooldownID)
+    return cooldownID
+end
+
+local function InstallTrackedFrameHooks(frame)
+    if not frame or hookedFrames[frame] then
+        return
+    end
+
+    hookedFrames[frame] = true
+
+    RefineUI:HookScriptOnce("CDM:AuraProbe:Frame:" .. tostring(frame) .. ":OnShow", frame, "OnShow", function(selfFrame)
+        local assignedSnapshot = CDM.GetAssignedCooldownSnapshot and CDM:GetAssignedCooldownSnapshot() or nil
+        local trackedCooldownIDs = assignedSnapshot and assignedSnapshot.allAssignedIDs or nil
+        RefreshRegisteredFrame(selfFrame, BuildTrackedCooldownIDSet(trackedCooldownIDs), GetAssignedSpellLookup())
+    end)
+    RefineUI:HookScriptOnce("CDM:AuraProbe:Frame:" .. tostring(frame) .. ":OnHide", frame, "OnHide", function(selfFrame)
+        MarkFrameHidden(selfFrame)
+    end)
+end
+
 local function InstallViewerHooks(viewer, _viewerName)
     if not viewer or hookedViewers[viewer] then
         return
     end
 
     hookedViewers[viewer] = true
+    RefineUI:HookScriptOnce("CDM:AuraProbe:Viewer:" .. tostring(viewer) .. ":OnShow", viewer, "OnShow", function()
+        MarkRegistryDirty()
+        QueueRegistryReconcile()
+    end)
 end
 
 local function InstallKnownViewerHooks()
@@ -242,7 +541,6 @@ QueueRegistryReconcile = function()
         registryReconcileQueued = nil
         if registryDirty then
             InstallKnownViewerHooks()
-            registryDirty = false
         end
         CDM:RequestRefresh()
     end
@@ -678,31 +976,12 @@ local function ShouldReplacePayload(existing, candidate)
     return true
 end
 
-local function BuildActiveCooldownFrameMap(cooldownIDs)
-    local map = {}
-    if type(cooldownIDs) ~= "table" or #cooldownIDs == 0 then
-        return map
-    end
+local function ReconcileViewerRegistry(cooldownIDs)
+    local reconcileStartTime = GetTime()
+    local trackedCooldownIDSet = BuildTrackedCooldownIDSet(cooldownIDs)
+    local spellLookup = GetAssignedSpellLookup()
 
-    if registryDirty then
-        InstallKnownViewerHooks()
-        registryDirty = false
-    end
-
-    if wipe then
-        wipe(cooldownIDLookupScratch)
-    else
-        for key in pairs(cooldownIDLookupScratch) do
-            cooldownIDLookupScratch[key] = nil
-        end
-    end
-
-    for i = 1, #cooldownIDs do
-        local cooldownID = cooldownIDs[i]
-        if IsNonSecretNumber(cooldownID) and cooldownID > 0 then
-            cooldownIDLookupScratch[cooldownID] = true
-        end
-    end
+    ClearRegistryFrames()
 
     for i = 1, #AURA_VIEWER_NAMES do
         local viewerName = AURA_VIEWER_NAMES[i]
@@ -710,17 +989,55 @@ local function BuildActiveCooldownFrameMap(cooldownIDs)
         if viewer then
             InstallViewerHooks(viewer, viewerName)
             ForEachViewerItemFrame(viewer, function(frame)
-                local cooldownID = ResolveFrameCooldownID(frame)
-                if IsNonSecretNumber(cooldownID) and cooldownIDLookupScratch[cooldownID] then
-                    local payload = BuildFramePayload(frame, cooldownID)
-                    if payload and ShouldReplacePayload(map[cooldownID], payload) then
-                        map[cooldownID] = payload
-                    end
-                end
+                InstallTrackedFrameHooks(frame)
+                RefreshRegisteredFrame(frame, trackedCooldownIDSet, spellLookup)
             end)
         end
     end
 
+    registryDirty = false
+    CDM:IncrementPerfCounter("cdm_aura_probe_reconcile")
+    CDM:RecordPerfSample("cdm_aura_probe_reconcile", GetTime() - reconcileStartTime)
+end
+
+local function BuildActiveCooldownFrameMap(cooldownIDs)
+    local buildStartTime = GetTime()
+    local map = {}
+    if type(cooldownIDs) ~= "table" or #cooldownIDs == 0 then
+        return map
+    end
+
+    local assignedSnapshot = CDM.GetAssignedCooldownSnapshot and CDM:GetAssignedCooldownSnapshot() or nil
+    local validationCooldownIDs = cooldownIDs
+    if type(assignedSnapshot) == "table" and type(assignedSnapshot.allAssignedIDs) == "table" and #assignedSnapshot.allAssignedIDs > 0 then
+        validationCooldownIDs = assignedSnapshot.allAssignedIDs
+    end
+
+    if registryDirty then
+        ReconcileViewerRegistry(validationCooldownIDs)
+    end
+
+    local trackedCooldownIDSet = BuildTrackedCooldownIDSet(validationCooldownIDs)
+    local spellLookup = GetAssignedSpellLookup()
+    for frame in pairs(registeredFrameCooldownID) do
+        RefreshRegisteredFrame(frame, trackedCooldownIDSet, spellLookup)
+    end
+
+    for i = 1, #cooldownIDs do
+        local cooldownID = cooldownIDs[i]
+        local frameSet = registeredFramesByCooldownID[cooldownID]
+        if type(frameSet) == "table" then
+            for frame in pairs(frameSet) do
+                local payload = BuildFramePayload(frame, cooldownID)
+                if payload and ShouldReplacePayload(map[cooldownID], payload) then
+                    map[cooldownID] = payload
+                end
+            end
+        end
+    end
+
+    CDM:IncrementPerfCounter("cdm_aura_probe_build")
+    CDM:RecordPerfSample("cdm_aura_probe_build", GetTime() - buildStartTime)
     return map
 end
 
@@ -779,15 +1096,6 @@ function CDM:InitializeAuraProbe()
     MarkRegistryDirty()
     QueueRegistryReconcile()
 
-    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_event, addonName)
-        if addonName == "Blizzard_CooldownViewer" then
-            InstallKnownViewerHooks()
-            TryRegisterDataChangedCallback()
-            CDM:InvalidateAuraProbeCache()
-            CDM:RequestAuraProbeReconcile()
-        end
-    end, "CDM:AuraProbe:AddonLoaded")
-
     self.auraProbeInitialized = true
 end
 
@@ -831,4 +1139,3 @@ function CDM:_GetActiveAuraMapInternal(cooldownIDs)
     PruneExpiredGhostPayloads()
     return activeMap
 end
-

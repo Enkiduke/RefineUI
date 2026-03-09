@@ -21,9 +21,21 @@ local Locale = RefineUI.Locale
 -- Public Methods
 ----------------------------------------------------------------------------------------
 function CDM:ProbeCooldownAura(cooldownID, activeFrameMap)
+    if self.ShouldUseRuntimeResolverFallback
+        and self:ShouldUseRuntimeResolverFallback()
+        and type(self._ProbeCooldownAuraFallbackInternal) == "function"
+    then
+        return self:_ProbeCooldownAuraFallbackInternal(cooldownID, activeFrameMap)
+    end
     return self:_ProbeCooldownAuraInternal(cooldownID, activeFrameMap)
 end
 
 function CDM:GetActiveAuraMap(cooldownIDs)
+    if self.ShouldUseRuntimeResolverFallback
+        and self:ShouldUseRuntimeResolverFallback()
+        and type(self._GetActiveAuraMapFallbackInternal) == "function"
+    then
+        return self:_GetActiveAuraMapFallbackInternal(cooldownIDs)
+    end
     return self:_GetActiveAuraMapInternal(cooldownIDs)
 end

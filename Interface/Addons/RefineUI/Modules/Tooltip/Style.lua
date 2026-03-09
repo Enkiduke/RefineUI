@@ -30,7 +30,6 @@ local select = select
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
-local GameTooltip = _G.GameTooltip
 local GameTooltipStatusBar = _G.GameTooltipStatusBar
 local ALL_TOOLTIP_TYPES = TooltipDataProcessor and TooltipDataProcessor.AllTypes
 local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
@@ -41,12 +40,13 @@ local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
 local TOOLTIP_POSTCALL_ALL_TYPES_KEY = "Tooltip:PostCall:AllTypes"
 local TOOLTIP_POSTCALL_ITEM_KEY = "Tooltip:PostCall:Item"
 local TOOLTIP_DISCOVER_ON_ADDON_LOADED_KEY = "Tooltip:DiscoverTooltipsOnAddonLoaded"
-local TOOLTIP_SHARED_BACKDROP_STYLE_HOOK_KEY = "Tooltip:SharedTooltip_SetBackdropStyle"
 local EMBEDDED_ICON_BORDER_STYLE = {
     inset = 4,
     edgeSize = 12,
     forceRefresh = true,
 }
+local TOOLTIP_SHARED_BACKDROP_STYLE_HOOK_KEY = "Tooltip:SharedTooltip_SetBackdropStyle"
+local TOOLTIP_SET_TOOLTIP_MONEY_HOOK_KEY = "Tooltip:SetTooltipMoney"
 
 ----------------------------------------------------------------------------------------
 -- Styling
@@ -72,9 +72,15 @@ local function StyleTooltipLines(tt, includeEmbedded)
         return
     end
 
+    local state = Tooltip:GetTooltipSkinState(tt)
+    local maxStyledLineIndex = state and state.maxStyledLineIndex or 0
+    if numLines <= maxStyledLineIndex then
+        return
+    end
+
     local styledFontStrings = Tooltip:GetStyledFontStringRegistry()
     local lineCache = Tooltip:GetLineCache()
-    for lineIndex = 1, numLines do
+    for lineIndex = maxStyledLineIndex + 1, numLines do
         local leftLine = Tooltip:GetCachedLine(tt, lineIndex)
         if leftLine and not styledFontStrings[leftLine] then
             RefineUI.Font(leftLine, lineIndex == 1 and 14 or 12, nil, "OUTLINE")
@@ -90,6 +96,65 @@ local function StyleTooltipLines(tt, includeEmbedded)
                 styledFontStrings[rightLine] = true
             end
         end
+    end
+
+    if state then
+        state.maxStyledLineIndex = numLines
+    end
+end
+
+function Tooltip:StyleTooltipFrameLines(tt, includeEmbedded)
+    StyleTooltipLines(tt, includeEmbedded)
+end
+
+function Tooltip:StyleTooltipMoneyFrames(tt, includeEmbedded)
+    if not Tooltip:IsGameTooltipFrameSafe(tt) then
+        return
+    end
+    if not includeEmbedded and Tooltip:IsEmbeddedTooltipFrame(tt) then
+        return
+    end
+
+    local tooltipName = Tooltip:GetTooltipNameSafe(tt)
+    if not tooltipName then
+        return
+    end
+
+    local styledFontStrings = Tooltip:GetStyledFontStringRegistry()
+    local function StyleMoneyFontString(fontString, size)
+        if not fontString then
+            return
+        end
+
+        if styledFontStrings[fontString] then
+            return
+        end
+
+        RefineUI.Font(fontString, size or 12, nil, "OUTLINE")
+        styledFontStrings[fontString] = true
+    end
+
+    local moneyFrameCount = tt.shownMoneyFrames or tt.numMoneyFrames or 0
+    if moneyFrameCount <= 0 then
+        return
+    end
+
+    local state = Tooltip:GetTooltipSkinState(tt)
+    local maxStyledMoneyFrameIndex = state and state.maxStyledMoneyFrameIndex or 0
+    if moneyFrameCount <= maxStyledMoneyFrameIndex then
+        return
+    end
+
+    for moneyFrameIndex = maxStyledMoneyFrameIndex + 1, moneyFrameCount do
+        local moneyFrame = _G[tooltipName .. "MoneyFrame" .. moneyFrameIndex]
+        if moneyFrame then
+            StyleMoneyFontString(moneyFrame.PrefixText, 12)
+            StyleMoneyFontString(moneyFrame.SuffixText, 12)
+        end
+    end
+
+    if state then
+        state.maxStyledMoneyFrameIndex = moneyFrameCount
     end
 end
 
@@ -247,14 +312,6 @@ local function TryApplyItemQualityBorderOnShow(tt)
     return true, true
 end
 
-local function MaybeHideInCombatTooltip(tt, data)
-    if type(Tooltip.MaybeHideInCombat) ~= "function" then
-        return false
-    end
-
-    return Tooltip:MaybeHideInCombat(tt, data)
-end
-
 function Tooltip:SetBackdropStyle(tt)
     if not Tooltip:IsGameTooltipFrameSafe(tt) or Tooltip:IsEmbeddedTooltipFrame(tt) then
         return
@@ -266,21 +323,54 @@ function Tooltip:SetBackdropStyle(tt)
     end
 
     local borderHost = state.borderHost
+    local needsHostInitialization = false
     if not borderHost or type(borderHost.SetPoint) ~= "function" then
         borderHost = CreateFrame("Frame", nil, tt)
         if borderHost.EnableMouse then
             borderHost:EnableMouse(false)
         end
         state.borderHost = borderHost
+        state.borderHostInitialized = nil
+        state.borderHostInset = nil
+        state.borderHostEdgeSize = nil
+        state.lastBorderColorR = nil
+        state.lastBorderColorG = nil
+        state.lastBorderColorB = nil
+        state.lastBorderColorA = nil
+        needsHostInitialization = true
     end
 
-    borderHost:SetFrameLevel(max(0, tt:GetFrameLevel() - 1))
-    borderHost:SetFrameStrata(tt:GetFrameStrata())
-    RefineUI.SetOutside(borderHost, tt, 0, 0)
+    if type(borderHost.GetParent) == "function" and borderHost:GetParent() ~= tt then
+        borderHost:SetParent(tt)
+        needsHostInitialization = true
+    end
+
+    local desiredFrameLevel = max(0, tt:GetFrameLevel() - 1)
+    if borderHost:GetFrameLevel() ~= desiredFrameLevel then
+        borderHost:SetFrameLevel(desiredFrameLevel)
+    end
+
+    local desiredFrameStrata = tt:GetFrameStrata()
+    if borderHost:GetFrameStrata() ~= desiredFrameStrata then
+        borderHost:SetFrameStrata(desiredFrameStrata)
+    end
 
     local borderInset, borderEdgeSize = Tooltip:GetTooltipBorderParams()
-    RefineUI.SetTemplate(borderHost, "Transparent")
-    RefineUI.CreateBorder(borderHost, borderInset, borderInset, borderEdgeSize)
+    if needsHostInitialization or not state.borderHostInitialized or not borderHost.bg then
+        RefineUI.SetOutside(borderHost, tt, 0, 0)
+        RefineUI.SetTemplate(borderHost, "Transparent")
+        state.borderHostInitialized = true
+    end
+
+    if needsHostInitialization
+        or state.borderHostInset ~= borderInset
+        or state.borderHostEdgeSize ~= borderEdgeSize
+        or not (borderHost.RefineBorder or borderHost.border)
+    then
+        RefineUI.CreateBorder(borderHost, borderInset, borderInset, borderEdgeSize)
+        state.borderHostInset = borderInset
+        state.borderHostEdgeSize = borderEdgeSize
+    end
 
     if borderHost.Show then
         borderHost:Show()
@@ -290,8 +380,6 @@ function Tooltip:SetBackdropStyle(tt)
     if okNineSlice and nineSlice then
         Tooltip:SafeObjectMethodCall(nineSlice, "SetAlpha", 0)
     end
-
-    StyleTooltipLines(tt)
 end
 
 function Tooltip:SetTooltipBorderColor(tt, r, g, b, a)
@@ -304,8 +392,26 @@ function Tooltip:SetTooltipBorderColor(tt, r, g, b, a)
     local state = Tooltip:GetTooltipSkinState(tt)
     local borderHost = state and state.borderHost
     local border = borderHost and (borderHost.RefineBorder or borderHost.border)
+    local borderAlpha = a or 1
+    if state
+        and border
+        and border.SetBackdropBorderColor
+        and state.lastBorderColorR == r
+        and state.lastBorderColorG == g
+        and state.lastBorderColorB == b
+        and state.lastBorderColorA == borderAlpha
+    then
+        return
+    end
+
     if border and border.SetBackdropBorderColor then
-        border:SetBackdropBorderColor(r, g, b, a or 1)
+        border:SetBackdropBorderColor(r, g, b, borderAlpha)
+        if state then
+            state.lastBorderColorR = r
+            state.lastBorderColorG = g
+            state.lastBorderColorB = b
+            state.lastBorderColorA = borderAlpha
+        end
     end
 end
 
@@ -347,12 +453,25 @@ function Tooltip:RegisterTooltipFrame(tt)
         return
     end
 
-    Tooltip:SetBackdropStyle(tt)
-
     local state = Tooltip:GetTooltipSkinState(tt)
-    if tt ~= GameTooltip and state and not state.onShowHooked then
+    if state and not state.onHideHooked then
+        local hookKey = Tooltip:BuildTooltipHookKey(tt, "OnHide")
+        local ok, reason = RefineUI:HookScriptOnce(hookKey, tt, "OnHide", function(frame)
+            Tooltip:ResetTooltipTransientState(frame)
+        end)
+        if ok or reason == "already_hooked" then
+            state.onHideHooked = true
+        end
+    end
+
+    if state and not state.onShowHooked then
         local hookKey = Tooltip:BuildTooltipHookKey(tt, "OnShow")
         local ok, reason = RefineUI:HookScriptOnce(hookKey, tt, "OnShow", function(frame)
+            if Tooltip:ConsumeTooltipPostCallRender(frame) then
+                return
+            end
+
+            Tooltip:ResetTooltipTransientState(frame)
             Tooltip:SetBackdropStyle(frame)
 
             local unitToken = Tooltip:ResolveTooltipUnitToken(frame)
@@ -364,16 +483,22 @@ function Tooltip:RegisterTooltipFrame(tt)
             end
             if unitToken then
                 Tooltip:ApplyUnitBorderColor(frame, unitToken)
+                StyleTooltipLines(frame)
+                Tooltip:StyleTooltipMoneyFrames(frame)
                 return
             end
 
             local hasItemTooltip = false
             hasItemTooltip = select(1, TryApplyItemQualityBorderOnShow(frame))
             if hasItemTooltip then
+                StyleTooltipLines(frame)
+                Tooltip:StyleTooltipMoneyFrames(frame)
                 return
             end
 
             Tooltip:ResetTooltipBorderColor(frame)
+            StyleTooltipLines(frame)
+            Tooltip:StyleTooltipMoneyFrames(frame)
         end)
         if ok or reason == "already_hooked" then
             state.onShowHooked = true
@@ -381,18 +506,19 @@ function Tooltip:RegisterTooltipFrame(tt)
     end
 
     local compareHeader, okCompare = Tooltip:SafeGetField(tt, "CompareHeader")
-    if okCompare and Tooltip:CanAccessObjectSafe(compareHeader) then
+    if state and okCompare and Tooltip:CanAccessObjectSafe(compareHeader) and not state.compareHeaderStripped then
         if not Tooltip:SafeObjectMethodCall(compareHeader, "StripTexture") then
             Tooltip:SafeObjectMethodCall(compareHeader, "StripTextures")
         end
+        state.compareHeaderStripped = true
     end
 end
 
-function Tooltip:DiscoverGlobalTooltips()
-    for _, globalValue in pairs(_G) do
-        if Tooltip:IsGameTooltipFrameSafe(globalValue) then
-            Tooltip:RegisterTooltipFrame(globalValue)
-        end
+function Tooltip:RegisterKnownTooltipFrames()
+    local knownFrames = Tooltip:GetKnownTooltipFrameNames()
+    for index = 1, #knownFrames do
+        local tooltipName = knownFrames[index]
+        Tooltip:RegisterTooltipFrame(_G[tooltipName])
     end
 
     local questScrollFrame = _G.QuestScrollFrame
@@ -402,32 +528,39 @@ function Tooltip:DiscoverGlobalTooltips()
     end
 end
 
-function Tooltip:StyleTooltips()
-    local knownFrames = Tooltip:GetKnownTooltipFrameNames()
-    for index = 1, #knownFrames do
-        local tooltipName = knownFrames[index]
-        Tooltip:RegisterTooltipFrame(_G[tooltipName])
+function Tooltip:DiscoverGlobalTooltips()
+    for _, globalValue in pairs(_G) do
+        if Tooltip:IsGameTooltipFrameSafe(globalValue) then
+            Tooltip:RegisterTooltipFrame(globalValue)
+        end
     end
+end
 
+function Tooltip:StyleTooltips()
+    Tooltip:RegisterKnownTooltipFrames()
     Tooltip:DiscoverGlobalTooltips()
 
     RefineUI:RegisterEventCallback("ADDON_LOADED", function()
-        RefineUI:Debounce(Tooltip:GetTooltipDiscoverDebounceKey(), 0.05, function()
-            Tooltip:DiscoverGlobalTooltips()
-        end)
+        Tooltip:RegisterKnownTooltipFrames()
     end, TOOLTIP_DISCOVER_ON_ADDON_LOADED_KEY)
+
+    RefineUI:HookOnce(TOOLTIP_SET_TOOLTIP_MONEY_HOOK_KEY, "SetTooltipMoney", function(frame)
+        if not Tooltip:IsGameTooltipFrameSafe(frame) or Tooltip:IsEmbeddedTooltipFrame(frame) then
+            return
+        end
+
+        Tooltip:StyleTooltipMoneyFrames(frame)
+    end)
 
     RefineUI:HookOnce(TOOLTIP_SHARED_BACKDROP_STYLE_HOOK_KEY, "SharedTooltip_SetBackdropStyle", function(tt)
         if not Tooltip:IsGameTooltipFrameSafe(tt) or Tooltip:IsEmbeddedTooltipFrame(tt) then
             return
         end
         Tooltip:RegisterTooltipFrame(tt)
-        if tt == GameTooltip then
-            -- Prevent stale class/reaction/item border carryover on shared map/widget tooltip flows.
-            Tooltip:ResetTooltipBorderColor(tt)
-        else
-            Tooltip:SetBackdropStyle(tt)
-        end
+        Tooltip:SetBackdropStyle(tt)
+
+        StyleTooltipLines(tt)
+        Tooltip:StyleTooltipMoneyFrames(tt)
     end)
 end
 
@@ -467,6 +600,7 @@ function Tooltip:StyleHealthBar()
         return
     end
 
+    GameTooltipStatusBar:SetScript("OnShow", nil)
     GameTooltipStatusBar:Hide()
     RefineUI:HookOnce("Tooltip:GameTooltipStatusBar:Show", GameTooltipStatusBar, "Show", function(bar)
         bar:Hide()
@@ -486,9 +620,6 @@ function Tooltip:InitializeTooltipStyle()
             if not Tooltip:IsGameTooltipFrameSafe(tt) then
                 return
             end
-            if MaybeHideInCombatTooltip(tt, data) then
-                return
-            end
             if Tooltip:IsEmbeddedTooltipFrame(tt) then
                 StyleTooltipLines(tt, true)
 
@@ -502,13 +633,15 @@ function Tooltip:InitializeTooltipStyle()
             end
 
             Tooltip:RegisterTooltipFrame(tt)
-            StyleTooltipLines(tt)
+            Tooltip:ResetTooltipRenderFlags(tt)
+            Tooltip:MarkTooltipPostCallRender(tt)
 
             local tooltipType = Tooltip:GetTooltipDataType(data)
-            local unitToken = Tooltip:ResolveTooltipUnitToken(tt, data)
             if TOOLTIP_DATA_TYPE and tooltipType == TOOLTIP_DATA_TYPE.Item then
                 return
             end
+
+            local unitToken = Tooltip:ResolveTooltipUnitToken(tt, data)
             if unitToken then
                 Tooltip:ApplyUnitBorderColor(tt, unitToken)
             elseif TOOLTIP_DATA_TYPE and tooltipType == TOOLTIP_DATA_TYPE.Unit then
@@ -518,6 +651,9 @@ function Tooltip:InitializeTooltipStyle()
             else
                 Tooltip:ResetTooltipBorderColor(tt)
             end
+
+            StyleTooltipLines(tt)
+            Tooltip:StyleTooltipMoneyFrames(tt)
         end)
     end
 
@@ -526,16 +662,16 @@ function Tooltip:InitializeTooltipStyle()
             if not Tooltip:IsGameTooltipFrameSafe(tt) then
                 return
             end
-            if MaybeHideInCombatTooltip(tt, data) then
-                return
-            end
             if Tooltip:IsEmbeddedTooltipFrame(tt) then
                 return
             end
 
             Tooltip:RegisterTooltipFrame(tt)
+            Tooltip:MarkTooltipPostCallRender(tt)
             Tooltip:ApplyItemQualityBorderColor(tt, data)
             Tooltip:DispatchItemHandlers(tt, data)
+            StyleTooltipLines(tt)
+            Tooltip:StyleTooltipMoneyFrames(tt)
         end)
     end
 end

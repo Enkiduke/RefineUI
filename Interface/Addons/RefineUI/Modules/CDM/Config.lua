@@ -92,7 +92,7 @@ function CDM:GetConfig()
     end
 
     if cfg.SkinCooldownViewer == nil then
-        cfg.SkinCooldownViewer = true
+        cfg.SkinCooldownViewer = false
     end
 
     if cfg.AuraMode ~= "blizzard" then
@@ -103,9 +103,7 @@ function CDM:GetConfig()
         cfg.SyncStrategy = "auto_safe"
     end
 
-    if cfg.SourceScope ~= "all_auras" then
-        cfg.SourceScope = "buffs_exact"
-    end
+    cfg.SourceScope = "all_auras"
 
     if type(cfg.PayloadGhostTTL) ~= "number" then
         cfg.PayloadGhostTTL = 0.20
@@ -182,7 +180,6 @@ function CDM:IsBlizzardCooldownManagerEnabled()
         end
     end
 
-    -- Fail open if Blizzard APIs are unavailable so CDM does not self-disable incorrectly.
     return true
 end
 
@@ -191,7 +188,7 @@ function CDM:GetSyncStrategy()
 end
 
 function CDM:GetSourceScope()
-    return self:GetConfig().SourceScope or "buffs_exact"
+    return "all_auras"
 end
 
 function CDM:GetPayloadGhostTTL()
@@ -209,10 +206,6 @@ function CDM:GetPayloadGhostTTL()
 end
 
 function CDM:GetAuraMode()
-    local cfg = self:GetConfig()
-    if cfg.AuraMode == "blizzard" then
-        return "blizzard"
-    end
     return "refineui"
 end
 
@@ -222,24 +215,10 @@ end
 
 function CDM:SetAuraMode(mode)
     local cfg = self:GetConfig()
-    local previousMode = self:GetAuraMode()
-    if mode == "blizzard" then
-        cfg.AuraMode = "blizzard"
-    else
-        cfg.AuraMode = "refineui"
-    end
-
-    if previousMode ~= "refineui"
-        and cfg.AuraMode == "refineui"
-        and self.RequestInitialTrackedBuffClear then
-        self:RequestInitialTrackedBuffClear()
-    end
-
-    self:ApplyNativeAuraViewerVisibility(true)
+    cfg.AuraMode = "refineui"
     self:RequestRefresh(true)
 end
 
 function CDM:ShouldHideNativeAuraViewers()
-    local cfg = self:GetConfig()
-    return cfg.HideNativeAuraViewers ~= false
+    return true
 end

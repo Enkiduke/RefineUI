@@ -5,8 +5,13 @@
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
 local Config = RefineUI.Config
-local UF = RefineUI.UnitFrames
-local P = UF._party
+local UnitFrames = RefineUI:GetModule("UnitFrames")
+if not UnitFrames then
+    return
+end
+
+local UF = UnitFrames
+local P = UnitFrames:GetPrivate().Party
 if not P then return end
 
 ----------------------------------------------------------------------------------------

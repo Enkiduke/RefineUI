@@ -1,8 +1,15 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
-	<Script file="Elements.lua"/>
+	<Script file="UnitFrames.lua"/>
+	<Script file="State.lua"/>
+	<Script file="Common.lua"/>
 	<Script file="Portraits.lua"/>
+	<Script file="Elements.lua"/>
+	<Script file="TargetAuraSettings.lua"/>
 	<Script file="CastBars.lua"/>
 	<Script file="ClassResources.lua"/>
+	<Include file="ClassResources\!ClassResources.xml"/>
+	<Script file="Pet.lua"/>
+	<Script file="Style.lua"/>
 	<Include file="Party\!Party.xml"/>
-	<Script file="UnitFrames.lua"/>
+	<Script file="Runtime.lua"/>
 </Ui>

@@ -32,8 +32,10 @@ local tonumber = tonumber
 local tostring = tostring
 local type = type
 local pcall = pcall
+local select = select
 local floor = math.floor
 local setmetatable = setmetatable
+local wipe = wipe
 local issecretvalue = _G.issecretvalue
 local canaccessvalue = _G.canaccessvalue
 
@@ -64,10 +66,9 @@ local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
 -- Constants
 ----------------------------------------------------------------------------------------
 local TOOLTIP_SKIN_STATE_REGISTRY = "Tooltip:SkinState"
-local TOOLTIP_DISCOVER_DEBOUNCE_KEY = "Tooltip:DiscoverGlobalTooltips"
 local TOOLTIP_BORDER_INSET = 6
 local TOOLTIP_BORDER_EDGE_SIZE = 12
-local TOOLTIP_COMPARISON_GAP = 0
+local TOOLTIP_COMPARISON_GAP = 8
 local TOOLTIP_COMPARISON_HOOK_KEY = "Tooltip:TooltipComparisonManager:AnchorShoppingTooltips"
 local TOOLTIP_COMPARE_ITEM_HOOK_KEY = "Tooltip:GameTooltip_ShowCompareItem:ComparisonGap"
 local UNIT_TOOLTIP_FALLBACK_TOKENS = { "mouseover", "softenemy", "softfriend", "softinteract" }
@@ -382,6 +383,93 @@ local function ResolveUnitTokenFromData(data)
     return nil
 end
 
+local function GetTooltipTransientState(tooltip)
+    local state = Tooltip:GetTooltipSkinState(tooltip)
+    if type(state) ~= "table" then
+        return nil
+    end
+
+    local transient = state.transient
+    if type(transient) ~= "table" then
+        transient = {}
+        state.transient = transient
+    end
+
+    local renderFlags = transient.renderFlags
+    if type(renderFlags) ~= "table" then
+        renderFlags = {}
+        transient.renderFlags = renderFlags
+    end
+
+    local itemHandlerContext = transient.itemHandlerContext
+    if type(itemHandlerContext) ~= "table" then
+        itemHandlerContext = {}
+        transient.itemHandlerContext = itemHandlerContext
+    end
+
+    return transient
+end
+
+local function GetItemIDFromLink(itemLink)
+    if type(itemLink) ~= "string" or itemLink == "" or IsSecret(itemLink) then
+        return nil
+    end
+
+    if C_Item and type(C_Item.GetItemInfoInstant) == "function" then
+        local itemID = ReadSafeNumber(select(1, C_Item.GetItemInfoInstant(itemLink)))
+        if itemID then
+            return itemID
+        end
+    end
+
+    local rawItemID = itemLink:match("item:(%d+)")
+    return rawItemID and tonumber(rawItemID) or nil
+end
+
+local function CacheItemQuality(itemLink, itemID, quality)
+    quality = NormalizeItemQuality(quality)
+    if not quality then
+        return nil
+    end
+
+    local qualityByLink = Private.itemQualityByLink or {}
+    Private.itemQualityByLink = qualityByLink
+
+    local qualityByID = Private.itemQualityByID or {}
+    Private.itemQualityByID = qualityByID
+
+    local pendingRequests = Private.pendingItemDataRequests or {}
+    Private.pendingItemDataRequests = pendingRequests
+
+    if type(itemLink) == "string" and itemLink ~= "" and not IsSecret(itemLink) then
+        qualityByLink[itemLink] = quality
+    end
+
+    itemID = ReadSafeNumber(itemID)
+    if itemID then
+        qualityByID[itemID] = quality
+        pendingRequests[itemID] = nil
+    end
+
+    return quality
+end
+
+local function RequestItemDataByIDOnce(itemID)
+    itemID = ReadSafeNumber(itemID)
+    if not itemID or not C_Item or type(C_Item.RequestLoadItemDataByID) ~= "function" then
+        return
+    end
+
+    local pendingRequests = Private.pendingItemDataRequests or {}
+    Private.pendingItemDataRequests = pendingRequests
+    if pendingRequests[itemID] then
+        return
+    end
+
+    pendingRequests[itemID] = true
+    C_Item.RequestLoadItemDataByID(itemID)
+end
+
 ----------------------------------------------------------------------------------------
 -- Core Initialization
 ----------------------------------------------------------------------------------------
@@ -392,6 +480,9 @@ function Tooltip:InitializeTooltipCore()
     Private.styledFontStrings = Private.styledFontStrings or setmetatable({}, { __mode = "k" })
     Private.postCallRegistry = Private.postCallRegistry or {}
     Private.itemHandlers = Private.itemHandlers or {}
+    Private.itemQualityByLink = Private.itemQualityByLink or {}
+    Private.itemQualityByID = Private.itemQualityByID or {}
+    Private.pendingItemDataRequests = Private.pendingItemDataRequests or {}
     Tooltip.ItemHandlers = Private.itemHandlers
 end
 
@@ -453,6 +544,97 @@ function Tooltip:GetTooltipSkinState(tooltip)
     end
 
     return state
+end
+
+function Tooltip:GetTooltipTransientState(tooltip)
+    return GetTooltipTransientState(tooltip)
+end
+
+function Tooltip:ResetTooltipTransientState(tooltip)
+    local transient = GetTooltipTransientState(tooltip)
+    if not transient then
+        return nil
+    end
+
+    wipe(transient.renderFlags)
+    transient.skipNextOnShow = nil
+
+    local context = transient.itemHandlerContext
+    if type(context) == "table" then
+        context.tooltip = nil
+        context.data = nil
+        context.flags = transient.renderFlags
+    end
+
+    return transient
+end
+
+function Tooltip:ResetTooltipRenderFlags(tooltip)
+    local transient = GetTooltipTransientState(tooltip)
+    if not transient then
+        return nil
+    end
+
+    wipe(transient.renderFlags)
+    return transient.renderFlags
+end
+
+function Tooltip:MarkTooltipPostCallRender(tooltip)
+    local transient = GetTooltipTransientState(tooltip)
+    if not transient then
+        return false
+    end
+
+    transient.skipNextOnShow = true
+    return true
+end
+
+function Tooltip:ConsumeTooltipPostCallRender(tooltip)
+    local transient = GetTooltipTransientState(tooltip)
+    if not transient or transient.skipNextOnShow ~= true then
+        return false
+    end
+
+    transient.skipNextOnShow = nil
+    return true
+end
+
+function Tooltip:HasTooltipRenderFlag(tooltip, key)
+    if type(key) ~= "string" or key == "" then
+        return false
+    end
+
+    local transient = GetTooltipTransientState(tooltip)
+    local flags = transient and transient.renderFlags
+    return type(flags) == "table" and flags[key] == true
+end
+
+function Tooltip:SetTooltipRenderFlag(tooltip, key)
+    if type(key) ~= "string" or key == "" then
+        return false
+    end
+
+    local transient = GetTooltipTransientState(tooltip)
+    local flags = transient and transient.renderFlags
+    if type(flags) ~= "table" then
+        return false
+    end
+
+    flags[key] = true
+    return true
+end
+
+function Tooltip:GetItemHandlerContext(tooltip, data)
+    local transient = GetTooltipTransientState(tooltip)
+    if not transient then
+        return nil
+    end
+
+    local context = transient.itemHandlerContext
+    context.tooltip = tooltip
+    context.data = data
+    context.flags = transient.renderFlags
+    return context
 end
 
 function Tooltip:GetTooltipNameSafe(tooltip)
@@ -526,27 +708,12 @@ function Tooltip:IsEmbeddedTooltipFrame(tooltip)
     return false
 end
 
-function Tooltip:GetTooltipDiscoverDebounceKey()
-    return TOOLTIP_DISCOVER_DEBOUNCE_KEY
-end
-
 function Tooltip:GetTooltipBorderParams()
     return TOOLTIP_BORDER_INSET, TOOLTIP_BORDER_EDGE_SIZE
 end
 
 function Tooltip:GetTooltipComparisonGap()
-    local visualGap = TOOLTIP_COMPARISON_GAP
-    local borderInset = TOOLTIP_BORDER_INSET
-
-    if type(self.GetTooltipBorderParams) == "function" then
-        local inset = select(1, self:GetTooltipBorderParams())
-        inset = ReadSafeNumber(inset)
-        if inset and inset >= 0 then
-            borderInset = inset
-        end
-    end
-
-    return visualGap + (borderInset * 2)
+    return TOOLTIP_COMPARISON_GAP
 end
 
 function Tooltip:GetTooltipComparisonHookKey()
@@ -624,8 +791,9 @@ function Tooltip:DispatchItemHandlers(tooltip, data)
         return
     end
 
+    local context = self:GetItemHandlerContext(tooltip, data)
     for handlerName, handler in pairs(Tooltip.ItemHandlers) do
-        local ok, err = pcall(handler, tooltip, data)
+        local ok, err = pcall(handler, tooltip, data, context)
         if not ok then
             Tooltip:Error("Item handler '" .. tostring(handlerName) .. "' failed: " .. tostring(err))
         end
@@ -745,8 +913,23 @@ function Tooltip:GetItemQualityFromLink(itemLink)
         return nil
     end
 
+    local qualityByLink = Private.itemQualityByLink or {}
+    Private.itemQualityByLink = qualityByLink
+
+    local cachedQuality = qualityByLink[itemLink]
+    if cachedQuality then
+        return cachedQuality
+    end
+
+    local itemID = GetItemIDFromLink(itemLink)
     local _, _, quality = GetItemInfo(itemLink)
-    return NormalizeItemQuality(quality)
+    quality = CacheItemQuality(itemLink, itemID, quality)
+    if quality then
+        return quality
+    end
+
+    RequestItemDataByIDOnce(itemID)
+    return nil
 end
 
 function Tooltip:GetItemQualityFromID(itemID)
@@ -755,12 +938,22 @@ function Tooltip:GetItemQualityFromID(itemID)
         return nil
     end
 
-    local _, _, quality = GetItemInfo(itemID)
-    if not quality and C_Item and type(C_Item.RequestLoadItemDataByID) == "function" then
-        C_Item.RequestLoadItemDataByID(itemID)
+    local qualityByID = Private.itemQualityByID or {}
+    Private.itemQualityByID = qualityByID
+
+    local cachedQuality = qualityByID[itemID]
+    if cachedQuality then
+        return cachedQuality
     end
 
-    return NormalizeItemQuality(quality)
+    local _, itemLink, quality = GetItemInfo(itemID)
+    quality = CacheItemQuality(itemLink, itemID, quality)
+    if quality then
+        return quality
+    end
+
+    RequestItemDataByIDOnce(itemID)
+    return nil
 end
 
 function Tooltip:ResolveBorderColorComponents(colorTable)

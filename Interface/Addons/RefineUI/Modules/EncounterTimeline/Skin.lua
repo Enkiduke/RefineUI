@@ -424,7 +424,7 @@ local function HasProbeTextureResult(texture, requireVisibleAlpha)
 
     if type(texture.GetAtlas) == "function" then
         local okAtlas, atlas = pcall(texture.GetAtlas, texture)
-        if okAtlas and type(atlas) == "string" and atlas ~= "" and not IsUnreadableValue(atlas) then
+        if okAtlas and not IsUnreadableValue(atlas) and type(atlas) == "string" and atlas ~= "" then
             return true
         end
     end

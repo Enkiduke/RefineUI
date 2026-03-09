@@ -82,6 +82,7 @@ local ORIENTATION = {
 
 local CATEGORY_KEYS = {
     CONTAINERS = "containers",
+    DECOR = "decor",
     MOUNTS = "mounts",
     BATTLE_PETS = "battle_pets",
     COMPANION_PETS = "companion_pets",
@@ -95,6 +96,7 @@ local CATEGORY_KEYS = {
 
 local FIXED_CATEGORY_DEFINITIONS = {
     { key = CATEGORY_KEYS.CONTAINERS, label = "Openable Containers", defaultEnabled = true },
+    { key = CATEGORY_KEYS.DECOR, label = "Decor", defaultEnabled = true },
     { key = CATEGORY_KEYS.MOUNTS, label = "Mounts (Uncollected)", defaultEnabled = true },
     { key = CATEGORY_KEYS.BATTLE_PETS, label = "Battle Pets", defaultEnabled = true },
     { key = CATEGORY_KEYS.COMPANION_PETS, label = "Companion Pets", defaultEnabled = true },
@@ -106,13 +108,15 @@ local FIXED_CATEGORY_DEFINITIONS = {
     { key = CATEGORY_KEYS.QUEST_STARTERS, label = "Quest Starters", defaultEnabled = true },
 }
 
-local CATEGORY_SCHEMA_VERSION = 3
+local CATEGORY_SCHEMA_VERSION = 4
 
 local ITEM_CLASS_RECIPE = (Enum and Enum.ItemClass and Enum.ItemClass.Recipe) or 9
 local ITEM_CLASS_MISCELLANEOUS = (Enum and Enum.ItemClass and Enum.ItemClass.Miscellaneous) or 15
 local ITEM_CLASS_BATTLEPET = (Enum and Enum.ItemClass and Enum.ItemClass.Battlepet) or 17
+local ITEM_CLASS_HOUSING = (Enum and Enum.ItemClass and Enum.ItemClass.Housing) or 20
 local ITEM_MISC_SUBCLASS_COMPANION_PET = (Enum and Enum.ItemMiscellaneousSubclass and Enum.ItemMiscellaneousSubclass.CompanionPet) or 2
 local ITEM_MISC_SUBCLASS_MOUNT = (Enum and Enum.ItemMiscellaneousSubclass and Enum.ItemMiscellaneousSubclass.Mount) or 5
+local ITEM_HOUSING_SUBCLASS_DECOR = (Enum and Enum.ItemHousingSubclass and Enum.ItemHousingSubclass.Decor) or 0
 
 local DEFAULTS = {
     Enable = true,
@@ -575,6 +579,22 @@ function AutoOpenBar:IsTradeskillRecipeItem(itemID)
     return classID == ITEM_CLASS_RECIPE
 end
 
+function AutoOpenBar:IsDecorItem(itemID)
+    if not itemID then
+        return false
+    end
+
+    if C_Item and type(C_Item.IsDecorItem) == "function" then
+        local ok, isDecor = pcall(C_Item.IsDecorItem, itemID)
+        if ok and isDecor then
+            return true
+        end
+    end
+
+    local classID, subClassID = self:GetItemClassAndSubclass(itemID)
+    return classID == ITEM_CLASS_HOUSING and subClassID == ITEM_HOUSING_SUBCLASS_DECOR
+end
+
 function AutoOpenBar:GetItemClassAndSubclass(itemID)
     if not itemID or not C_Item or type(C_Item.GetItemInfoInstant) ~= "function" then
         return nil, nil
@@ -727,6 +747,10 @@ function AutoOpenBar:GetItemCategoryKey(bag, slot, info)
     local flags, isAlreadyKnown = self:EvaluateTooltipFlags(bag, slot)
     if isAlreadyKnown then
         return nil
+    end
+
+    if self:IsDecorItem(itemID) then
+        return CATEGORY_KEYS.DECOR
     end
 
     local isPetItem, isPetCollected = self:GetPetOwnershipByItem(itemID)

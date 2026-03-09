@@ -57,7 +57,7 @@ function RadBar:BuildRing(ringName)
         RefineUI.Point(btn, "CENTER", self.Content, "CENTER", 0, 0)
         RefineUI.SetTemplate(btn, "Icon")
         RefineUI.CreateBorder(btn, 6, 6, 14) -- Tighter border
-        local glow = RefineUI.CreateGlow(btn, 10)
+        local glow = RefineUI.CreateGlow(btn, 4)
         glow:CreatePulse(0.3, 1, 0.6)
         btn.Icon = btn:CreateTexture(nil, "ARTWORK")
         btn.Icon:SetAllPoints()
@@ -103,7 +103,7 @@ function RadBar:BuildRing(ringName)
             RefineUI.Size(btn, 40, 40) -- Compact slices
             RefineUI.SetTemplate(btn, "Icon")
             RefineUI.CreateBorder(btn, 6, 6, 12) -- Tighter border
-            local glow = RefineUI.CreateGlow(btn, 10)
+            local glow = RefineUI.CreateGlow(btn, 4)
             glow:CreatePulse(0.3, 1, 0.6)
             btn.Icon = btn:CreateTexture(nil, "ARTWORK")
             btn.Icon:SetAllPoints()

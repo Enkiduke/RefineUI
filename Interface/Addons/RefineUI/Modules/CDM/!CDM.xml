@@ -3,15 +3,15 @@
     <Script file="Config.lua"/>
     <Script file="State.lua"/>
     <Script file="AssignmentsData.lua"/>
-    <Script file="AssignmentsSync.lua"/>
-    <Script file="AuraProbeRegistry.lua"/>
+    <Script file="CooldownCatalog.lua"/>
     <Script file="AuraProbePayload.lua"/>
+    <Script file="RuntimeResolver.lua"/>
+    <Script file="AuraProbeRegistry.lua"/>
     <Script file="TrackersLayout.lua"/>
     <Script file="TrackersRender.lua"/>
     <Script file="SettingsDragDrop.lua"/>
     <Script file="SettingsUI.lua"/>
     <Script file="VisualsStyles.lua"/>
-    <Script file="VisualsApply.lua"/>
     <Script file="VisualsMenu.lua"/>
     <Script file="Lifecycle.lua"/>
 </Ui>

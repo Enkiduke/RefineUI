@@ -26,12 +26,14 @@ local tonumber = tonumber
 local floor = math.floor
 local pcall = pcall
 local wipe = _G.wipe or table.wipe
+local next = next
 
 local CreateFrame = CreateFrame
 local UIParent = UIParent
 local CooldownFrame_Clear = CooldownFrame_Clear
 local CooldownFrame_Set = CooldownFrame_Set
 local C_Spell = C_Spell
+local GetTime = GetTime
 local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
@@ -208,121 +210,81 @@ local function BuildRenderPrimitive(value, defaultToken)
 end
 
 
-local function BuildEntryRenderSignature(entry)
+local function BuildEntryContentToken(entry)
     if type(entry) ~= "table" then
-        return "0", true
+        return "0"
     end
 
     local parts = {}
-    local cacheable = true
 
     local cooldownID = entry.cooldownID
     if type(cooldownID) == "number" then
         parts[#parts + 1] = tostring(cooldownID)
     else
         parts[#parts + 1] = "0"
-        cacheable = false
     end
 
     local iconToken, iconOk = BuildRenderPrimitive(entry.icon, "icon_nil")
     if iconOk then
         parts[#parts + 1] = "icon:" .. iconToken
-    else
-        cacheable = false
     end
 
     local auraUnitToken, auraUnitOk = BuildRenderPrimitive(entry.auraUnit, "aura_unit_nil")
     if auraUnitOk then
         parts[#parts + 1] = "aura_unit:" .. auraUnitToken
-    else
-        cacheable = false
     end
 
     local auraInstanceToken, auraInstanceOk = BuildRenderPrimitive(entry.auraInstanceID, "aura_instance_nil")
     if auraInstanceOk then
         parts[#parts + 1] = "aura_instance:" .. auraInstanceToken
-    else
-        cacheable = false
     end
 
     local activeStateToken, activeStateOk = BuildRenderPrimitive(entry.activeStateToken, "active_state_nil")
     if activeStateOk then
         parts[#parts + 1] = "active_state:" .. activeStateToken
-    else
-        cacheable = false
     end
 
     local hasDurationObject = HasValue(entry.duration)
     parts[#parts + 1] = hasDurationObject and "dur_obj:1" or "dur_obj:0"
-    if hasDurationObject then
-        -- DurationObjects can be replaced while aura identifiers stay stable
-        -- (for example, stacked/extended buffs). Keep render uncached so the
-        -- cooldown widget always receives the newest duration source.
-        cacheable = false
-    end
 
     local startToken, startOk = BuildRenderPrimitive(entry.cooldownStartTime, "start_nil")
     if startOk then
         parts[#parts + 1] = "start:" .. startToken
-    else
-        cacheable = false
     end
 
     local durationToken, durationOk = BuildRenderPrimitive(entry.cooldownDuration, "dur_nil")
     if durationOk then
         parts[#parts + 1] = "dur:" .. durationToken
-    else
-        cacheable = false
     end
 
     local modRateToken, modRateOk = BuildRenderPrimitive(entry.cooldownModRate, "mod_nil")
     if modRateOk then
         parts[#parts + 1] = "mod:" .. modRateToken
-    else
-        cacheable = false
     end
 
     local borderToken, borderOk = BuildRenderPrimitive(entry.borderColorToken, "border_nil")
     if borderOk then
         parts[#parts + 1] = "border:" .. borderToken
-    else
-        cacheable = false
     end
 
     local fontToken, fontOk = BuildRenderPrimitive(entry.fontColorToken, "font_nil")
     if fontOk then
         parts[#parts + 1] = "font:" .. fontToken
-    else
-        cacheable = false
     end
 
-    return table.concat(parts, ";"), cacheable
+    return table.concat(parts, ";")
 end
 
 
-local function BuildBucketRenderSignature(activeEntries, iconScale, spacing, orientation, direction, inEditMode)
-    local parts = {
+local function BuildBucketLayoutToken(count, iconScale, spacing, orientation, direction, inEditMode)
+    return table.concat({
         "scale:" .. tostring(iconScale),
         "spacing:" .. tostring(spacing),
         "orientation:" .. tostring(orientation),
         "direction:" .. tostring(direction),
         "edit:" .. (inEditMode and "1" or "0"),
-        "count:" .. tostring(#activeEntries),
-    }
-
-    local cacheable = true
-    for i = 1, #activeEntries do
-        local entrySignature, entryCacheable = BuildEntryRenderSignature(activeEntries[i])
-        parts[#parts + 1] = entrySignature
-        if not entryCacheable then
-            cacheable = false
-        end
-    end
-
-    if not cacheable then
-        return nil
-    end
-    return table.concat(parts, "|")
+        "count:" .. tostring(count),
+    }, "|")
 end
 
 
@@ -376,6 +338,7 @@ end
 -- Public Methods
 ----------------------------------------------------------------------------------------
 function CDM:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orientation, direction)
+    local renderStartTime = GetTime()
     local inEditMode = self:IsEditModeActive()
     local count = #activeEntries
     local iconSize = DEFAULT_ICON_BASE_SIZE * iconScale
@@ -390,13 +353,21 @@ function CDM:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orien
         count = 1
     end
 
+    local bucketLayoutToken = BuildBucketLayoutToken(count, iconScale, spacing, orientation, direction, inEditMode)
+    local bucketLayoutChanged = self:StateGet(frame, "trackerBucketLayoutToken") ~= bucketLayoutToken
+
     if count == 0 then
         if frame.icons then
             for i = 1, #frame.icons do
                 frame.icons[i]:Hide()
+                self:StateClear(frame.icons[i], "trackerLayoutToken")
+                self:StateClear(frame.icons[i], "trackerContentToken")
             end
         end
         frame:Hide()
+        self:StateSet(frame, "trackerBucketLayoutToken", bucketLayoutToken)
+        self:RecordPerfSample("cdm_tracker_render", GetTime() - renderStartTime)
+        self:IncrementPerfCounter("cdm_tracker_render")
         return
     end
 
@@ -404,11 +375,16 @@ function CDM:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orien
         local entry = activeEntries[i]
         local icon = self:EnsureTrackerIcon(frame, i)
         ApplyTrackerCooldownSkin(icon)
-        icon:Size(DEFAULT_ICON_BASE_SIZE, DEFAULT_ICON_BASE_SIZE)
-        icon:SetScale(iconScale)
-        local xOffset, yOffset = ComputeIconOffset(i, count, iconSize, spacing, orientation, direction)
-        icon:ClearAllPoints()
-        SetScaledPoint(icon, "CENTER", frame, "CENTER", xOffset, yOffset)
+        local iconLayoutToken = bucketLayoutToken .. ":index:" .. tostring(i)
+        local iconLayoutChanged = bucketLayoutChanged or self:StateGet(icon, "trackerLayoutToken") ~= iconLayoutToken
+        if iconLayoutChanged then
+            icon:Size(DEFAULT_ICON_BASE_SIZE, DEFAULT_ICON_BASE_SIZE)
+            icon:SetScale(iconScale)
+            local xOffset, yOffset = ComputeIconOffset(i, count, iconSize, spacing, orientation, direction)
+            icon:ClearAllPoints()
+            SetScaledPoint(icon, "CENTER", frame, "CENTER", xOffset, yOffset)
+            self:StateSet(icon, "trackerLayoutToken", iconLayoutToken)
+        end
 
         local texture = nil
         if entry then
@@ -417,11 +393,16 @@ function CDM:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orien
         if not HasValue(texture) then
             texture = 134400
         end
-        icon.Icon:SetTexture(texture)
+        local contentToken = BuildEntryContentToken(entry)
+        local previousContentToken = self:StateGet(icon, "trackerContentToken")
+        local contentChanged = previousContentToken ~= contentToken
+        if contentChanged then
+            icon.Icon:SetTexture(texture)
+        end
 
-        if self.ApplyTrackerIconVisual then
+        if contentChanged and self.ApplyTrackerIconVisual then
             self:ApplyTrackerIconVisual(icon, entry and entry.cooldownID)
-        elseif icon.border and icon.border.SetBackdropBorderColor then
+        elseif contentChanged and icon.border and icon.border.SetBackdropBorderColor then
             local border = self.GetDefaultBorderColor and self:GetDefaultBorderColor() or { 0.6, 0.6, 0.6, 1 }
             icon.border:SetBackdropBorderColor(border[1], border[2], border[3], border[4] or 1)
         end
@@ -430,16 +411,23 @@ function CDM:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orien
         local hasCooldownWindow = entry and HasValue(entry.cooldownStartTime) and HasValue(entry.cooldownDuration)
         local appliedCooldown = false
 
-        if icon.Cooldown and type(icon.Cooldown.SetUseAuraDisplayTime) == "function" then
+        if (contentChanged or hasDurationObject or hasCooldownWindow)
+            and icon.Cooldown
+            and type(icon.Cooldown.SetUseAuraDisplayTime) == "function"
+        then
             pcall(icon.Cooldown.SetUseAuraDisplayTime, icon.Cooldown, (hasDurationObject or hasCooldownWindow) and true or false)
         end
 
-        if hasDurationObject and icon.Cooldown and icon.Cooldown.SetCooldownFromDurationObject then
+        if (contentChanged or hasDurationObject)
+            and hasDurationObject
+            and icon.Cooldown
+            and icon.Cooldown.SetCooldownFromDurationObject
+        then
             local ok = pcall(icon.Cooldown.SetCooldownFromDurationObject, icon.Cooldown, entry.duration)
             appliedCooldown = ok and true or false
         end
 
-        if not appliedCooldown and hasCooldownWindow and icon.Cooldown then
+        if not appliedCooldown and (contentChanged or hasCooldownWindow) and hasCooldownWindow and icon.Cooldown then
             local startTime = entry.cooldownStartTime
             local duration = entry.cooldownDuration
             local modRate = ResolveCooldownModRate(entry.cooldownModRate)
@@ -488,31 +476,40 @@ function CDM:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orien
             and CooldownFrame_Clear
             and not hasDurationObject
             and not hasCooldownWindow
+            and contentChanged
         then
             CooldownFrame_Clear(icon.Cooldown)
         end
 
-        if self.ApplyTrackerCooldownTextVisual and icon.Cooldown then
+        if contentChanged and self.ApplyTrackerCooldownTextVisual and icon.Cooldown then
             self:ApplyTrackerCooldownTextVisual(icon.Cooldown, entry and entry.cooldownID)
         end
 
+        self:StateSet(icon, "trackerContentToken", contentToken)
         icon:Show()
     end
 
     for i = count + 1, #(frame.icons or {}) do
         frame.icons[i]:Hide()
+        self:StateClear(frame.icons[i], "trackerLayoutToken")
+        self:StateClear(frame.icons[i], "trackerContentToken")
     end
 
     local totalSpan = (iconSize * count) + (spacing * (count - 1))
     if totalSpan < iconSize then
         totalSpan = iconSize
     end
-    if orientation == ORIENTATION_VERTICAL then
-        frame:Size(iconSize, totalSpan)
-    else
-        frame:Size(totalSpan, iconSize)
+    if bucketLayoutChanged then
+        if orientation == ORIENTATION_VERTICAL then
+            frame:Size(iconSize, totalSpan)
+        else
+            frame:Size(totalSpan, iconSize)
+        end
+        self:StateSet(frame, "trackerBucketLayoutToken", bucketLayoutToken)
     end
     frame:Show()
+    self:RecordPerfSample("cdm_tracker_render", GetTime() - renderStartTime)
+    self:IncrementPerfCounter("cdm_tracker_render")
 end
 
 
@@ -566,6 +563,7 @@ function CDM:HideTrackers()
             frame:Hide()
             self:StateClear(frame, "renderSignature")
             self:StateClear(frame, "renderEntryCount")
+            self:StateClear(frame, "trackerBucketLayoutToken")
         end
     end
 end
@@ -580,7 +578,7 @@ function CDM:InitializeTrackers()
 end
 
 
-function CDM:RefreshTrackers()
+function CDM:RefreshTrackers(dirtyCooldownIDSet)
     local inEditMode = self:IsEditModeActive()
     if inEditMode and not self:IsRefineAuraModeActive() then
         self:HideTrackers()
@@ -596,57 +594,94 @@ function CDM:RefreshTrackers()
         return
     end
 
-    local activeMap = self:GetActiveAuraMap(allAssignedIDs)
+    local dirtyBuckets = nil
+    local requestedCooldownIDs = allAssignedIDs
+    if not inEditMode and type(dirtyCooldownIDSet) == "table" and next(dirtyCooldownIDSet) ~= nil then
+        dirtyBuckets = {}
+        requestedCooldownIDs = {}
+        local requestedSeen = {}
+        local cooldownBuckets = assignedSnapshot and assignedSnapshot.cooldownBuckets or nil
+        local bucketCooldownIDs = assignedSnapshot and assignedSnapshot.bucketCooldownIDs or nil
+        if type(cooldownBuckets) == "table" then
+            for cooldownID in pairs(dirtyCooldownIDSet) do
+                local bucketList = cooldownBuckets[cooldownID]
+                if type(bucketList) == "table" then
+                    for bucketIndex = 1, #bucketList do
+                        dirtyBuckets[bucketList[bucketIndex]] = true
+                    end
+                end
+            end
+        end
+
+        if next(dirtyBuckets) ~= nil and type(bucketCooldownIDs) == "table" then
+            for bucket in pairs(dirtyBuckets) do
+                local bucketIDs = bucketCooldownIDs[bucket]
+                if type(bucketIDs) == "table" then
+                    for bucketIndex = 1, #bucketIDs do
+                        local cooldownID = bucketIDs[bucketIndex]
+                        if type(cooldownID) == "number" and cooldownID > 0 and not requestedSeen[cooldownID] then
+                            requestedSeen[cooldownID] = true
+                            requestedCooldownIDs[#requestedCooldownIDs + 1] = cooldownID
+                        end
+                    end
+                end
+            end
+        else
+            requestedCooldownIDs = allAssignedIDs
+            dirtyBuckets = nil
+        end
+    end
+
+    local activeMap = self:GetActiveAuraMap(requestedCooldownIDs)
     for i = 1, #self.TRACKER_BUCKETS do
         local bucket = self.TRACKER_BUCKETS[i]
         local frame = self:EnsureTrackerFrame(bucket)
-        local iconScale, spacing, orientation, direction = self:GetTrackerVisualSettings(bucket)
-        local activeEntries = self.scratchBucketEntries[bucket]
-        if not activeEntries then
-            activeEntries = {}
-            self.scratchBucketEntries[bucket] = activeEntries
-        elseif wipe then
-            wipe(activeEntries)
-        else
-            for n = #activeEntries, 1, -1 do
-                activeEntries[n] = nil
-            end
-        end
-
-        local ids = assignments[bucket]
-        for n = 1, #ids do
-            local cooldownID = ids[n]
-            local payload = activeMap[cooldownID]
-            if payload then
-                if self.GetCooldownBorderColorToken then
-                    payload.borderColorToken = self:GetCooldownBorderColorToken(cooldownID)
+        if not dirtyBuckets or dirtyBuckets[bucket] then
+            local iconScale, spacing, orientation, direction = self:GetTrackerVisualSettings(bucket)
+            local activeEntries = self.scratchBucketEntries[bucket]
+            if not activeEntries then
+                activeEntries = {}
+                self.scratchBucketEntries[bucket] = activeEntries
+            elseif wipe then
+                wipe(activeEntries)
+            else
+                for n = #activeEntries, 1, -1 do
+                    activeEntries[n] = nil
                 end
-                if self.GetCooldownFontColorToken then
-                    payload.fontColorToken = self:GetCooldownFontColorToken(cooldownID)
-                end
-                activeEntries[#activeEntries + 1] = payload
-            elseif inEditMode then
-                activeEntries[#activeEntries + 1] = self:BuildAssignedTrackerEntry(cooldownID)
             end
-        end
 
-        local signature = BuildBucketRenderSignature(activeEntries, iconScale, spacing, orientation, direction, inEditMode)
-        local previousSignature = self:StateGet(frame, "renderSignature")
-        local previousCount = self:StateGet(frame, "renderEntryCount")
+            local ids = assignments[bucket]
+            for n = 1, #ids do
+                local cooldownID = ids[n]
+                local payload = activeMap[cooldownID]
+                if payload then
+                    if self.GetCooldownBorderColorToken then
+                        payload.borderColorToken = self:GetCooldownBorderColorToken(cooldownID)
+                    end
+                    if self.GetCooldownFontColorToken then
+                        payload.fontColorToken = self:GetCooldownFontColorToken(cooldownID)
+                    end
+                    activeEntries[#activeEntries + 1] = payload
+                elseif inEditMode then
+                    activeEntries[#activeEntries + 1] = self:BuildAssignedTrackerEntry(cooldownID)
+                end
+            end
 
-        local forceRender = false
-        if frame:IsShown() and #activeEntries == 0 and not inEditMode then
-            forceRender = true
-        elseif (not frame:IsShown()) and (#activeEntries > 0 or inEditMode) then
-            forceRender = true
-        elseif previousCount ~= #activeEntries then
-            forceRender = true
-        end
+            local previousCount = self:StateGet(frame, "renderEntryCount")
 
-        if forceRender or not signature or signature ~= previousSignature then
-            self:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orientation, direction)
-            self:StateSet(frame, "renderSignature", signature)
-            self:StateSet(frame, "renderEntryCount", #activeEntries)
+            local forceRender = false
+            if frame:IsShown() and #activeEntries == 0 and not inEditMode then
+                forceRender = true
+            elseif (not frame:IsShown()) and (#activeEntries > 0 or inEditMode) then
+                forceRender = true
+            elseif previousCount ~= #activeEntries then
+                forceRender = true
+            end
+
+            if forceRender or dirtyBuckets == nil or dirtyBuckets[bucket] then
+                self:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orientation, direction)
+                self:StateSet(frame, "renderEntryCount", #activeEntries)
+            end
         end
     end
 end

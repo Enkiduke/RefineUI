@@ -1,20 +1,23 @@
--- Nameplate Crowd Control Bar for RefineUI
+-- Nameplates Component: CrowdControl
 -- Description: CC duration bar driven by Blizzard nameplate crowd-control categorization.
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local C = RefineUI.Config
+local Nameplates = RefineUI:GetModule("Nameplates")
+if not Nameplates then
+    return
+end
+local Config = RefineUI.Config
 
 ----------------------------------------------------------------------------------------
 -- Lib Globals
 ----------------------------------------------------------------------------------------
 local _G = _G
 local pairs = pairs
-local ipairs = ipairs
 local next = next
 local type = type
+local format = string.format
 local GetTime = GetTime
-local math_min = math.min
 local math_max = math.max
 local math_abs = math.abs
 local setmetatable = setmetatable
@@ -26,7 +29,6 @@ local CreateFrame = CreateFrame
 local UnitCastingInfo = UnitCastingInfo
 local UnitChannelInfo = UnitChannelInfo
 local C_UnitAuras = C_UnitAuras
-local C_Spell = C_Spell
 local Enum = Enum
 
 ----------------------------------------------------------------------------------------
@@ -36,10 +38,8 @@ local NAMEPLATE_CC_STATE_REGISTRY = "NameplateCrowdControlState"
 local CrowdControlState = RefineUI:CreateDataRegistry(NAMEPLATE_CC_STATE_REGISTRY, "k")
 local NAMEPLATE_CC_AURAFRAME_STATE_REGISTRY = "NameplateCrowdControlAuraFrameState"
 local CrowdControlAuraFrameState = RefineUI:CreateDataRegistry(NAMEPLATE_CC_AURAFRAME_STATE_REGISTRY, "k")
-local NAMEPLATE_CC_HARMFUL_FILTER = "HARMFUL|INCLUDE_NAME_PLATE_ONLY"
 local NAMEPLATE_CC_TIMER_JOB_KEY = "Nameplates:CrowdControlTimerUpdater"
 local NAMEPLATE_CC_TIMER_INTERVAL = 0.05
-local NAMEPLATE_CC_DEFERRED_REFRESH_DELAY = 0.05
 local ActiveTimerStates = setmetatable({}, { __mode = "k" })
 local ccTimerSchedulerInitialized = false
 local SetCrowdControlTimerActive
@@ -75,7 +75,7 @@ local function GetAuraFrameState(aurasFrame)
 end
 
 local function GetCrowdControlConfig()
-    local nameplates = C and C.Nameplates
+    local nameplates = Config and Config.Nameplates
     if type(nameplates) ~= "table" then
         return nil
     end
@@ -311,7 +311,7 @@ local function LayoutBar(unitFrame, state)
         return
     end
 
-    local castConfig = C.Nameplates and C.Nameplates.CastBar or {}
+    local castConfig = Config.Nameplates and Config.Nameplates.CastBar or {}
     local castHeight = castConfig.Height or 20
     local hpHeight = unitFrame.HealthBarsContainer and unitFrame.HealthBarsContainer:GetHeight()
     local safeHeight = 12
@@ -324,12 +324,20 @@ local function LayoutBar(unitFrame, state)
     RefineUI.Point(state.bar, "TOPRIGHT", unitFrame, "TOPRIGHT", -12, -(safeHeight - 4))
     state.bar:SetHeight(RefineUI:Scale(castHeight))
 
+    if state.timer then
+        state.timer:ClearAllPoints()
+        RefineUI.Point(state.timer, "BOTTOMRIGHT", state.bar, "BOTTOMRIGHT", -2, 0)
+    end
+
     local castBar = unitFrame.castBar or unitFrame.CastBar
     local castLevel = castBar and castBar:GetFrameLevel()
     if castLevel and castLevel > 0 then
         state.bar:SetFrameLevel(castLevel)
         if state.bar.border then
             state.bar.border:SetFrameLevel(castLevel + 1)
+        end
+        if state.timer then
+            state.timer:SetDrawLayer("OVERLAY", 7)
         end
         return
     end
@@ -339,6 +347,9 @@ local function LayoutBar(unitFrame, state)
     state.bar:SetFrameLevel(barLevel)
     if state.bar.border then
         state.bar.border:SetFrameLevel(barLevel + 1)
+    end
+    if state.timer then
+        state.timer:SetDrawLayer("OVERLAY", 7)
     end
 end
 
@@ -364,10 +375,11 @@ local function EnsureBar(unitFrame)
     local text = bar:CreateFontString(nil, "OVERLAY")
     RefineUI.Font(text, 10, nil, "OUTLINE")
     RefineUI.Point(text, "BOTTOMLEFT", bar, "BOTTOMLEFT", 4, 0)
+    text:SetDrawLayer("OVERLAY", 6)
 
     local timer = bar:CreateFontString(nil, "OVERLAY")
-    RefineUI.Font(timer, 10, nil, "OUTLINE")
-    RefineUI.Point(timer, "BOTTOMRIGHT", bar, "BOTTOMRIGHT", -4, 0)
+    RefineUI.Font(timer, 12, nil, "OUTLINE")
+    timer:SetDrawLayer("OVERLAY", 7)
     timer:Hide()
 
     state.bar = bar
@@ -379,44 +391,9 @@ end
 
 local function IsCastActive(unitFrame, unit)
     local castBar = unitFrame and (unitFrame.castBar or unitFrame.CastBar)
-    if castBar and castBar:IsShown() then
-        if ReadSafeBoolean(castBar.casting) == true then return true end
-        if ReadSafeBoolean(castBar.channeling) == true then return true end
-        if ReadSafeBoolean(castBar.reverseChanneling) == true then return true end
-
-        local barType = castBar.barType
-        if IsAccessibleValue(barType) and type(barType) == "string" then
-            if barType == "standard" or barType == "channel" or barType == "uninterruptable" or barType == "uninterruptible" then
-                return true
-            end
-        end
-    end
-
-    if IsUsableUnitToken(unit) then
-        local castName = UnitCastingInfo(unit)
-        if HasValue(castName) then
-            return true
-        end
-
-        castName = UnitChannelInfo(unit)
-        if HasValue(castName) then
-            return true
-        end
-    end
-
-    return false
-end
-
-local function SafeIsSpellCrowdControl(spellIdentifier)
-    if not C_Spell or type(C_Spell.IsSpellCrowdControl) ~= "function" then
-        return false
-    end
-
-    local ok, result = pcall(C_Spell.IsSpellCrowdControl, spellIdentifier)
-    if not ok then
-        return false
-    end
-    return ReadSafeBoolean(result) == true
+    -- Use bar-only check (no UnitCastingInfo fallback) to avoid false positives
+    -- from stale/secret unit API data during interrupt transitions.
+    return NameplatesUtil.IsCastBarActive(castBar)
 end
 
 local function GetAuraFromCrowdControlList(unitFrame)
@@ -436,76 +413,7 @@ local function GetAuraFromCrowdControlList(unitFrame)
     return nil
 end
 
-local function GetAuraFromApiScan(unit)
-    if not C_UnitAuras or type(C_UnitAuras.GetUnitAuras) ~= "function" then
-        return nil
-    end
-
-    local sortRule = Enum and Enum.UnitAuraSortRule and Enum.UnitAuraSortRule.ExpirationOnly
-    local sortDirection = Enum and Enum.UnitAuraSortDirection and Enum.UnitAuraSortDirection.Reverse
-
-    local ok, auras
-    if sortRule and sortDirection then
-        ok, auras = pcall(C_UnitAuras.GetUnitAuras, unit, NAMEPLATE_CC_HARMFUL_FILTER, nil, sortRule, sortDirection)
-    else
-        ok, auras = pcall(C_UnitAuras.GetUnitAuras, unit, NAMEPLATE_CC_HARMFUL_FILTER)
-    end
-
-    if not ok or type(auras) ~= "table" then
-        return nil
-    end
-
-    local now = GetTime()
-    local bestAura = nil
-    local bestRemaining = nil
-
-    local function GetRemainingDuration(aura)
-        if type(aura) ~= "table" then
-            return nil
-        end
-
-        local expirationTime = ReadAccessibleValue(aura.expirationTime, nil)
-        if type(expirationTime) == "number" and expirationTime > 0 then
-            return math_max(0, expirationTime - now)
-        end
-
-        local duration = ReadAccessibleValue(aura.duration, nil)
-        if type(duration) == "number" and duration > 0 then
-            return duration
-        end
-
-        return nil
-    end
-
-    for _, aura in ipairs(auras) do
-        local spellId = aura and ReadAccessibleValue(aura.spellId, nil)
-        if HasValue(spellId) and SafeIsSpellCrowdControl(spellId) then
-            local remaining = GetRemainingDuration(aura)
-            if type(remaining) == "number" then
-                if not bestAura or bestRemaining == nil or remaining > bestRemaining then
-                    bestAura = aura
-                    bestRemaining = remaining
-                end
-            elseif not bestAura then
-                -- Keep a deterministic fallback if remaining data is unavailable.
-                bestAura = aura
-                bestRemaining = -1
-            end
-        end
-    end
-
-    if bestAura then
-        return bestAura, "api_scan_longest_remaining"
-    end
-
-    return nil
-end
-
-local function GetActiveCrowdControlAura(unitFrame, unit)
-    local aura, source = GetAuraFromApiScan(unit)
-    if aura then
-        return aura, source
-    end
+local function GetActiveCrowdControlAura(unitFrame)
     return GetAuraFromCrowdControlList(unitFrame)
 end
 
@@ -530,25 +438,6 @@ local function GetAuraDurationObject(unit, auraInstanceID)
     end
 
     return duration
-end
-
-local function IsAuraStillPresent(unit, auraInstanceID)
-    if not C_UnitAuras or type(C_UnitAuras.GetAuraDataByAuraInstanceID) ~= "function" then
-        return true
-    end
-    if not IsUsableUnitToken(unit) then
-        return true
-    end
-    if not HasValue(auraInstanceID) then
-        return true
-    end
-
-    local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, unit, auraInstanceID)
-    if not ok then
-        return true
-    end
-
-    return HasValue(auraData)
 end
 
 local function ApplyDurationToBar(state, duration)
@@ -580,6 +469,8 @@ local function ApplyDurationToBar(state, duration)
     return ok and true or false
 end
 
+local ApplyNumericFallbackState
+
 local function ApplyNumericFallback(state, aura)
     if not state or not state.bar or not aura then
         return false
@@ -589,100 +480,142 @@ local function ApplyNumericFallback(state, aura)
     local expirationTime = aura.expirationTime
 
     if IsAccessibleValue(duration) and IsAccessibleValue(expirationTime) and duration and expirationTime and duration > 0 then
-        local startTime = expirationTime - duration
-        local elapsed = GetTime() - startTime
-        local remaining = math_max(0, duration - elapsed)
-        state.bar:SetMinMaxValues(0, duration)
-        state.bar:SetValue(remaining)
+        state.numericDuration = duration
+        state.numericExpirationTime = expirationTime
+        return ApplyNumericFallbackState(state)
+    end
+
+    return false
+end
+
+local function ClearDurationText(state)
+    if not state or not state.timer then
+        return
+    end
+
+    RefineUI:SetFontStringValue(state.timer, nil, {
+        emptyText = "",
+    })
+    state.timer:Hide()
+end
+
+local function TryApplyDurationText(state, duration)
+    if not state or not state.timer or not duration then
+        return false
+    end
+
+    -- FontStrings don't have SetTimerDuration — use EvaluateRemainingDuration + SetFormattedText
+    if not duration.EvaluateRemainingDuration or not RefineUI.GetLinearCurve then
+        return false
+    end
+
+    local ok, remaining = pcall(duration.EvaluateRemainingDuration, duration, RefineUI.GetLinearCurve())
+    if not ok or not HasValue(remaining) then
+        return false
+    end
+
+    -- SetFormattedText is AllowedWhenTainted — safe even if remaining is secret
+    local fmtOk = pcall(state.timer.SetFormattedText, state.timer, "%.1f", remaining)
+    if fmtOk then
+        state.timer:Show()
         return true
     end
 
     return false
 end
 
-local function SetDurationText(state, duration)
+local function SetDurationText(state, duration, aura)
     if not state then return end
     state.duration = duration
+    state.numericDuration = nil
+    state.numericExpirationTime = nil
+    state.activeDuration = nil
 
     if not state.timer then return end
 
-    if not duration then
-        RefineUI:SetFontStringValue(state.timer, nil, {
-            emptyText = "",
-        })
-        state.timer:Hide()
-        return
+    if not duration or not aura then
+        ClearDurationText(state)
+        return false
     end
 
-    local remaining
-    if duration.EvaluateRemainingDuration and RefineUI.GetLinearCurve then
-        local ok, value = pcall(duration.EvaluateRemainingDuration, duration, RefineUI.GetLinearCurve())
-        if ok and HasValue(value) then
-            remaining = value
-        end
+    if TryApplyDurationText(state, duration) then
+        -- Store duration for continuous re-evaluation by the timer job
+        state.activeDuration = duration
+        return true
     end
 
-    if not HasValue(remaining) and duration.GetRemainingDuration then
-        local ok, value = pcall(duration.GetRemainingDuration, duration)
-        if ok and HasValue(value) then
-            remaining = value
-        end
-    end
-
-    if not HasValue(remaining) and duration.GetTotalDuration then
-        local ok, value = pcall(duration.GetTotalDuration, duration)
-        if ok and HasValue(value) then
-            remaining = value
-        end
-    end
-
-    if HasValue(remaining) then
-        state.timer:Show()
-        RefineUI:SetFontStringValue(state.timer, remaining, {
-            format = "%.1f",
-            duration = duration,
-            emptyText = "",
-        })
-        return
-    end
-
-    if state.timer.SetTimerDuration then
-        local ok = pcall(state.timer.SetTimerDuration, state.timer, duration)
-        if ok then
-            state.timer:Show()
-            return
-        end
-    end
-
-    RefineUI:SetFontStringValue(state.timer, nil, {
-        duration = duration,
-        emptyText = "",
-    })
-    state.timer:Hide()
+    ClearDurationText(state)
+    return false
 end
 
-local function IsCrowdControlTimerRelevant(state)
+ApplyNumericFallbackState = function(state)
     if not state or not state.bar then
         return false
     end
-    if not state.bar:IsShown() then
+
+    local numericDuration = state.numericDuration
+    local numericExpirationTime = state.numericExpirationTime
+    if type(numericDuration) ~= "number" or numericDuration <= 0 then
         return false
     end
-    if not state.timer or not state.duration then
+    if type(numericExpirationTime) ~= "number" or numericExpirationTime <= 0 then
         return false
     end
-    return true
+
+    local remaining = math_max(0, numericExpirationTime - GetTime())
+    state.bar:SetMinMaxValues(0, numericDuration)
+    state.bar:SetValue(remaining)
+    if state.timer then
+        RefineUI:SetFontStringValue(state.timer, remaining, {
+            format = "%.1f",
+            emptyText = "",
+        })
+        state.timer:Show()
+    end
+
+    return remaining > 0
+end
+
+local function IsCrowdControlTimerRelevant(state)
+    if not state or not state.bar or not state.bar:IsShown() then
+        return false
+    end
+
+    -- Relevant if we have a stored Duration object for text re-evaluation
+    if state.activeDuration and state.activeDuration.EvaluateRemainingDuration then
+        return true
+    end
+
+    return type(state.numericDuration) == "number" and type(state.numericExpirationTime) == "number"
 end
 
 local function CrowdControlTimerUpdateJob()
     local hasActive = false
 
     for state in pairs(ActiveTimerStates) do
-        if IsCrowdControlTimerRelevant(state) then
-            SetDurationText(state, state.duration)
+        if not IsCrowdControlTimerRelevant(state) then
+            ActiveTimerStates[state] = nil
+            if state then
+                state.numericDuration = nil
+                state.numericExpirationTime = nil
+                state.activeDuration = nil
+            end
+        elseif state.activeDuration and state.activeDuration.EvaluateRemainingDuration then
+            -- Duration-object path: re-evaluate remaining and update text
+            if TryApplyDurationText(state, state.activeDuration) then
+                hasActive = true
+            else
+                ActiveTimerStates[state] = nil
+                state.activeDuration = nil
+            end
+        elseif ApplyNumericFallbackState(state) then
             hasActive = true
         else
             ActiveTimerStates[state] = nil
+            if state then
+                state.numericDuration = nil
+                state.numericExpirationTime = nil
+            end
         end
     end
 
@@ -719,7 +652,7 @@ SetCrowdControlTimerActive = function(state, enabled)
         return
     end
 
-    if enabled then
+    if enabled and IsCrowdControlTimerRelevant(state) then
         ActiveTimerStates[state] = true
     else
         ActiveTimerStates[state] = nil
@@ -757,7 +690,7 @@ function RefineUI:ClearNameplateCrowdControl(unitFrame, suppressVisualRefresh)
         if SetCrowdControlTimerActive then
             SetCrowdControlTimerActive(state, false)
         end
-        SetDurationText(state, nil)
+        SetDurationText(state, nil, nil)
         if state.text then
             RefineUI:SetFontStringValue(state.text, nil, {
                 emptyText = "",
@@ -784,23 +717,7 @@ function RefineUI:ClearNameplateCrowdControl(unitFrame, suppressVisualRefresh)
     end
 end
 
-local function QueueDeferredCrowdControlRefresh(unitFrame, unit, event, suppressVisualRefresh)
-    if not unitFrame then
-        return
-    end
-    if not RefineUI.After then
-        return
-    end
-
-    local timerKey = BuildCrowdControlHookKey(unitFrame, "DeferredRefresh")
-    RefineUI:After(timerKey, NAMEPLATE_CC_DEFERRED_REFRESH_DELAY, function()
-        if RefineUI.UpdateNameplateCrowdControl then
-            RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVisualRefresh, true)
-        end
-    end)
-end
-
-function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVisualRefresh, isDeferred)
+function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVisualRefresh, _isDeferred)
     if not unitFrame then
         return
     end
@@ -824,11 +741,8 @@ function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVi
         return
     end
 
-    local aura, source = GetActiveCrowdControlAura(unitFrame, unit)
+    local aura, source = GetActiveCrowdControlAura(unitFrame)
     if not aura then
-        if not isDeferred and event == "UNIT_AURA" then
-            QueueDeferredCrowdControlRefresh(unitFrame, unit, event, suppressVisualRefresh)
-        end
         self:ClearNameplateCrowdControl(unitFrame, suppressVisualRefresh)
         return
     end
@@ -836,14 +750,6 @@ function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVi
     local hideWhileCasting = cfg.HideWhileCasting ~= false
     local suppressForCast = hideWhileCasting and IsCastActive(unitFrame, unit)
     local auraInstanceID = ReadAccessibleValue(aura.auraInstanceID, nil)
-
-    if auraInstanceID and not IsAuraStillPresent(unit, auraInstanceID) then
-        if not isDeferred and event == "UNIT_AURA" then
-            QueueDeferredCrowdControlRefresh(unitFrame, unit, event, suppressVisualRefresh)
-        end
-        self:ClearNameplateCrowdControl(unitFrame, suppressVisualRefresh)
-        return
-    end
 
     local duration = GetAuraDurationObject(unit, aura.auraInstanceID)
 
@@ -862,13 +768,13 @@ function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVi
     end
 
     if suppressForCast then
-        SetDurationText(state, nil)
+        SetDurationText(state, nil, nil)
         state.bar:Hide()
         if SetCrowdControlTimerActive then
             SetCrowdControlTimerActive(state, false)
         end
     else
-        SetDurationText(state, duration)
+        SetDurationText(state, duration, aura)
         local appliedDuration = ApplyDurationToBar(state, duration)
         local appliedNumeric = false
         if not appliedDuration then
@@ -876,10 +782,6 @@ function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVi
         end
 
         if not appliedDuration and not appliedNumeric then
-            if not isDeferred and event == "UNIT_AURA" then
-                QueueDeferredCrowdControlRefresh(unitFrame, unit, event, suppressVisualRefresh)
-            end
-            -- Unresolved timing can indicate stale/lagging aura data. Clear until revalidated.
             self:ClearNameplateCrowdControl(unitFrame, suppressVisualRefresh)
             return
         end
@@ -887,7 +789,7 @@ function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVi
         state.bar:Show()
 
         if SetCrowdControlTimerActive then
-            SetCrowdControlTimerActive(state, (appliedDuration or appliedNumeric) and duration ~= nil)
+            SetCrowdControlTimerActive(state, appliedDuration or appliedNumeric)
         end
     end
 
@@ -909,3 +811,4 @@ function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVi
         RefreshPortraitAndBorders(unitFrame, unit, event or "UNIT_AURA")
     end
 end
+

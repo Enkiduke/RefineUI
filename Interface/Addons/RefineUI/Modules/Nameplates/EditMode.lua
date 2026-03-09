@@ -5,7 +5,10 @@
 
 local _, RefineUI = ...
 local Nameplates = RefineUI:GetModule("Nameplates")
-local C = RefineUI.Config
+if not Nameplates then
+    return
+end
+local Config = RefineUI.Config
 
 ----------------------------------------------------------------------------------------
 -- Lib Globals
@@ -58,11 +61,11 @@ end
 
 local DEFAULT_CAST_COLORS = {
     Interruptible = ResolveDefaultColor(
-        C and C.Nameplates and C.Nameplates.CastBar and C.Nameplates.CastBar.Colors and C.Nameplates.CastBar.Colors.Interruptible,
+        Config and Config.Nameplates and Config.Nameplates.CastBar and Config.Nameplates.CastBar.Colors and Config.Nameplates.CastBar.Colors.Interruptible,
         { 1, 0.7, 0 }
     ),
     NonInterruptible = ResolveDefaultColor(
-        C and C.Nameplates and C.Nameplates.CastBar and C.Nameplates.CastBar.Colors and C.Nameplates.CastBar.Colors.NonInterruptible,
+        Config and Config.Nameplates and Config.Nameplates.CastBar and Config.Nameplates.CastBar.Colors and Config.Nameplates.CastBar.Colors.NonInterruptible,
         { 1, 0.2, 0.2 }
     ),
 }
@@ -225,75 +228,75 @@ local function SaveColorMixinToTable(target, color)
 end
 
 local function GetNameplatesConfig()
-    if not C.Nameplates then
-        C.Nameplates = {}
+    if not Config.Nameplates then
+        Config.Nameplates = {}
     end
-    if not C.Nameplates.CastBar then
-        C.Nameplates.CastBar = {}
+    if not Config.Nameplates.CastBar then
+        Config.Nameplates.CastBar = {}
     end
-    if not C.Nameplates.CastBar.Colors then
-        C.Nameplates.CastBar.Colors = {}
+    if not Config.Nameplates.CastBar.Colors then
+        Config.Nameplates.CastBar.Colors = {}
     end
-    if not C.Nameplates.Size then
-        C.Nameplates.Size = { DEFAULT_PLATE_SIZE[1], DEFAULT_PLATE_SIZE[2] }
+    if not Config.Nameplates.Size then
+        Config.Nameplates.Size = { DEFAULT_PLATE_SIZE[1], DEFAULT_PLATE_SIZE[2] }
     end
-    if not C.Nameplates.Threat then
-        C.Nameplates.Threat = {}
+    if not Config.Nameplates.Threat then
+        Config.Nameplates.Threat = {}
     end
-    if not C.Nameplates.CrowdControl then
-        C.Nameplates.CrowdControl = {}
+    if not Config.Nameplates.CrowdControl then
+        Config.Nameplates.CrowdControl = {}
     end
-    if C.Nameplates.ShowNPCTitles == nil then
-        C.Nameplates.ShowNPCTitles = true
+    if Config.Nameplates.ShowNPCTitles == nil then
+        Config.Nameplates.ShowNPCTitles = true
     end
-    if C.Nameplates.ShowPetNames == nil then
-        C.Nameplates.ShowPetNames = false
+    if Config.Nameplates.ShowPetNames == nil then
+        Config.Nameplates.ShowPetNames = false
     end
-    C.Nameplates.UnitNameScale = RoundToStep(
+    Config.Nameplates.UnitNameScale = RoundToStep(
         ClampNumber(
-            C.Nameplates.UnitNameScale,
+            Config.Nameplates.UnitNameScale,
             NAMEPLATE_TEXT_SCALE_MIN,
             NAMEPLATE_TEXT_SCALE_MAX,
             DEFAULT_TEXT_SCALE
         ),
         NAMEPLATE_SCALE_STEP
     )
-    C.Nameplates.HealthTextScale = RoundToStep(
+    Config.Nameplates.HealthTextScale = RoundToStep(
         ClampNumber(
-            C.Nameplates.HealthTextScale,
+            Config.Nameplates.HealthTextScale,
             NAMEPLATE_TEXT_SCALE_MIN,
             NAMEPLATE_TEXT_SCALE_MAX,
             DEFAULT_TEXT_SCALE
         ),
         NAMEPLATE_SCALE_STEP
     )
-    C.Nameplates.DynamicPortraitScale = RoundToStep(
+    Config.Nameplates.DynamicPortraitScale = RoundToStep(
         ClampNumber(
-            C.Nameplates.DynamicPortraitScale,
+            Config.Nameplates.DynamicPortraitScale,
             NAMEPLATE_TEXT_SCALE_MIN,
             NAMEPLATE_TEXT_SCALE_MAX,
             DEFAULT_DYNAMIC_PORTRAIT_SCALE
         ),
         NAMEPLATE_SCALE_STEP
     )
-    C.Nameplates.Alpha = RoundToStep(
-        ClampNumber(C.Nameplates.Alpha, 0.1, 1, 0.5),
+    Config.Nameplates.Alpha = RoundToStep(
+        ClampNumber(Config.Nameplates.Alpha, 0.1, 1, 0.5),
         0.05
     )
-    C.Nameplates.NoTargetAlpha = RoundToStep(
-        ClampNumber(C.Nameplates.NoTargetAlpha, 0.1, 1, 1),
+    Config.Nameplates.NoTargetAlpha = RoundToStep(
+        ClampNumber(Config.Nameplates.NoTargetAlpha, 0.1, 1, 1),
         0.05
     )
-    C.Nameplates.CastAlpha = RoundToStep(
-        ClampNumber(C.Nameplates.CastAlpha, 0.1, 1, 0.75),
+    Config.Nameplates.CastAlpha = RoundToStep(
+        ClampNumber(Config.Nameplates.CastAlpha, 0.1, 1, 0.75),
         0.05
     )
 
-    local castColors = C.Nameplates.CastBar.Colors
+    local castColors = Config.Nameplates.CastBar.Colors
     EnsureColorTable(castColors, "Interruptible", DEFAULT_CAST_COLORS.Interruptible)
     EnsureColorTable(castColors, "NonInterruptible", DEFAULT_CAST_COLORS.NonInterruptible)
 
-    local threat = C.Nameplates.Threat
+    local threat = Config.Nameplates.Threat
     if threat.Enable == nil then
         threat.Enable = true
     end
@@ -311,7 +314,7 @@ local function GetNameplatesConfig()
         threat.OffTankScanThrottle = 0.5
     end
 
-    local crowdControl = C.Nameplates.CrowdControl
+    local crowdControl = Config.Nameplates.CrowdControl
     if crowdControl.Enable == nil then
         crowdControl.Enable = true
     end
@@ -330,7 +333,7 @@ local function GetNameplatesConfig()
         ccBorderColor[4] = ccColor[4]
     end
 
-    return C.Nameplates
+    return Config.Nameplates
 end
 
 local function RefreshThreatSettingAvailability()
@@ -523,9 +526,6 @@ local function RefreshLiveNameplates()
                 if castBar.Background and castBar.Background.SetVertexColor then
                     castBar.Background:SetVertexColor(castR * 0.24, castG * 0.24, castB * 0.24, 0.95)
                 end
-                if castBar.UpdateUnitEvents and unitToken then
-                    castBar:UpdateUnitEvents(unitToken)
-                end
             end
 
             if type(RefineUI.UpdateNameplateCrowdControl) == "function" then
@@ -564,7 +564,7 @@ local function RefreshPreviewFrame()
     local reactionColors = (RefineUI.Colors and RefineUI.Colors.Reaction) or {}
     local hostileReaction = reactionColors[2] or reactionColors[1] or { r = 1, g = 0.25, b = 0.25 }
     local borderColor = config.TargetBorderColor or { 0.8, 0.8, 0.8 }
-    local defaultBorderColor = (C.General and C.General.BorderColor) or { 0.35, 0.35, 0.35 }
+    local defaultBorderColor = (Config.General and Config.General.BorderColor) or { 0.35, 0.35, 0.35 }
     local castColor = castColors.Interruptible or DEFAULT_CAST_COLORS.Interruptible
     local castNonInterruptibleColor = castColors.NonInterruptible or DEFAULT_CAST_COLORS.NonInterruptible
     local threatWarningColor = threatConfig.WarningColor or DEFAULT_THREAT_COLORS.WarningColor
@@ -1387,3 +1387,4 @@ function Nameplates:RegisterEditModeCallbacks()
 
     editModeCallbacksRegistered = true
 end
+

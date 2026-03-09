@@ -41,7 +41,7 @@ RefineUI.Media.Textures = {
     Overlay = M..[[Textures\Overlay.tga]],
     Shadow = M..[[Textures\ShadowTex.tga]],
     Highlight = M..[[Textures\Highlight.tga]],
-    Glow = M .. [[Textures\Glow.tga]],
+    Glow = M .. [[Textures\RefineGlow2.blp]],
     RefineBorder = M .. [[Textures\RefineBorder.blp]],
     
     -- Icons

@@ -4,9 +4,14 @@
 --              anchor layout for Compact Party/Raid frames.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
+local UnitFrames = RefineUI:GetModule("UnitFrames")
+if not UnitFrames then
+    return
+end
+
 local Config = RefineUI.Config
-local UF = RefineUI.UnitFrames
-local P = UF._party
+local UF = UnitFrames
+local P = UnitFrames:GetPrivate().Party
 if not P then return end
 
 ----------------------------------------------------------------------------------------

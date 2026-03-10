@@ -660,7 +660,9 @@ end
 -- Font Styling
 ----------------------------------------------------------------------------------------
 local function Font(self, size, font, flag, shadow)
-    if not self or not self.SetFont then return end
+    if not CanAccessObject(self) then return end
+    if self.IsForbidden and self:IsForbidden() then return end
+    if type(self.SetFont) ~= "function" then return end
     
     local cfg = RefineUI.Config and RefineUI.Config.General and RefineUI.Config.General.Appearance
     if not cfg then return end

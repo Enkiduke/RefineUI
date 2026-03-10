@@ -380,21 +380,24 @@ function UnitFrames:CreateClassResources(frame)
 
     if class == "MONK" and dataBars.StaggerBar then
         local bar, glow = CreateBaseBar("StaggerBar", "STATUS", nil, dataBars.HeightLarge or 16, dataBars.YOffset or 4)
+        local staggerTextSize = dataBars.StaggerTextSize or 12
         bar:SetStatusBarTexture(K.RESOURCE_BAR_TEXTURE)
 
         if not bar.Text then
             local text = bar:CreateFontString(nil, "OVERLAY")
             RefineUI:AddAPI(text)
-            text:Point("LEFT", bar, 6, 0)
-            text:Font(16)
+            text:Point("LEFT", bar, 4, -1)
+            text:Font(staggerTextSize)
+            text:SetJustifyH("LEFT")
             bar.Text = text
         end
 
         if not bar.TextPer then
             local textPer = bar:CreateFontString(nil, "OVERLAY")
             RefineUI:AddAPI(textPer)
-            textPer:Point("RIGHT", bar, -6, 0)
-            textPer:Font(16)
+            textPer:Point("RIGHT", bar, -4, -1)
+            textPer:Font(staggerTextSize)
+            textPer:SetJustifyH("RIGHT")
             bar.TextPer = textPer
         end
 

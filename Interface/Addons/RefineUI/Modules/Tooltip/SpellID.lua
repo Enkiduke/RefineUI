@@ -52,6 +52,11 @@ local SPELL_ID_HOOK_SET_ITEM_REF_KEY = "Tooltip:SpellID:SetItemRef"
 -- Helpers
 ----------------------------------------------------------------------------------------
 local function ClaimRenderFlag(tooltip, context, key)
+    key = Tooltip:ReadSafeString(key)
+    if not key or key == "" then
+        return false
+    end
+
     local flags = context and context.flags
     if type(flags) == "table" then
         if flags[key] then
@@ -112,7 +117,7 @@ local function AddAuraInstanceID(tooltip, unitToken, auraInstanceID)
     end
 
     local aura = C_UnitAuras.GetAuraDataByAuraInstanceID(unitToken, auraInstanceID)
-    local spellID = aura and aura.spellId
+    local spellID = aura and Tooltip:ReadSafeNumber(aura.spellId)
     if spellID then
         AddIDLine(tooltip, spellID, false)
     end

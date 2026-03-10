@@ -50,6 +50,10 @@ local IsSecret = NameplatesUtil.IsSecret
 local HasValue = NameplatesUtil.HasValue
 local ReadSafeBoolean = NameplatesUtil.ReadSafeBoolean
 local IsTargetNameplateUnitFrame = NameplatesUtil.IsTargetNameplateUnitFrame
+local TOOLTIP_LINE_TYPE_QUEST_OBJECTIVE = (_G.Enum and _G.Enum.TooltipDataLineType and _G.Enum.TooltipDataLineType.QuestObjective) or 8
+local TOOLTIP_LINE_TYPE_QUEST_TITLE = (_G.Enum and _G.Enum.TooltipDataLineType and _G.Enum.TooltipDataLineType.QuestTitle) or 17
+local TOOLTIP_LINE_TYPE_QUEST_PLAYER = (_G.Enum and _G.Enum.TooltipDataLineType and _G.Enum.TooltipDataLineType.QuestPlayer) or 18
+local PLAYER_NAME = UnitName("player")
 
 -- External Data Registry to prevent Taint
 RefineUI.NameplateData = RefineUI.NameplateData or setmetatable({}, { __mode = "k" })
@@ -198,11 +202,15 @@ local function CheckTextForQuest(text)
     return nil, false
 end
 
+local function CacheQuestTooltipResult(guid, isSecretGuid, result)
+    if result and not isSecretGuid then
+        tooltipCache[guid] = result
+    end
+    return result
+end
+
 local function GetQuestInfoFromTooltip(unit)
     if IsSecret(unit) or type(unit) ~= "string" then return nil end
-
-    -- Safe C_QuestLog check
-    if not C_QuestLog.UnitIsRelatedToActiveQuest(unit) then return nil end
 
     local guid = UnitGUID(unit)
     -- Secret Protection: prevent table index is secret error
@@ -210,60 +218,97 @@ local function GetQuestInfoFromTooltip(unit)
 
     if not isSecret and tooltipCache[guid] then return tooltipCache[guid] end
 
-    local tooltipData = C_TooltipInfo.GetUnit(unit)
-    if not tooltipData then return nil end
-
-    for i, line in ipairs(tooltipData.lines) do
-        if line.type == 17 and line.id then
-             local questID = line.id
-             
-             for j = i + 1, #tooltipData.lines do
-                 local subLine = tooltipData.lines[j]
-                 local leftText = subLine and subLine.leftText
-                 local hasProgressText = false
-                 if not IsSecret(leftText) and type(leftText) == "string" then
-                     hasProgressText = (strmatch(leftText, "(%d+)/(%d+)") or strmatch(leftText, "%%")) and true or false
-                 end
-                 
-                 if subLine.type == 18 or hasProgressText then 
-                     local text = leftText
-                     local progress, isComplete, isPercent = CheckTextForQuest(text)
-                     
-                     if not progress then
-                         progress = 0
-                         isComplete = false
-                     end
-
-                     if not isComplete then
-                         local result = {
-                             isPercent = isPercent,
-                             objectiveProgress = progress,
-                             questType = "DEFAULT",
-                             questID = questID
-                         }
-                        if not isSecret then
-                             tooltipCache[guid] = result
-                         end
-                         return result
-                     end
-                 elseif subLine.type == 17 then
-                     break
-                 end
-             end
-             
-             local result = {
-                 isPercent = false,
-                 objectiveProgress = 0,
-                 questType = "DEFAULT",
-                 questID = questID
-             }
-             if not isSecret then
-                 tooltipCache[guid] = result
-             end
-             return result
+    local isQuestRelated = false
+    if C_QuestLog and type(C_QuestLog.UnitIsRelatedToActiveQuest) == "function" then
+        local ok, related = pcall(C_QuestLog.UnitIsRelatedToActiveQuest, unit)
+        if ok then
+            isQuestRelated = ReadSafeBoolean(related) == true
         end
     end
-    
+
+    local tooltipData = C_TooltipInfo.GetUnit(unit)
+    local lines = tooltipData and tooltipData.lines
+    if not lines then
+        if isQuestRelated then
+            return CacheQuestTooltipResult(guid, isSecret, {
+                isPercent = false,
+                objectiveProgress = 0,
+                questType = "DEFAULT",
+                questID = nil,
+            })
+        end
+        return nil
+    end
+
+    local fallbackResult = nil
+    local currentQuestID = nil
+    local currentOwnerIsPlayer = nil
+    local playerName = PLAYER_NAME or UnitName("player")
+
+    for _, line in ipairs(lines) do
+        if line.type == TOOLTIP_LINE_TYPE_QUEST_TITLE and line.id then
+            currentQuestID = line.id
+            currentOwnerIsPlayer = nil
+            if not fallbackResult then
+                fallbackResult = {
+                    isPercent = false,
+                    objectiveProgress = 0,
+                    questType = "DEFAULT",
+                    questID = currentQuestID,
+                }
+            end
+        elseif line.type == TOOLTIP_LINE_TYPE_QUEST_PLAYER then
+            local ownerName = line.leftText
+            if not IsSecret(ownerName) and type(ownerName) == "string" then
+                currentOwnerIsPlayer = ownerName == playerName
+            else
+                currentOwnerIsPlayer = nil
+            end
+        elseif line.type == TOOLTIP_LINE_TYPE_QUEST_OBJECTIVE and currentQuestID then
+            local completed = ReadSafeBoolean(line.completed)
+            local progress, isComplete, isPercent = CheckTextForQuest(line.leftText)
+            if completed ~= nil then
+                isComplete = completed
+            elseif progress == nil then
+                isComplete = false
+            end
+            if progress == nil then
+                progress = 0
+            end
+
+            if fallbackResult == nil then
+                fallbackResult = {
+                    isPercent = false,
+                    objectiveProgress = 0,
+                    questType = "DEFAULT",
+                    questID = currentQuestID,
+                }
+            end
+
+            if currentOwnerIsPlayer ~= false and not isComplete then
+                return CacheQuestTooltipResult(guid, isSecret, {
+                    isPercent = isPercent,
+                    objectiveProgress = progress,
+                    questType = "DEFAULT",
+                    questID = currentQuestID,
+                })
+            end
+        end
+    end
+
+    if fallbackResult then
+        return CacheQuestTooltipResult(guid, isSecret, fallbackResult)
+    end
+
+    if isQuestRelated then
+        return CacheQuestTooltipResult(guid, isSecret, {
+            isPercent = false,
+            objectiveProgress = 0,
+            questType = "DEFAULT",
+            questID = nil,
+        })
+    end
+
     return nil
 end
 
@@ -928,4 +973,3 @@ EventFrame:SetScript("OnEvent", function(self, event)
         end
     end
 end)
-

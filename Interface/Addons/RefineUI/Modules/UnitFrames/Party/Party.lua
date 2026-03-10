@@ -10,7 +10,6 @@ if not UnitFrames then
 end
 
 local Config = RefineUI.Config
-local UF = UnitFrames
 local Private = UnitFrames:GetPrivate()
 
 ----------------------------------------------------------------------------------------
@@ -27,7 +26,6 @@ local ipairs = ipairs
 local type = type
 local tostring = tostring
 local floor = math.floor
-local abs = math.abs
 local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
@@ -35,8 +33,9 @@ local issecretvalue = _G.issecretvalue
 ----------------------------------------------------------------------------------------
 local PARTY_FRAME_STATE_REGISTRY = "UnitFramesPartyState"
 local PARTY_AURA_STATE_REGISTRY  = "UnitFramesPartyAuraState"
-
-local GAP     = 18
+local MAX_RAID_GROUPS = 8
+local DEFAULT_COMPACT_RAID_GROUP_HORIZONTAL_SPACING = 8
+local GAP = 18
 local PET_GAP = 8
 
 ----------------------------------------------------------------------------------------
@@ -190,6 +189,15 @@ local function IsCompactPetUnitToken(unit)
     return type(unit) == "string" and unit:find("pet", 1, true) ~= nil
 end
 
+local function IsCompactPartyMemberFrame(frame)
+    if not frame or type(frame.GetName) ~= "function" then
+        return false
+    end
+
+    local frameName = frame:GetName()
+    return type(frameName) == "string" and frameName:match("^CompactPartyFrameMember%d+$") ~= nil
+end
+
 local function GetCompactPetOwnerUnit(frame)
     if not frame then return nil end
 
@@ -215,7 +223,7 @@ local function GetCompactPetOwnerClassColor(frame)
 end
 
 ----------------------------------------------------------------------------------------
--- Frame Spacing
+-- Compact Raid Layout
 ----------------------------------------------------------------------------------------
 local function GetCompactFrameVerticalGap(frame)
     local unit = frame and (frame.displayedUnit or frame.unit)
@@ -226,57 +234,151 @@ local function GetCompactFrameVerticalGap(frame)
 end
 
 local function HookSpacing(frame)
+    if not frame or IsCompactPartyMemberFrame(frame) then
+        return
+    end
+
     RefineUI:HookOnce(BuildPartyHookKey(frame, "SetPoint:Spacing"), frame, "SetPoint", function(self, point, relTo, relPoint, x, y)
-        if UnitFrames:GetState(self, "PartySpacingChange", false) or InCombatLockdown() or IsEditModeActiveNow() then return end
-        
+        if UnitFrames:GetState(self, "PartySpacingChange", false) or InCombatLockdown() or IsEditModeActiveNow() then
+            return
+        end
+
         if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
-             local desiredGap = GetCompactFrameVerticalGap(self)
-             if IsUnreadableNumber(x) or IsUnreadableNumber(y) then return end
-             local currentX = type(x) == "number" and x or 0
-             local currentY = type(y) == "number" and y or 0
-             if currentY ~= -desiredGap and abs(currentY) <= GAP then
-                 UnitFrames:WithStateGuard(self, "PartySpacingChange", function()
-                     self:SetPoint(point, relTo, relPoint, currentX, -desiredGap)
-                 end)
-             end
+            local desiredGap = GetCompactFrameVerticalGap(self)
+            if IsUnreadableNumber(x) or IsUnreadableNumber(y) then
+                return
+            end
+
+            local currentX = type(x) == "number" and x or 0
+            local currentY = type(y) == "number" and y or 0
+            if currentY ~= -desiredGap then
+                UnitFrames:WithStateGuard(self, "PartySpacingChange", function()
+                    self:SetPoint(point, relTo, relPoint, currentX, -desiredGap)
+                end)
+            end
         end
     end)
 end
 
-local function ForceRestoreSpacing()
-    if InCombatLockdown() or IsEditModeActiveNow() then return end
-    for i = 1, 5 do
-        local frame = _G["CompactPartyFrameMember"..i]
-        if frame and frame:IsShown() then
-            local point, relTo, relPoint, x, y = frame:GetPoint()
-            if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
-                 local desiredGap = GetCompactFrameVerticalGap(frame)
-                 if not (IsUnreadableNumber(x) or IsUnreadableNumber(y)) then
-                     if type(y) == "number" and y ~= -desiredGap and abs(y) <= GAP then
-                         UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
-                             frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
-                         end)
-                     end
-                 end
+local function GetConfiguredCompactRaidGroupHorizontalSpacing()
+    local unitFramesConfig = Config and Config.UnitFrames
+    local configured = unitFramesConfig and unitFramesConfig.CompactRaidGroupHorizontalSpacing
+    if type(configured) ~= "number" or configured < 0 then
+        configured = DEFAULT_COMPACT_RAID_GROUP_HORIZONTAL_SPACING
+    end
+    return RefineUI:Scale(configured)
+end
+
+local function HideCompactPartyTitle()
+    local title = _G.CompactPartyFrameTitle
+    if not title then
+        return
+    end
+
+    if title.SetAlpha then
+        title:SetAlpha(0)
+    end
+    if title.Hide and title.IsShown and title:IsShown() then
+        title:Hide()
+    end
+end
+
+local function ForEachCompactRaidGroup(fn)
+    if type(fn) ~= "function" then
+        return
+    end
+
+    local seen = {}
+    local raidContainer = _G.CompactRaidFrameContainer
+    local groupFrames = raidContainer and raidContainer.groupFrames
+
+    if type(groupFrames) == "table" then
+        for _, groupFrame in ipairs(groupFrames) do
+            if groupFrame and not seen[groupFrame] then
+                seen[groupFrame] = true
+                fn(groupFrame)
             end
         end
     end
 
-    for i = 1, 5 do
-        local frame = _G["CompactPartyFramePet"..i]
-        if frame and frame:IsShown() then
-            local point, relTo, relPoint, x, y = frame:GetPoint()
-            if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
-                 local desiredGap = GetCompactFrameVerticalGap(frame)
-                 if not (IsUnreadableNumber(x) or IsUnreadableNumber(y)) then
-                     if type(y) == "number" and y ~= -desiredGap and abs(y) <= GAP then
-                         UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
-                             frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
-                         end)
-                     end
-                 end
-            end
+    for i = 1, MAX_RAID_GROUPS do
+        local groupFrame = _G["CompactRaidGroup" .. i]
+        if groupFrame and not seen[groupFrame] then
+            seen[groupFrame] = true
+            fn(groupFrame)
         end
+    end
+end
+
+local function CollapseCompactRaidGroupTitle(groupFrame)
+    if not groupFrame or (groupFrame.IsForbidden and groupFrame:IsForbidden()) then
+        return false
+    end
+
+    local title = groupFrame.title
+    if not title then
+        return false
+    end
+
+    local changed = false
+
+    if title.SetHeight and title.GetHeight then
+        local currentHeight = title:GetHeight()
+        if type(currentHeight) == "number" and currentHeight ~= 0 then
+            title:SetHeight(0)
+            changed = true
+        end
+    end
+
+    if title.SetAlpha and title.GetAlpha then
+        local currentAlpha = title:GetAlpha()
+        if type(currentAlpha) == "number" and currentAlpha ~= 0 then
+            title:SetAlpha(0)
+            changed = true
+        end
+    end
+
+    if title.Hide and title.IsShown and title:IsShown() then
+        title:Hide()
+        changed = true
+    end
+
+    return changed
+end
+
+local function ApplyCompactRaidGroupSpacing()
+    local raidContainer = _G.CompactRaidFrameContainer
+    if not raidContainer or type(_G.FlowContainer_SetHorizontalSpacing) ~= "function" then
+        return false
+    end
+
+    local desiredSpacing = GetConfiguredCompactRaidGroupHorizontalSpacing()
+    local currentSpacing = raidContainer.flowHorizontalSpacing
+    if type(currentSpacing) == "number" and currentSpacing == desiredSpacing then
+        return false
+    end
+
+    _G.FlowContainer_SetHorizontalSpacing(raidContainer, desiredSpacing)
+    return true
+end
+
+local function ApplyCompactRaidLayout()
+    HideCompactPartyTitle()
+
+    if InCombatLockdown() or IsEditModeActiveNow() then
+        return
+    end
+
+    local changed = ApplyCompactRaidGroupSpacing()
+    ForEachCompactRaidGroup(function(groupFrame)
+        if CollapseCompactRaidGroupTitle(groupFrame) then
+            changed = true
+        end
+    end)
+
+    local raidContainer = _G.CompactRaidFrameContainer
+    if changed and raidContainer and type(raidContainer.LayoutFrames) == "function" then
+        pcall(raidContainer.LayoutFrames, raidContainer)
     end
 end
 
@@ -342,6 +444,28 @@ local function ForEachCompactPartyRaidFrame(includeHidden, includePets, fn)
     end
 end
 
+local function ForceRestoreSpacing()
+    if InCombatLockdown() or IsEditModeActiveNow() then
+        return
+    end
+
+    ForEachCompactPartyRaidFrame(true, true, function(frame)
+        local point, relTo, relPoint, x, y = frame:GetPoint()
+        if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
+            local desiredGap = GetCompactFrameVerticalGap(frame)
+            if not (IsUnreadableNumber(x) or IsUnreadableNumber(y)) then
+                local currentX = type(x) == "number" and x or 0
+                local currentY = type(y) == "number" and y or 0
+                if currentY ~= -desiredGap then
+                    UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
+                        frame:SetPoint(point, relTo, relPoint, currentX, -desiredGap)
+                    end)
+                end
+            end
+        end
+    end)
+end
+
 ----------------------------------------------------------------------------------------
 -- Shared Internal Export Table
 ----------------------------------------------------------------------------------------
@@ -362,13 +486,16 @@ P.GetSafeDispelTypeKey   = GetSafeDispelTypeKey
 
 P.IsEditModeActive       = IsEditModeActiveNow
 P.IsCompactFrame         = IsPartyRaidCompactFrame
+P.IsCompactPartyMemberFrame = IsCompactPartyMemberFrame
 P.IsPetUnit              = IsCompactPetUnitToken
 P.GetPetOwnerClassColor  = GetCompactPetOwnerClassColor
+P.GetCompactFrameVerticalGap = GetCompactFrameVerticalGap
 
 P.ForEachFrame           = ForEachCompactPartyFrame
 P.ForEachRaidFrame       = ForEachCompactPartyRaidFrame
 
 P.HookSpacing            = HookSpacing
 P.ForceRestoreSpacing    = ForceRestoreSpacing
+P.ApplyCompactRaidLayout = ApplyCompactRaidLayout
 
 P.TEXTURE_COMPACT_HEALTH = RefineUI.Media.Textures.Smooth

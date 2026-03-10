@@ -32,10 +32,28 @@ As previously mentioned, there isn't a gigantic options panel to overwhelm you. 
 
 ## Install
 
-1. Download or clone this repository.
-2. Place the `RefineUI` folder in:
-   `World of Warcraft\\_retail_\\Interface\\AddOns\\`
-3. Restart WoW (or reload UI).
+RefineUI is packaged from the repository root, not from the `RefineUI` addon folder by itself.
+
+### Manual Install
+
+1. Download this repository as a ZIP, then extract it.
+2. Open the extracted `RefineUI` folder.
+3. Copy the top-level `Fonts` and `Interface` folders into your WoW Retail folder:
+   `World of Warcraft\\_retail_\\`
+4. When prompted, allow Windows to merge folders.
+5. Restart WoW or run `/reload`.
+
+This should leave the addon at:
+`World of Warcraft\\_retail_\\Interface\\AddOns\\RefineUI`
+
+### Git Install
+
+If you are cloning the repo directly, you can keep the repository anywhere on disk.
+
+Copy or sync the repo's `Fonts` and `Interface` folders into:
+`World of Warcraft\\_retail_\\`
+
+Do not install from `Interface\\AddOns\\RefineUI` alone, because the repository also includes shared assets outside the addon folder.
 
 ## Status
 

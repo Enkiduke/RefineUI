@@ -105,6 +105,22 @@ function Nameplates:EnsureSimplifiedNameplatesDisabled()
     pcall(C_NamePlateManager.SetNamePlateSimplified, nameplateType.Enemy, false)
 end
 
+function Nameplates:IsInGroupInstanceContent()
+    local private = self:GetPrivate()
+    local util = private and private.Util
+    if not util then
+        return false
+    end
+
+    local _, instanceType = IsInInstance()
+    if instanceType == "party" or instanceType == "raid" or instanceType == "pvp" or instanceType == "arena" then
+        return true
+    end
+
+    local inBattleground = util.ReadSafeBoolean(UnitInBattleground("player"))
+    return inBattleground == true
+end
+
 function Nameplates:UpdateNameplateCVars(forceApply)
     local private = self:GetPrivate()
     local util = private and private.Util
@@ -121,13 +137,7 @@ function Nameplates:UpdateNameplateCVars(forceApply)
         inCombat = false
     end
 
-    local _, instanceType = IsInInstance()
-    local inBattleground = util.ReadSafeBoolean(UnitInBattleground("player"))
-    if inBattleground == nil then
-        inBattleground = false
-    end
-
-    local inGroupContent = (instanceType == "party" or instanceType == "raid" or instanceType == "pvp" or instanceType == "arena") or inBattleground
+    local inGroupContent = self:IsInGroupInstanceContent()
     local cfg = self:GetConfiguredNameplatesConfig()
     local showPetNames = cfg and cfg.ShowPetNames == true
 

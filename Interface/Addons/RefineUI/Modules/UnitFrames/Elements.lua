@@ -110,20 +110,20 @@ local function UpdateCustomHPText(frame, unit)
     end
 
     if not UnitIsConnected(unit) then
-        percentText:SetText("OFFLINE")
-        currentText:SetText("OFFLINE")
+        RefineUI:SetFontStringValue(percentText, "OFFLINE", { emptyText = "" })
+        RefineUI:SetFontStringValue(currentText, "OFFLINE", { emptyText = "" })
         percentText:SetTextColor(0.5, 0.5, 0.5)
         currentText:SetTextColor(0.5, 0.5, 0.5)
     elseif UnitIsDeadOrGhost(unit) then
-        percentText:SetText("DEAD")
-        currentText:SetText("DEAD")
+        RefineUI:SetFontStringValue(percentText, "DEAD", { emptyText = "" })
+        RefineUI:SetFontStringValue(currentText, "DEAD", { emptyText = "" })
         percentText:SetTextColor(0.5, 0.5, 0.5)
         currentText:SetTextColor(0.5, 0.5, 0.5)
     else
         local percent = UnitHealthPercent(unit, true, RefineUI.GetPercentCurve())
         local hp = UnitHealth(unit)
-        percentText:SetText(percent)
-        currentText:SetText(hp)
+        RefineUI:SetFontStringValue(percentText, percent, { emptyText = "" })
+        RefineUI:SetFontStringValue(currentText, hp, { emptyText = "" })
         percentText:SetTextColor(1, 1, 1)
         currentText:SetTextColor(1, 1, 1)
     end
@@ -175,7 +175,7 @@ local function UpdateCustomManaText(frame, manaBar, unit)
     end
 
     local percent = UnitPowerPercent(unit, powerType, false, RefineUI.GetPercentCurve())
-    manaText:SetText(percent)
+    RefineUI:SetFontStringValue(manaText, percent, { emptyText = "" })
 end
 
 function UnitFrames.CreateCustomText(frame)

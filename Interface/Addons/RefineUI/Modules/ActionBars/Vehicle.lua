@@ -12,14 +12,9 @@ end
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
-local Positions = RefineUI.Positions
-
-----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
-local CreateFrame = CreateFrame
-local InCombatLockdown = InCombatLockdown
 local ipairs = ipairs
 
 ----------------------------------------------------------------------------------------
@@ -86,18 +81,6 @@ local function SkinVehicleIndicator()
     if not VehicleSeatIndicator then
         return
     end
-
-    local anchor = _G.RefineVehicleAnchor or CreateFrame("Frame", "RefineVehicleAnchor", UIParent)
-    local position = Positions and Positions["Vehicle"] or { "BOTTOM", UIParent, "BOTTOM", 0, 320 }
-    RefineUI.Point(anchor, position[1], position[2], position[3], position[4], position[5])
-    RefineUI.Size(anchor, 130, 130)
-
-    RefineUI:HookOnce(private.BuildHookKey(VehicleSeatIndicator, "SetPoint", "VehicleIndicator"), VehicleSeatIndicator, "SetPoint", function(frame, _, parent)
-        if parent ~= anchor and not InCombatLockdown() then
-            frame:ClearAllPoints()
-            RefineUI.Point(frame, "BOTTOM", anchor, "BOTTOM", 0, 24)
-        end
-    end)
 end
 
 local function StyleMainMenuBarVehicleLeaveButton()

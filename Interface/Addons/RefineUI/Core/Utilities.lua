@@ -626,6 +626,30 @@ function RefineUI:LoadCommands()
     self:RegisterChatCommand("refine", function(msg) RefineUI:HandleChatCommand(msg) end)
     
     self.ChatCommands["reset"] = function() RefineUI:ResetProfile() end
+    self.ChatCommands["install"] = function(msg)
+        local install = RefineUI.GetModule and RefineUI:GetModule("Install")
+        if install and install.HandleCommand then
+            install:HandleCommand("install " .. (msg or ""))
+            return
+        end
+        RefineUI:Print("Install module is unavailable.")
+    end
+    self.ChatCommands["repair"] = function()
+        local install = RefineUI.GetModule and RefineUI:GetModule("Install")
+        if install and install.StartInstall then
+            install:StartInstall("repair")
+            return
+        end
+        RefineUI:Print("Install module is unavailable.")
+    end
+    self.ChatCommands["reinstall"] = function()
+        local install = RefineUI.GetModule and RefineUI:GetModule("Install")
+        if install and install.StartInstall then
+            install:StartInstall("full")
+            return
+        end
+        RefineUI:Print("Install module is unavailable.")
+    end
     self:RegisterChatCommand("rreset", self.ChatCommands["reset"])
 
     if self.LoadDebugCommands then

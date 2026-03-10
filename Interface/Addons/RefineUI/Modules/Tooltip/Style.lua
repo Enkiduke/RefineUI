@@ -122,7 +122,10 @@ function Tooltip:StyleTooltipMoneyFrames(tt, includeEmbedded)
 
     local styledFontStrings = Tooltip:GetStyledFontStringRegistry()
     local function StyleMoneyFontString(fontString, size)
-        if not fontString then
+        if not Tooltip:CanAccessObjectSafe(fontString) or Tooltip:IsForbiddenFrameSafe(fontString) then
+            return
+        end
+        if type(fontString.SetFont) ~= "function" then
             return
         end
 
@@ -134,27 +137,21 @@ function Tooltip:StyleTooltipMoneyFrames(tt, includeEmbedded)
         styledFontStrings[fontString] = true
     end
 
-    local moneyFrameCount = tt.shownMoneyFrames or tt.numMoneyFrames or 0
+    local shownMoneyFrames = Tooltip:ReadSafeNumber(select(1, Tooltip:SafeGetField(tt, "shownMoneyFrames")))
+    local numMoneyFrames = Tooltip:ReadSafeNumber(select(1, Tooltip:SafeGetField(tt, "numMoneyFrames")))
+    local moneyFrameCount = shownMoneyFrames or numMoneyFrames or 0
     if moneyFrameCount <= 0 then
         return
     end
 
-    local state = Tooltip:GetTooltipSkinState(tt)
-    local maxStyledMoneyFrameIndex = state and state.maxStyledMoneyFrameIndex or 0
-    if moneyFrameCount <= maxStyledMoneyFrameIndex then
-        return
-    end
-
-    for moneyFrameIndex = maxStyledMoneyFrameIndex + 1, moneyFrameCount do
+    for moneyFrameIndex = 1, moneyFrameCount do
         local moneyFrame = _G[tooltipName .. "MoneyFrame" .. moneyFrameIndex]
-        if moneyFrame then
-            StyleMoneyFontString(moneyFrame.PrefixText, 12)
-            StyleMoneyFontString(moneyFrame.SuffixText, 12)
+        if Tooltip:CanAccessObjectSafe(moneyFrame) and not Tooltip:IsForbiddenFrameSafe(moneyFrame) then
+            local prefixText = select(1, Tooltip:SafeGetField(moneyFrame, "PrefixText"))
+            local suffixText = select(1, Tooltip:SafeGetField(moneyFrame, "SuffixText"))
+            StyleMoneyFontString(prefixText, 12)
+            StyleMoneyFontString(suffixText, 12)
         end
-    end
-
-    if state then
-        state.maxStyledMoneyFrameIndex = moneyFrameCount
     end
 end
 

@@ -59,7 +59,7 @@ C.UnitFrames = {
     Enable = true, -- Master switch for UnitFrames module
     DisableTooltips = true, -- Disable tooltips on UnitFrames
     Scale = 1.5, -- Default Scale for Player/Target/Focus frames
-    
+
     -- [ Global Params ]
     Layout = {
         Width = 164,
@@ -161,6 +161,7 @@ C.UnitFrames = {
         Width = 124,    -- Default width for all resource bars
         Height = 10,     -- Default height for bars (e.g. Class Power)
         HeightLarge = 14, -- Height for larger bars (e.g. Maelstrom, Stagger)
+        StaggerTextSize = 12, -- Text size for Stagger current/percent values
         Spacing = 2,    -- Spacing between pips/segments
         YOffset = 4,    -- Default vertical offset from the unit frame
         

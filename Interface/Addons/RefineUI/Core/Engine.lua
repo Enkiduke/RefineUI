@@ -64,7 +64,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
         -- Final Pixel Perfect enforcement (sets CVars) only after DB/init flow
         -- and only when installation has completed.
         local db = RefineUI.DB
-        if RefineUI.SetUIScale and db and db.Installed and db.InstallState ~= "pending" then
+        if RefineUI.SetUIScale and db and db.Installed and db.InstallState == "ready" then
             RefineUI:SetUIScale()
         end
         self:UnregisterEvent("PLAYER_LOGIN")

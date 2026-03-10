@@ -26,13 +26,14 @@ RefineUI.Positions = {
     ["ExtraActionBarFrame"] = { "BOTTOM", "UIParent", "BOTTOM", 0, 50 },
     ["ZoneAbilityFrame"]    = { "BOTTOM", "UIParent", "BOTTOM", 0, 50 },
     ["MicroMenuContainer"]  = { "BOTTOMLEFT", "UIParent", "BOTTOMLEFT", 5, 5 },
+    ["VehicleSeatIndicator"] = { "RIGHT", "UIParent", "RIGHT", -6, 0 },
     
     -- UnitFrames
     ["PlayerFrame"]         = { "BOTTOM", "UIParent", "BOTTOM", -45, 320 },
     ["PlayerFrameAlternateManaBar"] = { "BOTTOM", "PlayerFrame", "TOP", 0, 9 },
     ["TargetFrame"]         = { "BOTTOM", "UIParent", "BOTTOM", 432, 320 },
     ["TargetFrameToT"]      = { "TOPRIGHT", "TargetFrame", "BOTTOMRIGHT", 0, -11 },
-    ["PetFrame"]            = { "LEFT", "PlayerFrame", "RIGHT", 6, 0 },
+    ["PetFrame"]            = { "LEFT", "PlayerFrame", "RIGHT", -50, -4 },
     ["FocusFrame"]          = { "BOTTOM", "UIParent", "BOTTOM", -368, 320 },
     ["FocusFrameToT"]       = { "TOPLEFT", "TargetFrame", "BOTTOMLEFT", 0, -11 },
     ["PartyFrame"]          = { "CENTER", "UIParent", "CENTER", -650, 50 },
@@ -45,7 +46,7 @@ RefineUI.Positions = {
     ["RefineUI_RuneBar"]          = { "BOTTOM", nil, "TOP", 0, 6 },
     ["RefineUI_MaelstromBar"]     = { "BOTTOM", nil, "TOP", 0, 6 },
     ["RefineUI_SoulFragmentsBar"] = { "BOTTOM", nil, "TOP", 0, 6 },
-    ["RefineUI_StaggerBar"]       = { "BOTTOM", nil, "TOP", 0, 20 },
+    ["RefineUI_StaggerBar"]       = { "BOTTOM", nil, "TOP", 0, 6 },
     ["RefineUI_TotemBar"]         = { "BOTTOM", nil, "TOP", 0, 20 },
     
     -- CastBars

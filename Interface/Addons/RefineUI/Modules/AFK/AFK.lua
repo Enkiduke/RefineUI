@@ -19,6 +19,7 @@ local UnitIsAFK = UnitIsAFK
 local InCombatLockdown = InCombatLockdown
 local DoEmote = DoEmote
 local UIParent = _G.UIParent
+local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
 -- Locals
@@ -30,6 +31,16 @@ local zoomFrame
 ----------------------------------------------------------------------------------------
 -- Core Functions
 ----------------------------------------------------------------------------------------
+local function ReadSafeBoolean(value)
+    if issecretvalue and issecretvalue(value) then
+        return nil
+    end
+    if type(value) == "boolean" then
+        return value
+    end
+    return nil
+end
+
 local function ZoomIn()
     if zoomFrame then zoomFrame:SetScript("OnUpdate", nil) end
     if not zoomFrame then zoomFrame = CreateFrame("Frame") end
@@ -89,7 +100,7 @@ function AFK:OnEvent(event)
     if event == "PLAYER_LEAVING_WORLD" then
         self:SpinStop()
     else
-        if UnitIsAFK("player") and not InCombatLockdown() then
+        if ReadSafeBoolean(UnitIsAFK("player")) == true and not InCombatLockdown() then
             self:SpinStart()
         else
             self:SpinStop()

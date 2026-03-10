@@ -121,7 +121,7 @@ end
 function Maps:SetupMinimap()
     if not self.db or self.db.Enable ~= true then return end
     local db = RefineUI.DB
-    local installReady = db and db.Installed and db.InstallState ~= "pending"
+    local installReady = db and db.Installed and db.InstallState == "ready"
 
     Minimap:SetFrameStrata("LOW")
     Minimap:SetFrameLevel(2)

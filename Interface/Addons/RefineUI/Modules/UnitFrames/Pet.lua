@@ -204,7 +204,7 @@ local function GetPetPercentValue()
     if UnitHealthPercent and RefineUI.GetPercentCurve then
         return UnitHealthPercent("pet", true, RefineUI.GetPercentCurve())
     end
-    return 0
+    return nil
 end
 
 function UnitFrames:UpdatePetFrameHealthText(frame)
@@ -220,23 +220,23 @@ function UnitFrames:UpdatePetFrameHealthText(frame)
     end
 
     if not UnitExists("pet") then
-        percentText:SetText("")
+        RefineUI:SetFontStringValue(percentText, nil, { emptyText = "" })
         return
     end
 
     if not UnitIsConnected("pet") then
-        percentText:SetText("OFFLINE")
+        RefineUI:SetFontStringValue(percentText, "OFFLINE", { emptyText = "" })
         percentText:SetTextColor(0.5, 0.5, 0.5)
         return
     end
 
     if UnitIsDeadOrGhost("pet") then
-        percentText:SetText("DEAD")
+        RefineUI:SetFontStringValue(percentText, "DEAD", { emptyText = "" })
         percentText:SetTextColor(0.5, 0.5, 0.5)
         return
     end
 
-    percentText:SetText(GetPetPercentValue())
+    RefineUI:SetFontStringValue(percentText, GetPetPercentValue(), { emptyText = "" })
     percentText:SetTextColor(1, 1, 1)
 end
 
@@ -245,25 +245,9 @@ local function ApplyPetFrameHitRect(frame)
         return
     end
 
-    local leftInset = C.PET_FRAME_WIDTH + C.PET_HEALTH_X - C.PET_HEALTH_WIDTH
-    local rightInset = -C.PET_HEALTH_X
-    local topInset = -C.PET_HEALTH_Y
-    local bottomInset = C.PET_FRAME_HEIGHT - topInset - C.PET_HEALTH_HEIGHT
-
-    if leftInset < 0 then
-        leftInset = 0
-    end
-    if rightInset < 0 then
-        rightInset = 0
-    end
-    if topInset < 0 then
-        topInset = 0
-    end
-    if bottomInset < 0 then
-        bottomInset = 0
-    end
-
-    frame:SetHitRectInsets(leftInset, rightInset, topInset, bottomInset)
+    -- Keep the secure click area broad enough for tooltip/click support while
+    -- biasing the active region toward the visible health bar.
+    frame:SetHitRectInsets(25, 12, -6, 8)
 end
 
 local function GetPetEditModeSystemFrame()
@@ -312,7 +296,7 @@ local function ApplyPetSelectionBounds(frame)
 
         UnitFrames:WithStateGuard(sel, "PetSelectionAnchor", function()
             sel:ClearAllPoints()
-            if anchor == PetFrameHealthBar then
+            if anchor and anchor ~= frame then
                 sel:SetPoint("TOPLEFT", anchor, "TOPLEFT", RefineUI:Scale(-2), RefineUI:Scale(2))
                 sel:SetPoint("BOTTOMRIGHT", anchor, "BOTTOMRIGHT", RefineUI:Scale(2), RefineUI:Scale(-2))
             else
@@ -352,6 +336,70 @@ local function HidePetAuras(frame)
     if PartyMemberBuffTooltip and PartyMemberBuffTooltip.Hide then
         PartyMemberBuffTooltip:Hide()
     end
+end
+
+local function HidePetNativeStatusRegions(hiddenFrame)
+    for _, region in ipairs({
+        PetFrameManaBar,
+        PetFrameManaBarMask,
+        PetFrameManaBarText,
+        PetFrameManaBarTextLeft,
+        PetFrameManaBarTextRight,
+        PetFrameHealthBarText,
+        PetFrameHealthBarTextLeft,
+        PetFrameHealthBarTextRight,
+    }) do
+        UnitFrames:EnforceHiddenRegion(region, hiddenFrame)
+
+        if region and region.SetShown then
+            RefineUI:HookOnce(UnitFrames:BuildHookKey(region, "SetShown:Hidden"), region, "SetShown", function(selfRegion, shown)
+                if shown then
+                    selfRegion:Hide()
+                end
+            end)
+        end
+
+        if region and region.SetText then
+            RefineUI:HookOnce(UnitFrames:BuildHookKey(region, "SetText:Hidden"), region, "SetText", function(selfRegion)
+                UnitFrames:WithStateGuard(selfRegion, "PetNativeTextHidden", function()
+                    RefineUI:SetFontStringValue(selfRegion, nil, { emptyText = "" })
+                    selfRegion:SetAlpha(0)
+                    selfRegion:Hide()
+                end)
+            end)
+        end
+    end
+end
+
+local function DisablePetHealthMask(hiddenFrame)
+    if not PetFrameHealthBarMask then
+        return
+    end
+
+    if PetFrameHealthBar and PetFrameHealthBar.GetStatusBarTexture then
+        local statusTexture = PetFrameHealthBar:GetStatusBarTexture()
+        if statusTexture and statusTexture.RemoveMaskTexture then
+            pcall(statusTexture.RemoveMaskTexture, statusTexture, PetFrameHealthBarMask)
+        end
+    end
+
+    UnitFrames:EnforceHiddenRegion(PetFrameHealthBarMask, hiddenFrame)
+end
+
+local function ApplyPetHealthBarLayout(frame)
+    if not frame or not PetFrameHealthBar then
+        return
+    end
+
+    -- Keep the bar's bottom edge stable so height changes grow upward instead
+    -- of leaking below the decorative frame texture.
+    local bottomOffset = C.PET_FRAME_HEIGHT + C.PET_HEALTH_Y - C.PET_HEALTH_HEIGHT
+
+    PetFrameHealthBar:ClearAllPoints()
+    PetFrameHealthBar:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", RefineUI:Scale(C.PET_HEALTH_X), RefineUI:Scale(bottomOffset))
+    RefineUI:SetPixelSize(PetFrameHealthBar, C.PET_HEALTH_WIDTH, C.PET_HEALTH_HEIGHT)
+    PetFrameHealthBar:SetAlpha(1)
+    PetFrameHealthBar:Show()
 end
 
 local function SyncPetEditModeMoverSize()
@@ -394,10 +442,9 @@ function UnitFrames:ApplyPetFrameDynamicStyle(frame)
         return
     end
 
+    local hr, hg, hb = self.GetUnitHealthColor("pet")
     PetFrameHealthBar:SetStatusBarTexture(C.TEXTURE_HEALTH_BAR)
     PetFrameHealthBar:SetStatusBarDesaturated(true)
-
-    local hr, hg, hb = self.GetUnitHealthColor("pet")
     PetFrameHealthBar:SetStatusBarColor(hr, hg, hb)
 
     self:UpdatePetFrameHealthText(frame)
@@ -427,33 +474,26 @@ function UnitFrames:StylePetFrame(frame)
 
         data.RefinePet.Border = data.RefinePet:CreateTexture(nil, "OVERLAY")
         data.RefinePet.Border:SetDrawLayer("OVERLAY", 2)
-
         data.RefinePet.PercentText = data.RefinePet:CreateFontString(nil, "OVERLAY")
     end
 
     local petData = data.RefinePet
+
+    ApplyPetHealthBarLayout(frame)
+
     local border = petData.Border
     border:SetTexture(C.TEXTURE_FRAME_PET)
     border:ClearAllPoints()
     if PetFrameHealthBar then
-        border:SetPoint("CENTER", PetFrameHealthBar, "CENTER", 0, -14)
+        border:SetPoint("CENTER", PetFrameHealthBar, "CENTER", RefineUI:Scale(C.PET_BORDER_X), RefineUI:Scale(C.PET_BORDER_Y))
     else
         border:SetPoint("CENTER", frame, "CENTER", 0, 0)
     end
     RefineUI:SetPixelSize(border, C.PET_BORDER_WIDTH, C.PET_BORDER_HEIGHT)
     border:SetAlpha(1)
     border:Show()
-
     if Config.General.BorderColor then
         border:SetVertexColor(unpack(Config.General.BorderColor))
-    end
-
-    if PetFrameHealthBar then
-        PetFrameHealthBar:ClearAllPoints()
-        PetFrameHealthBar:SetPoint("TOPRIGHT", frame, "TOPRIGHT", RefineUI:Scale(C.PET_HEALTH_X), RefineUI:Scale(C.PET_HEALTH_Y))
-        RefineUI:SetPixelSize(PetFrameHealthBar, C.PET_HEALTH_WIDTH, C.PET_HEALTH_HEIGHT)
-        PetFrameHealthBar:SetAlpha(1)
-        PetFrameHealthBar:Show()
     end
 
     ApplyPetFrameHitRect(frame)
@@ -462,13 +502,12 @@ function UnitFrames:StylePetFrame(frame)
 
     RefineUI.Font(petData.PercentText, Config.UnitFrames.Fonts.HPSize)
     petData.PercentText:ClearAllPoints()
-    if PetFrameHealthBar then
-        petData.PercentText:SetPoint("CENTER", PetFrameHealthBar, "CENTER", 0, 0)
-    else
-        petData.PercentText:SetPoint("CENTER", frame, "CENTER", 0, 0)
-    end
+    petData.PercentText:SetPoint("CENTER", PetFrameHealthBar, "CENTER", 0, 0)
     petData.PercentText:SetJustifyH("CENTER")
     petData.PercentText:SetJustifyV("MIDDLE")
+    petData.PercentText:SetWidth(RefineUI:Scale(C.PET_HEALTH_WIDTH))
+    petData.PercentText:SetAlpha(1)
+    petData.PercentText:Show()
 
     for _, region in ipairs({
         PetPortrait,
@@ -479,18 +518,18 @@ function UnitFrames:StylePetFrame(frame)
         PetName,
         PetNameBackground,
         PetFrameManaBar,
-        PetFrameManaBarMask,
-        PetFrameHealthBarMask,
-        PetFrameManaBarText,
-        PetFrameManaBarTextLeft,
-        PetFrameManaBarTextRight,
-        PetFrameHealthBarText,
-        PetFrameHealthBarTextLeft,
-        PetFrameHealthBarTextRight,
+        PetFrameMyHealPredictionBar,
+        PetFrameOtherHealPredictionBar,
+        PetFrameHealAbsorbBar,
+        PetFrameTotalAbsorbBar,
         PetFrameOverAbsorbGlow,
+        PetFrameOverHealAbsorbGlow,
     }) do
         self:EnforceHiddenRegion(region, hiddenFrame)
     end
+
+    HidePetNativeStatusRegions(hiddenFrame)
+    DisablePetHealthMask(hiddenFrame)
 
     HidePetAuras(frame)
 
@@ -507,13 +546,37 @@ function UnitFrames:StylePetFrame(frame)
                 selfBar:SetStatusBarDesaturated(true)
             end
         end)
+        RefineUI:HookOnce(self:BuildHookKey(PetFrameHealthBar, "SetPoint:Pet"), PetFrameHealthBar, "SetPoint", function(selfBar)
+            UnitFrames:WithStateGuard(selfBar, "PetHealthAnchor", function()
+                ApplyPetHealthBarLayout(frame)
+            end)
+        end)
         RefineUI:HookScriptOnce(self:BuildHookKey(PetFrameHealthBar, "OnValueChanged:Pet"), PetFrameHealthBar, "OnValueChanged", function()
             UnitFrames:UpdatePetFrameHealthText(frame)
         end)
     end
 
+    if PetFrameHealthBarMask then
+        RefineUI:HookOnce(self:BuildHookKey(PetFrameHealthBarMask, "Show:PetMaskHidden"), PetFrameHealthBarMask, "Show", function(selfMask)
+            DisablePetHealthMask(hiddenFrame)
+            selfMask:Hide()
+        end)
+    end
+
+    if petData.PercentText then
+        RefineUI:HookOnce(self:BuildHookKey(petData.PercentText, "SetPoint:PetPercent"), petData.PercentText, "SetPoint", function(selfText)
+            UnitFrames:WithStateGuard(selfText, "PetPercentAnchor", function()
+                selfText:ClearAllPoints()
+                selfText:SetPoint("CENTER", PetFrameHealthBar, "CENTER", 0, 0)
+            end)
+        end)
+    end
+
     RefineUI:HookOnce(self:BuildHookKey(frame, "UpdateAuras:HidePet"), frame, "UpdateAuras", function(selfFrame)
         HidePetAuras(selfFrame)
+    end)
+    RefineUI:HookOnce(self:BuildHookKey(frame, "Update:RestylePet"), frame, "Update", function(selfFrame)
+        UnitFrames:StylePetFrame(selfFrame)
     end)
     RefineUI:HookScriptOnce(self:BuildHookKey(frame, "OnEnter:HidePetTooltip"), frame, "OnEnter", function()
         if PartyMemberBuffTooltip and PartyMemberBuffTooltip.Hide then

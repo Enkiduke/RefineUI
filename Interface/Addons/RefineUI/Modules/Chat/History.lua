@@ -35,6 +35,13 @@ end
 function Chat:SetupHistory()
     if not self.db.History then return end
 
+    -- Retail secret-value chat senders now flow through Blizzard's protected
+    -- HistoryKeeper path. Touching historyBuffer from insecure code taints that
+    -- path and breaks events like RAID_BOSS_EMOTE.
+    if issecretvalue then
+        return
+    end
+
     _G.RefineUIChatHistoryDB = _G.RefineUIChatHistoryDB or {}
     local DB = _G.RefineUIChatHistoryDB
     local CF, cfid, hook = {}, {}, {}

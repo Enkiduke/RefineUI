@@ -26,7 +26,9 @@ local CreateFrame = CreateFrame
 local UnitIsConnected = UnitIsConnected
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
 local UnitExists = UnitExists
+local UnitName = UnitName
 local UnitClass = UnitClass
+local UnitIsPlayer = UnitIsPlayer
 local UnitIsGroupLeader = UnitIsGroupLeader
 local UnitGroupRolesAssigned = UnitGroupRolesAssigned
 local UnitHealthPercent = UnitHealthPercent
@@ -251,6 +253,11 @@ local function UpdateCompactPartyNameColor(frame)
     local unit = frame.displayedUnit or frame.unit
     if not unit then return end
 
+    if UnitIsPlayer(unit) then
+        local cleanName = UnitName(unit)
+        RefineUI:SetFontStringValue(frame.name, cleanName, { emptyText = "" })
+    end
+
     if IsCompactPetUnitToken(unit) then
         UpdateCompactPetFrameColors(frame)
         return
@@ -387,7 +394,7 @@ function UF.StyleCompactPartyFrame(frame)
     end
 
     P.HookSpacing(frame)
-    
+
     if frame.name then
         local function AnchorName(self)
             local d = GetPartyData(frame)

@@ -279,6 +279,9 @@ function UnitFrames:StyleFrame(frame)
     if contentContext and contentContext.PlayerPortraitCornerIcon then
         self:EnforceHiddenRegion(contentContext.PlayerPortraitCornerIcon, hiddenFrame)
     end
+    if frame == PlayerFrame and contentContext and contentContext.GroupIndicator then
+        self:EnforceHiddenRegion(contentContext.GroupIndicator, hiddenFrame)
+    end
     if contentMain and contentMain.ReputationColor then
         self:EnforceHiddenRegion(contentMain.ReputationColor, hiddenFrame)
     end

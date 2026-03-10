@@ -600,7 +600,8 @@ function Tooltip:ConsumeTooltipPostCallRender(tooltip)
 end
 
 function Tooltip:HasTooltipRenderFlag(tooltip, key)
-    if type(key) ~= "string" or key == "" then
+    key = ReadSafeString(key)
+    if not key or key == "" then
         return false
     end
 
@@ -610,7 +611,8 @@ function Tooltip:HasTooltipRenderFlag(tooltip, key)
 end
 
 function Tooltip:SetTooltipRenderFlag(tooltip, key)
-    if type(key) ~= "string" or key == "" then
+    key = ReadSafeString(key)
+    if not key or key == "" then
         return false
     end
 

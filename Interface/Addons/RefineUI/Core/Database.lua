@@ -42,6 +42,13 @@ local function BindRuntimeConfig(profile)
 
     RefineUI.Config = runtimeConfig
     RefineUI.DB = profile
+
+    local runtimePositions = profile.Positions
+    if type(runtimePositions) ~= "table" then
+        runtimePositions = {}
+        profile.Positions = runtimePositions
+    end
+    RefineUI.Positions = runtimePositions
 end
 
 -- Recursive copy of defaults
@@ -121,6 +128,13 @@ function RefineUI:InitializeDatabase()
 
     -- Merge logic: "Copy-on-Load"
     RefineUI:CopyDefaults(RefineUI.DefaultConfig, profile)
+
+    local defaultPositions = RefineUI.Positions
+    if type(profile.Positions) ~= "table" then
+        profile.Positions = DeepCopy(type(defaultPositions) == "table" and defaultPositions or {})
+    elseif type(defaultPositions) == "table" then
+        RefineUI:CopyDefaults(defaultPositions, profile.Positions)
+    end
     
     -- Runtime profile object + stable RefineUI.Config proxy.
     BindRuntimeConfig(profile)

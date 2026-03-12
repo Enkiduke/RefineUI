@@ -41,6 +41,22 @@ local function HasValue(v)
     return v ~= nil
 end
 
+local function ReadSafeInterruptibilityFlag(v)
+    if IsSecret(v) then
+        return nil
+    end
+
+    local valueType = type(v)
+    if valueType == "boolean" then
+        return v
+    end
+    if valueType == "number" then
+        return v ~= 0
+    end
+
+    return nil
+end
+
 local function GetCastBarData(castbar)
     if not castbar then return {} end
     local data = CastBarData[castbar]
@@ -294,7 +310,8 @@ local function PostCastStart(self, unit)
     end
     
     -- Color
-    if self.notInterruptible then
+    local notInterruptible = ReadSafeInterruptibilityFlag(self.notInterruptible)
+    if notInterruptible == true then
         self:SetStatusBarColor(0.5, 0.5, 0.5) -- Grey for uninterruptible
     else
         local c = Config.UnitFrames.CastBars.Color

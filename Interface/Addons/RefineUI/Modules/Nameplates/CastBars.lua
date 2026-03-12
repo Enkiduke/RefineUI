@@ -30,7 +30,6 @@ end
 local _G = _G
 local unpack = unpack
 local math = math
-local format = string.format
 local UnitCastingInfo = UnitCastingInfo
 local UnitChannelInfo = UnitChannelInfo
 local UnitCastingDuration = UnitCastingDuration
@@ -118,22 +117,56 @@ local function GetSafeBarType(castBar)
     return barType
 end
 
+local function GetInterruptibilityFromTexture(texturePath)
+    if not IsAccessibleValue(texturePath) or type(texturePath) ~= "string" then
+        return nil
+    end
+
+    -- Blizzard's native fill atlas still tells us whether the cast was interruptible
+    -- before we replace the texture with our own statusbar art.
+    if texturePath == "" then
+        return false
+    end
+
+    if texturePath:find("uninterruptable", 1, true) or texturePath:find("uninterruptible", 1, true) then
+        return true
+    end
+
+    if texturePath:find("ui-castingbar-filling-", 1, true) then
+        return false
+    end
+
+    return nil
+end
+
+local function ClearCastInterruptibilityState(data, preserveShieldSignal)
+    if not data then
+        return
+    end
+
+    data.notInterruptible = nil
+    data.nativeStatusBarTexture = nil
+    if not preserveShieldSignal then
+        data.shieldShownSignal = nil
+    end
+end
+
+local function UpdateInterruptibilityFromShieldSignal(data, shown, shownState)
+    if not data then
+        return
+    end
+
+    data.shieldShownSignal = shown
+    if shownState ~= nil then
+        data.notInterruptible = shownState
+    else
+        data.notInterruptible = ReadSafeBoolean(shown)
+    end
+end
+
 local function IsSafeBarType(castBar, expectedType)
     local barType = GetSafeBarType(castBar)
     return barType ~= nil and barType == expectedType
-end
-
-local function SafeCastBarIsInterruptable(castBar)
-    if not castBar or type(castBar.IsInterruptable) ~= "function" then
-        return nil
-    end
-
-    local ok, isInterruptable = pcall(castBar.IsInterruptable, castBar)
-    if not ok then
-        return nil
-    end
-
-    return ReadSafeBoolean(isInterruptable)
 end
 
 local function CreateColorFromArray(color, darkenFactor)
@@ -166,6 +199,48 @@ local function GetCastBarRenderedColor(castBar)
     return r, g, b
 end
 
+local function GetCastBarStatusTexture(castBar)
+    if not castBar or not castBar.GetStatusBarTexture then
+        return nil
+    end
+
+    return castBar:GetStatusBarTexture()
+end
+
+local function EnsureCastBarTextureDesaturation(castBar)
+    if not castBar then
+        return nil
+    end
+
+    local statusTexture = GetCastBarStatusTexture(castBar)
+    if statusTexture and statusTexture.SetDesaturated then
+        statusTexture:SetDesaturated(true)
+    elseif castBar.SetStatusBarDesaturated then
+        castBar:SetStatusBarDesaturated(true)
+    end
+
+    return statusTexture
+end
+
+local function ApplyCastStatusColorDirect(castBar, color)
+    if not castBar or not color then
+        return false
+    end
+
+    local statusTexture = EnsureCastBarTextureDesaturation(castBar)
+    if statusTexture and statusTexture.SetVertexColor then
+        statusTexture:SetVertexColor(unpack(color))
+        return true
+    end
+
+    if castBar.SetStatusBarColor then
+        castBar:SetStatusBarColor(unpack(color))
+        return true
+    end
+
+    return false
+end
+
 local function ApplyCastStatusColorFromSignal(castBar, signal, resolvedNotInterruptible)
     if not castBar then
         return false
@@ -174,7 +249,7 @@ local function ApplyCastStatusColorFromSignal(castBar, signal, resolvedNotInterr
     local colors = RefineUI.Colors.Cast
     local bgColors = RefineUI.Colors.CastBG
 
-    local statusTexture = castBar.GetStatusBarTexture and castBar:GetStatusBarTexture()
+    local statusTexture = EnsureCastBarTextureDesaturation(castBar)
     if signal ~= nil and statusTexture and statusTexture.SetVertexColorFromBoolean then
         local colorObjs = RefineUI.Colors.CastColorObj
         statusTexture:SetVertexColorFromBoolean(
@@ -182,9 +257,11 @@ local function ApplyCastStatusColorFromSignal(castBar, signal, resolvedNotInterr
             colorObjs and colorObjs.NonInterruptible or CreateColorFromArray(colors.NonInterruptible),
             colorObjs and colorObjs.Interruptible or CreateColorFromArray(colors.Interruptible)
         )
-    elseif resolvedNotInterruptible ~= nil and castBar.SetStatusBarColor then
+    elseif resolvedNotInterruptible ~= nil then
         local baseColor = resolvedNotInterruptible and colors.NonInterruptible or colors.Interruptible
-        castBar:SetStatusBarColor(unpack(baseColor))
+        if not ApplyCastStatusColorDirect(castBar, baseColor) then
+            return false
+        end
     else
         return false
     end
@@ -393,7 +470,7 @@ local function ResetCastStyle(self)
      local data = GetCastBarData(self)
      if data then
         data.castR, data.castG, data.castB = nil, nil, nil
-        data.notInterruptible = nil
+        ClearCastInterruptibilityState(data, false)
      end
      
      -- Reset Portrait Border using centralized logic
@@ -411,19 +488,28 @@ local function GetCastBarInterruptibilitySignal(castBar)
         return nil
     end
 
-    local isInterruptable = SafeCastBarIsInterruptable(castBar)
-    if isInterruptable ~= nil then
-        return not isInterruptable
+    -- Avoid castBar:IsInterruptable() here; Blizzard resolves it through a protected
+    -- secret-value path on nameplate cast bars and taints later texture updates.
+    local rawNotInterruptible = castBar.notInterruptible
+    if HasValue(rawNotInterruptible) then
+        return rawNotInterruptible
     end
 
-    local barType = GetSafeBarType(castBar)
-    if barType == "uninterruptable" or barType == "uninterruptible" then
-        return true
+    local data = GetCastBarData(castBar)
+    -- A secret shield argument is the best live signal we can safely preserve for rendering.
+    if data and HasValue(data.shieldShownSignal) then
+        return data.shieldShownSignal
     end
 
-    local castBarNotInterruptible = ReadSafeBoolean(castBar.notInterruptible)
-    if castBarNotInterruptible ~= nil then
-        return castBarNotInterruptible
+    if data and data.notInterruptible ~= nil then
+        return data.notInterruptible
+    end
+
+    if data and data.nativeStatusBarTexture ~= nil then
+        local textureNotInterruptible = GetInterruptibilityFromTexture(data.nativeStatusBarTexture)
+        if textureNotInterruptible ~= nil then
+            return textureNotInterruptible
+        end
     end
 
     if castBar.BorderShield and castBar.BorderShield.IsShown then
@@ -433,9 +519,63 @@ local function GetCastBarInterruptibilitySignal(castBar)
         end
     end
 
+    local barType = GetSafeBarType(castBar)
+    if barType == "uninterruptable" or barType == "uninterruptible" then
+        return true
+    end
+
+    return nil
+end
+
+local function GetResolvedCastBarInterruptibility(castBar)
+    if not castBar then
+        return nil
+    end
+
+    local castBarNotInterruptible = ReadSafeBoolean(castBar.notInterruptible)
+    if castBarNotInterruptible ~= nil then
+        return castBarNotInterruptible
+    end
+    if HasValue(castBar.notInterruptible) then
+        return nil
+    end
+
     local data = GetCastBarData(castBar)
+    if data and HasValue(data.shieldShownSignal) then
+        local shieldSignal = ReadSafeBoolean(data.shieldShownSignal)
+        if shieldSignal ~= nil then
+            return shieldSignal
+        end
+        return nil
+    end
+
     if data and data.notInterruptible ~= nil then
         return data.notInterruptible
+    end
+
+    if data and data.nativeStatusBarTexture ~= nil then
+        local textureNotInterruptible = GetInterruptibilityFromTexture(data.nativeStatusBarTexture)
+        if textureNotInterruptible ~= nil then
+            return textureNotInterruptible
+        end
+    end
+
+    local barType = GetSafeBarType(castBar)
+    if barType == "uninterruptable" or barType == "uninterruptible" then
+        return true
+    end
+    if barType == "standard"
+        or barType == "channel"
+        or barType == "empowered"
+        or barType == "applyingcrafting" then
+        return false
+    end
+
+    if castBar.BorderShield and castBar.BorderShield.IsShown then
+        local shieldShown = ReadSafeBoolean(castBar.BorderShield:IsShown())
+        if shieldShown ~= nil then
+            return shieldShown
+        end
     end
 
     return nil
@@ -450,21 +590,6 @@ GetCastInterruptibilitySignal = function(unit, castBar)
     local castBarSignal = GetCastBarInterruptibilitySignal(castBar)
     if castBarSignal ~= nil then
         return castBarSignal, true
-    end
-
-    if not unit then
-        return nil, true
-    end
-
-    local castName, _, _, _, _, _, _, apiNotInterruptible = UnitCastingInfo(unit)
-    if HasValue(castName) then
-        return apiNotInterruptible, true
-    end
-
-    local channelName
-    channelName, _, _, _, _, _, apiNotInterruptible = UnitChannelInfo(unit)
-    if HasValue(channelName) then
-        return apiNotInterruptible, true
     end
 
     return nil, true
@@ -505,18 +630,12 @@ UpdateCastColor = function(self, refreshBorders)
                  ResetCastStyle(self)
              else
                  data.castR, data.castG, data.castB = nil, nil, nil
-                 data.notInterruptible = nil
+                 ClearCastInterruptibilityState(data, false)
              end
              return
          end
 
-         local resolvedNotInterruptible = ReadSafeBoolean(interruptSignal)
-         if resolvedNotInterruptible == nil and self.BorderShield and self.BorderShield.IsShown then
-             resolvedNotInterruptible = ReadSafeBoolean(self.BorderShield:IsShown())
-         end
-         if resolvedNotInterruptible == nil and data.notInterruptible ~= nil then
-             resolvedNotInterruptible = data.notInterruptible and true or false
-         end
+         local resolvedNotInterruptible = GetResolvedCastBarInterruptibility(self)
          if resolvedNotInterruptible ~= nil then
              data.notInterruptible = resolvedNotInterruptible
          end
@@ -534,23 +653,22 @@ UpdateCastColor = function(self, refreshBorders)
                  bgColor = RefineUI.Colors.CastBG.Interruptible
              end
          end
-          
+         
          if castColor then
-             local r, g, b = GetCastBarRenderedColor(self)
-             if r == nil then
-                 local effectiveColor = castColor
-                 if resolvedNotInterruptible ~= nil then
-                     effectiveColor = resolvedNotInterruptible and RefineUI.Colors.Cast.NonInterruptible or RefineUI.Colors.Cast.Interruptible
-                 end
-                 r, g, b = unpack(effectiveColor)
+             local effectiveColor = castColor
+             if resolvedNotInterruptible ~= nil then
+                 effectiveColor = resolvedNotInterruptible and RefineUI.Colors.Cast.NonInterruptible or RefineUI.Colors.Cast.Interruptible
              end
+             local r, g, b = unpack(effectiveColor)
              
-             -- Cache the rendered cast color for other nameplate visuals.
+             -- Cache the intended cast color for other nameplate visuals.
              data.castR, data.castG, data.castB = r, g, b
              
-             -- 1. Color CastBar (Status Bar)
+             EnsureCastBarTextureDesaturation(self)
+
+             -- 1. Color CastBar (Status Texture / Status Bar)
              if not signalApplied then
-                 self:SetStatusBarColor(r, g, b)
+                 ApplyCastStatusColorDirect(self, effectiveColor)
              end
              
              -- 2. Color CastBar Border (Backdrop)
@@ -644,7 +762,7 @@ HandleCastBarEvent = function(self, event, ...)
         elseif event == "UNIT_SPELLCAST_START"
             or event == "UNIT_SPELLCAST_CHANNEL_START"
             or event == "UNIT_SPELLCAST_EMPOWER_START" then
-            data.notInterruptible = nil
+            ClearCastInterruptibilityState(data, true)
         end
     end
 
@@ -875,7 +993,6 @@ end
 function RefineUI:StyleNameplateCastBar(castBar)
     local data = GetCastBarData(castBar)
     if not castBar or data.isStyled then return end
-    local cfg = Config.Nameplates.CastBar
 
     RefineUI:RefreshNameplateCastColors(false)
 
@@ -886,13 +1003,20 @@ function RefineUI:StyleNameplateCastBar(castBar)
 
     -- Texture
     castBar:SetStatusBarTexture(TEX_BAR)
-    castBar:SetStatusBarDesaturated(true)
+    EnsureCastBarTextureDesaturation(castBar)
 
     RefineUI:HookOnce(BuildNameplateCastHookKey(castBar, "SetStatusBarTexture"), castBar, "SetStatusBarTexture", function(self, tex)
+        local data = GetCastBarData(self)
+        if data then
+            if IsAccessibleValue(tex) and type(tex) == "string" and tex ~= TEX_BAR then
+                data.nativeStatusBarTexture = tex
+            end
+        end
         if (not IsAccessibleValue(tex)) or tex ~= TEX_BAR then
             self:SetStatusBarTexture(TEX_BAR)
-            self:SetStatusBarDesaturated(true)
         end
+        EnsureCastBarTextureDesaturation(self)
+        UpdateCastColor(self, false)
     end)
     
     -- Border
@@ -908,15 +1032,25 @@ function RefineUI:StyleNameplateCastBar(castBar)
             BuildNameplateCastHookKey(castBar.BorderShield, "SetShown"),
             castBar.BorderShield,
             "SetShown",
-            function(shield)
+            function(shield, shown)
                 local shieldShown = ReadSafeBoolean(shield:IsShown())
-                if shieldShown ~= nil then
-                    data.notInterruptible = shieldShown
-                end
+                UpdateInterruptibilityFromShieldSignal(data, shown, shieldShown)
                 UpdateCastColor(castBar, true)
             end
         )
     end
+    RefineUI:HookOnce(
+        BuildNameplateCastHookKey(castBar, "UpdateInterruptibleState"),
+        castBar,
+        "UpdateInterruptibleState",
+        function(self, notInterruptible)
+            local data = GetCastBarData(self)
+            if data then
+                data.notInterruptible = ReadSafeBoolean(notInterruptible)
+            end
+            UpdateCastColor(self, true)
+        end
+    )
 
     -- Background
     if not data.Background then
@@ -1002,4 +1136,3 @@ function RefineUI:StyleNameplateCastBar(castBar)
 
     data.isStyled = true
 end
-

@@ -18,7 +18,9 @@ if not P then return end
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local CreateFrame = CreateFrame
+local InCombatLockdown = InCombatLockdown
 local ipairs = ipairs
+local pairs = pairs
 local type = type
 local tostring = tostring
 local strfind = string.find
@@ -26,6 +28,7 @@ local abs = math.abs
 local floor = math.floor
 local tinsert = table.insert
 local tsort = table.sort
+local wipe = wipe
 
 local GetPartyData     = P.GetData
 local GetPartyAuraData = P.GetAuraData
@@ -51,6 +54,21 @@ local COMPACT_GRID_DIRECTION_FALLBACK = {
     RightToLeft = { x = -1, y = 0, isVertical = false },
     LeftToRight = { x = 1, y = 0, isVertical = false },
 }
+
+local importantByFrameScratch = {}
+local importantLayoutTokenParts = {}
+
+local function WipeTable(tbl)
+    if wipe then
+        wipe(tbl)
+        return tbl
+    end
+
+    for key in pairs(tbl) do
+        tbl[key] = nil
+    end
+    return tbl
+end
 
 ----------------------------------------------------------------------------------------
 -- Aura Icon Spacing
@@ -230,6 +248,46 @@ local function EnsureCompactImportantBuffAnchor(ownerFrame)
     return anchor
 end
 
+local function BuildCompactImportantLayoutToken(frame, importantBuffFrames, stride, spacing, direction)
+    local parts = WipeTable(importantLayoutTokenParts)
+    parts[1] = tostring(stride)
+    parts[2] = ":"
+    parts[3] = tostring(spacing)
+    parts[4] = ":"
+    parts[5] = tostring(direction and direction.x or 0)
+    parts[6] = ":"
+    parts[7] = tostring(direction and direction.y or 0)
+
+    local nextIndex = 8
+    for index = 1, #importantBuffFrames do
+        local buffFrame = importantBuffFrames[index]
+        local auraData = buffFrame and GetPartyAuraData(buffFrame)
+        parts[nextIndex] = "|I:"
+        parts[nextIndex + 1] = tostring(index)
+        parts[nextIndex + 2] = ":"
+        parts[nextIndex + 3] = tostring(auraData and (auraData.auraInstanceID or auraData.auraSpellID) or buffFrame)
+        nextIndex = nextIndex + 4
+    end
+
+    if type(frame.buffFrames) == "table" then
+        for index = 1, #frame.buffFrames do
+            local buffFrame = frame.buffFrames[index]
+            if buffFrame and buffFrame:IsShown() then
+                local auraData = GetPartyAuraData(buffFrame)
+                parts[nextIndex] = "|B:"
+                parts[nextIndex + 1] = tostring(index)
+                parts[nextIndex + 2] = ":"
+                parts[nextIndex + 3] = tostring(auraData and (auraData.auraInstanceID or auraData.auraSpellID) or buffFrame)
+                parts[nextIndex + 4] = ":"
+                parts[nextIndex + 5] = importantByFrameScratch[buffFrame] and "1" or "0"
+                nextIndex = nextIndex + 6
+            end
+        end
+    end
+
+    return table.concat(parts, "")
+end
+
 ----------------------------------------------------------------------------------------
 -- Spacing Computation
 ----------------------------------------------------------------------------------------
@@ -380,15 +438,9 @@ local function ApplyCompactAuraSpacingFromAnchor(auraFrame, point, relTo, relPoi
 
     if offsetX == 0 and offsetY == 0 then
         data.spacingAdjusting = true
+        pcall(auraFrame.ClearAllPoints, auraFrame)
         pcall(auraFrame.SetPoint, auraFrame, point, relTo, relPoint, x, y)
         data.spacingAdjusting = false
-        data.appliedSpacingOffsetX = 0
-        data.appliedSpacingOffsetY = 0
-        data.lastAppliedPoint = point
-        data.lastAppliedRelTo = relTo
-        data.lastAppliedRelPoint = relPoint
-        data.lastAppliedX = x
-        data.lastAppliedY = y
         return
     end
 
@@ -398,20 +450,26 @@ local function ApplyCompactAuraSpacingFromAnchor(auraFrame, point, relTo, relPoi
     end
 
     data.spacingAdjusting = true
-    carrier:ClearAllPoints()
-    local okCarrier = pcall(carrier.SetPoint, carrier, point, relTo, relPoint, x, y)
+    if data.spacingCarrierPoint ~= point
+        or data.spacingCarrierRelTo ~= relTo
+        or data.spacingCarrierRelPoint ~= relPoint
+        or data.spacingCarrierX ~= x
+        or data.spacingCarrierY ~= y then
+        carrier:ClearAllPoints()
+        pcall(carrier.SetPoint, carrier, point, relTo, relPoint, x, y)
+        data.spacingCarrierPoint = point
+        data.spacingCarrierRelTo = relTo
+        data.spacingCarrierRelPoint = relPoint
+        data.spacingCarrierX = x
+        data.spacingCarrierY = y
+    end
+
+    local okCarrier = true
     if okCarrier then
+        pcall(auraFrame.ClearAllPoints, auraFrame)
         pcall(auraFrame.SetPoint, auraFrame, point, carrier, point, offsetX, offsetY)
     end
     data.spacingAdjusting = false
-
-    data.appliedSpacingOffsetX = offsetX
-    data.appliedSpacingOffsetY = offsetY
-    data.lastAppliedPoint = point
-    data.lastAppliedRelTo = relTo
-    data.lastAppliedRelPoint = relPoint
-    data.lastAppliedX = x
-    data.lastAppliedY = y
 end
 
 local function ApplyCompactAuraSpacingToCurrentPoint(auraFrame)
@@ -577,7 +635,8 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
         return
     end
 
-    local importantByFrame = {}
+    local frameData = GetPartyData(frame)
+    local importantByFrame = WipeTable(importantByFrameScratch)
     for i = 1, #importantBuffFrames do
         local buffFrame = importantBuffFrames[i]
         if buffFrame then
@@ -591,6 +650,8 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
     end
 
     if #importantBuffFrames == 0 then
+        frameData.importantMembershipToken = "none"
+        frameData.importantLayoutToken = "none"
         for _, buffFrame in ipairs(frame.buffFrames) do
             if buffFrame and buffFrame:IsShown() then
                 ApplyCompactAuraSpacingToCurrentPoint(buffFrame)
@@ -668,24 +729,70 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
             local col = seqIndex % stride
             local row = floor(seqIndex / stride)
 
-            local offsetX = col * (iconWidth + spacing) * dirX
-            local offsetY = row * (iconHeight + spacing) * dirY
+            local offsetX = col * iconWidth * dirX
+            local offsetY = row * iconHeight * dirY
 
             -- Update base anchor data so spacing system uses corrected position
+            local nextBaseX = originX + offsetX
+            local nextBaseY = originY + offsetY
+            local nextContainerIndex = seqIndex + 1
+            local baseAnchorChanged = data.basePoint ~= originPoint
+                or data.baseRelTo ~= originRelTo
+                or data.baseRelPoint ~= originRelPoint
+                or data.baseX ~= nextBaseX
+                or data.baseY ~= nextBaseY
+                or data.containerIndex ~= nextContainerIndex
+
             data.basePoint = originPoint
             data.baseRelTo = originRelTo
             data.baseRelPoint = originRelPoint
-            data.baseX = originX + offsetX
-            data.baseY = originY + offsetY
-            data.containerIndex = seqIndex + 1
+            data.baseX = nextBaseX
+            data.baseY = nextBaseY
+            data.containerIndex = nextContainerIndex
 
-            -- Re-apply spacing from corrected base position
+            -- Re-apply spacing from corrected base position.
             data.spacingAdjusting = true
             buffFrame:ClearAllPoints()
             data.spacingAdjusting = false
             ApplyCompactAuraSpacingToCurrentPoint(buffFrame)
 
             seqIndex = seqIndex + 1
+        end
+    end
+end
+
+local function PrewarmAuraHelpersForFrame(frame)
+    if not frame or frame:IsForbidden() or InCombatLockdown() then
+        return
+    end
+    if not IsPartyRaidCompactFrame(frame) then
+        return
+    end
+
+    EnsureCompactImportantBuffAnchor(frame)
+    ApplyCompactAuraSpacingForFrame(frame)
+
+    if type(P.EnsureCompactAuraBorder) == "function" then
+        if type(frame.buffFrames) == "table" then
+            for index = 1, #frame.buffFrames do
+                local buffFrame = frame.buffFrames[index]
+                if buffFrame then
+                    P.EnsureCompactAuraBorder(buffFrame)
+                end
+            end
+        end
+
+        if type(frame.debuffFrames) == "table" then
+            for index = 1, #frame.debuffFrames do
+                local debuffFrame = frame.debuffFrames[index]
+                if debuffFrame then
+                    P.EnsureCompactAuraBorder(debuffFrame)
+                end
+            end
+        end
+
+        if frame.CenterDefensiveBuff then
+            P.EnsureCompactAuraBorder(frame.CenterDefensiveBuff)
         end
     end
 end
@@ -699,7 +806,9 @@ P.COMPACT_AURA_CONTAINER_DISPEL = COMPACT_AURA_CONTAINER_DISPEL
 
 P.GetCompactAuraIconSpacing          = GetCompactAuraIconSpacing
 P.GetCompactAuraLayoutSpec           = GetCompactAuraLayoutSpec
+P.EnsureCompactImportantBuffAnchor   = EnsureCompactImportantBuffAnchor
 P.EnsureCompactAuraSpacing           = EnsureCompactAuraSpacing
 P.ApplyCompactAuraSpacingForFrame    = ApplyCompactAuraSpacingForFrame
 P.ApplyCompactAuraSpacingToCurrentPoint = ApplyCompactAuraSpacingToCurrentPoint
 P.ApplyCompactImportantBuffLayout    = ApplyCompactImportantBuffLayout
+P.PrewarmAuraHelpersForFrame         = PrewarmAuraHelpersForFrame

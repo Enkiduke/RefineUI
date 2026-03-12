@@ -32,8 +32,15 @@ local unpack = unpack
 local math = math
 local table = table
 local pcall = pcall
+local bitband = bit and bit.band
 local CreateFrame = CreateFrame
+local GetCursorInfo = GetCursorInfo
+local GetMouseFocus = GetMouseFocus
+local GetMouseFoci = GetMouseFoci
 local InCombatLockdown = InCombatLockdown
+local IsMouseButtonDown = IsMouseButtonDown
+local PutItemInBackpack = PutItemInBackpack
+local PutItemInBag = PutItemInBag
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -48,6 +55,10 @@ local CONTENT_INSET = 5
 local HEADER_HEIGHT = 18
 local SUB_HEADER_HEIGHT = 16
 local BOTTOM_HEIGHT = 30
+local BACKPACK_BAG_ID = BACKPACK_CONTAINER or 0
+local NORMAL_BAG_LAST_ID = NUM_BAG_SLOTS or 4
+local REAGENT_BAG_ID = REAGENTBAG_CONTAINER or ((Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5)
+local BAG_DROP_OVERLAY_TEXT = "Drop to Add to Bag"
 
 local DEFAULT_COLUMNS = math.floor((DEFAULT_BAG_WIDTH - PADDING * 2 + DEFAULT_ITEM_SPACING_X) / (DEFAULT_SLOT_SIZE + DEFAULT_ITEM_SPACING_X))
 
@@ -184,6 +195,11 @@ Bags.activeSlots = Bags.activeSlots or {}
 -- Main Frame
 ----------------------------------------------------------------------------------------
 
+local bagDropOverlay
+local HideBagWindowDropOverlay
+local UpdateBagWindowDropOverlay
+local HandleBagWindowDrop
+
 local Frame = CreateFrame("Frame", "RefineUI_Bags", UIParent, Bags.BagWindowFrameTemplate)
 Bags.Frame = Frame
 Bags.ApplyFlatFrameNoPortraitCorner(Frame)
@@ -209,6 +225,7 @@ Frame:RegisterForDrag("LeftButton")
 Frame:SetScript("OnDragStart", function(self)
     if Bags._editModeActive then return end
     if InCombatLockdown() then return end
+    if Bags.HasCursorItem and Bags.HasCursorItem() then return end
 
     if not self:IsMovable() then
         self:SetMovable(true)
@@ -238,6 +255,9 @@ Frame:SetScript("OnHide", function()
     C_NewItems.ClearAll()
     if C_Container and C_Container.SetItemSearch then
         C_Container.SetItemSearch("")
+    end
+    if HideBagWindowDropOverlay then
+        HideBagWindowDropOverlay()
     end
     if Bags.ReagentFrame then
         Bags.ReagentFrame:Hide()
@@ -428,6 +448,237 @@ local normalBagStatus = CreateBagStatusIcon(Frame, "RefineUI_BagsNormalStatus", 
 normalBagStatus:SetPoint("LEFT", reagentBagStatus, "RIGHT", 8, 0)
 normalBagStatus:EnableMouse(false)
 Frame.NormalBagStatus = normalBagStatus
+
+----------------------------------------------------------------------------------------
+-- Bag Window Drop Overlay
+----------------------------------------------------------------------------------------
+
+local function GetCursorItemFamily(itemID)
+    if type(itemID) ~= "number" or itemID <= 0 or not C_Item or not C_Item.GetItemFamily then
+        return 0
+    end
+
+    return C_Item.GetItemFamily(itemID) or 0
+end
+
+local function CanPlaceCursorItemInBag(bagID, itemFamily)
+    if type(bagID) ~= "number" or not C_Container or not C_Container.GetContainerNumFreeSlots then
+        return false
+    end
+
+    local freeSlots, bagType = C_Container.GetContainerNumFreeSlots(bagID)
+    if not freeSlots or freeSlots <= 0 then
+        return false
+    end
+
+    if not bagType or bagType == 0 then
+        return true
+    end
+
+    return bitband and type(itemFamily) == "number" and itemFamily > 0 and bitband(itemFamily, bagType) ~= 0
+end
+
+local function ForEachEligibleDropBag(itemID, prefersReagentBag, visitor)
+    if type(visitor) ~= "function" then
+        return false
+    end
+
+    local itemFamily = GetCursorItemFamily(itemID)
+
+    if prefersReagentBag and CanPlaceCursorItemInBag(REAGENT_BAG_ID, itemFamily) then
+        if visitor(REAGENT_BAG_ID, itemFamily) then
+            return true
+        end
+    end
+
+    for bagID = BACKPACK_BAG_ID, NORMAL_BAG_LAST_ID do
+        if CanPlaceCursorItemInBag(bagID, itemFamily) then
+            if visitor(bagID, itemFamily) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function TryPlaceCursorItemInBag(bagID)
+    local cursorTypeBefore = GetCursorInfo()
+    if cursorTypeBefore ~= "item" then
+        return false
+    end
+
+    local ok
+    if bagID == BACKPACK_BAG_ID then
+        ok = pcall(PutItemInBackpack)
+
+        local cursorTypeAfter = GetCursorInfo()
+        local moved = cursorTypeAfter ~= "item"
+        return ok and moved
+    end
+
+    local inventoryID = nil
+    if C_Container and C_Container.ContainerIDToInventoryID then
+        inventoryID = C_Container.ContainerIDToInventoryID(bagID)
+    else
+        inventoryID = bagID + (CONTAINER_BAG_OFFSET or 30)
+    end
+
+    if type(inventoryID) ~= "number" then
+        return false
+    end
+
+    ok = pcall(PutItemInBag, inventoryID)
+
+    local cursorTypeAfter = GetCursorInfo()
+    local moved = cursorTypeAfter ~= "item"
+    return ok and moved
+end
+
+local function CanAcceptBagWindowDrop(itemID, prefersReagentBag)
+    return ForEachEligibleDropBag(itemID, prefersReagentBag, function()
+        return true
+    end)
+end
+
+local function PlaceCursorItemInBestBag(itemID, prefersReagentBag)
+    return ForEachEligibleDropBag(itemID, prefersReagentBag, function(bagID)
+        return TryPlaceCursorItemInBag(bagID)
+    end)
+end
+
+local function EnsureBagWindowDropOverlay()
+    if bagDropOverlay then
+        return bagDropOverlay
+    end
+
+    bagDropOverlay = CreateFrame("Button", nil, Frame)
+    bagDropOverlay:SetFrameStrata(Frame:GetFrameStrata() or "MEDIUM")
+    bagDropOverlay:SetFrameLevel((Frame:GetFrameLevel() or 1) + 40)
+    bagDropOverlay:SetPoint("TOPLEFT", Frame, "TOPLEFT", 6, -24)
+    bagDropOverlay:SetPoint("BOTTOMRIGHT", Frame, "BOTTOMRIGHT", -6, 6)
+    bagDropOverlay:EnableMouse(true)
+    bagDropOverlay:RegisterForClicks("LeftButtonUp")
+    bagDropOverlay:RegisterForDrag("LeftButton")
+    bagDropOverlay:Hide()
+
+    -- The overlay must own the drop so underlying item slots do not consume it first.
+    bagDropOverlay:SetScript("OnReceiveDrag", function()
+        if HandleBagWindowDrop then
+            HandleBagWindowDrop()
+        end
+    end)
+
+    bagDropOverlay:SetScript("OnMouseUp", function(_, mouseButton)
+        if mouseButton ~= "LeftButton" then return end
+        if not (Bags.HasCursorItem and Bags.HasCursorItem()) then return end
+        if HandleBagWindowDrop then
+            HandleBagWindowDrop()
+        end
+    end)
+
+    bagDropOverlay.scrim = bagDropOverlay:CreateTexture(nil, "BACKGROUND")
+    bagDropOverlay.scrim:SetAllPoints()
+    bagDropOverlay.scrim:SetColorTexture(0.03, 0.08, 0.11, 0.58)
+
+    bagDropOverlay.panel = CreateFrame("Frame", nil, bagDropOverlay, "BackdropTemplate")
+    bagDropOverlay.panel:SetSize(280, 86)
+    bagDropOverlay.panel:SetPoint("CENTER", Frame.ItemContainer, "CENTER", 0, 0)
+
+    if RefineUI.SetTemplate then
+        RefineUI.SetTemplate(bagDropOverlay.panel, "Transparent")
+    else
+        bagDropOverlay.panel:SetBackdrop({
+            bgFile = "Interface\\Buttons\\WHITE8x8",
+            edgeFile = "Interface\\Buttons\\WHITE8x8",
+            edgeSize = 1,
+            insets = { left = 1, right = 1, top = 1, bottom = 1 },
+        })
+    end
+
+    if bagDropOverlay.panel.SetBackdropColor then
+        bagDropOverlay.panel:SetBackdropColor(0.06, 0.12, 0.16, 0.92)
+    end
+    if bagDropOverlay.panel.SetBackdropBorderColor then
+        bagDropOverlay.panel:SetBackdropBorderColor(0.42, 0.74, 1, 0.95)
+    end
+
+    bagDropOverlay.panel.glow = bagDropOverlay.panel:CreateTexture(nil, "BACKGROUND")
+    bagDropOverlay.panel.glow:SetPoint("TOPLEFT", bagDropOverlay.panel, "TOPLEFT", 1, -1)
+    bagDropOverlay.panel.glow:SetPoint("BOTTOMRIGHT", bagDropOverlay.panel, "BOTTOMRIGHT", -1, 1)
+    bagDropOverlay.panel.glow:SetColorTexture(0.16, 0.34, 0.48, 0.22)
+
+    bagDropOverlay.panel.icon = bagDropOverlay.panel:CreateTexture(nil, "ARTWORK")
+    bagDropOverlay.panel.icon:SetSize(24, 24)
+    bagDropOverlay.panel.icon:SetPoint("LEFT", bagDropOverlay.panel, "LEFT", 18, 0)
+    local atlasOK = pcall(bagDropOverlay.panel.icon.SetAtlas, bagDropOverlay.panel.icon, "bag-main", true)
+    if not atlasOK then
+        bagDropOverlay.panel.icon:SetTexture("Interface\\Icons\\INV_Misc_Bag_08")
+    end
+    bagDropOverlay.panel.icon:SetVertexColor(0.72, 0.9, 1, 1)
+
+    bagDropOverlay.panel.text = bagDropOverlay.panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    bagDropOverlay.panel.text:SetPoint("LEFT", bagDropOverlay.panel.icon, "RIGHT", 12, 0)
+    bagDropOverlay.panel.text:SetPoint("RIGHT", bagDropOverlay.panel, "RIGHT", -18, 0)
+    bagDropOverlay.panel.text:SetJustifyH("LEFT")
+    bagDropOverlay.panel.text:SetTextColor(0.94, 0.98, 1, 1)
+    bagDropOverlay.panel.text:SetText(BAG_DROP_OVERLAY_TEXT)
+
+    return bagDropOverlay
+end
+
+HideBagWindowDropOverlay = function()
+    if not bagDropOverlay then return end
+    bagDropOverlay:Hide()
+end
+
+UpdateBagWindowDropOverlay = function(hasCursorItem, itemID, isFromPlayerBag, prefersReagentBag)
+    local overlay = EnsureBagWindowDropOverlay()
+    if not overlay then return end
+
+    local shouldShow = Frame:IsShown()
+        and hasCursorItem
+        and type(itemID) == "number"
+        and itemID > 0
+        and not isFromPlayerBag
+        and Frame:IsMouseOver()
+        and CanAcceptBagWindowDrop(itemID, prefersReagentBag)
+
+    if shouldShow then
+        overlay:Show()
+        return
+    end
+
+    HideBagWindowDropOverlay()
+end
+
+HandleBagWindowDrop = function()
+    if not PutItemInBackpack or not PutItemInBag then
+        HideBagWindowDropOverlay()
+        return false
+    end
+
+    local hasCursorItem, itemID, isFromPlayerBag, prefersReagentBag
+    if Bags.GetCursorItemContext then
+        hasCursorItem, itemID, isFromPlayerBag, prefersReagentBag = Bags.GetCursorItemContext()
+    end
+    if not hasCursorItem or type(itemID) ~= "number" or itemID <= 0 or isFromPlayerBag then
+        HideBagWindowDropOverlay()
+        return false
+    end
+
+    local placed = PlaceCursorItemInBestBag(itemID, prefersReagentBag)
+    if placed then
+        HideBagWindowDropOverlay()
+        if Bags.RequestUpdate then
+            Bags.RequestUpdate({ renderOnly = true, forceReflow = true, cursorOnly = true })
+        end
+        return true
+    end
+
+    UpdateBagWindowDropOverlay(hasCursorItem, itemID, isFromPlayerBag, prefersReagentBag)
+    return false
+end
 
 ----------------------------------------------------------------------------------------
 -- Header Lifecycle
@@ -1263,8 +1514,16 @@ do
             Bags._draggingBagItemID = nil
         end
 
-        local hasCursorItem = (cursorType == "item")
-            or (Bags._draggingBagItemActive and type(Bags._draggingBagItemID) == "number" and Bags._draggingBagItemID > 0)
+        local hasCursorItem, cursorItemID, isFromPlayerBag, prefersReagentBag
+        if Bags.GetCursorItemContext then
+            hasCursorItem, cursorItemID, isFromPlayerBag, prefersReagentBag = Bags.GetCursorItemContext()
+        else
+            hasCursorItem = (cursorType == "item")
+                or (Bags._draggingBagItemActive and type(Bags._draggingBagItemID) == "number" and Bags._draggingBagItemID > 0)
+            cursorItemID = nil
+            isFromPlayerBag = false
+            prefersReagentBag = false
+        end
 
         if hasCursorItem ~= hadCursorItem then
             hadCursorItem = hasCursorItem
@@ -1273,6 +1532,10 @@ do
                 Bags._draggingBagItemID = nil
             end
             RequestUpdate({ renderOnly = true, forceReflow = true, cursorOnly = true })
+        end
+
+        if UpdateBagWindowDropOverlay then
+            UpdateBagWindowDropOverlay(hasCursorItem, cursorItemID, isFromPlayerBag, prefersReagentBag)
         end
 
         local hoveredNow = GetHoveredSlotFromMouseFocus()
@@ -1304,4 +1567,3 @@ SLASH_REFINEUIBAGS1 = "/bags"
 SlashCmdList["REFINEUIBAGS"] = function()
     ToggleBags()
 end
-

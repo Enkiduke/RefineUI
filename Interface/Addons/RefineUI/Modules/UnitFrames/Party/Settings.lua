@@ -26,6 +26,7 @@ local tsort = table.sort
 
 local QUESTION_MARK_ICON = P.QUESTION_MARK_ICON
 local IMPORTANT_SORT_MODE = P.IMPORTANT_SORT_MODE
+local BuildPartyHookKey = P.BuildHookKey
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -812,13 +813,13 @@ local function HookTrackedBuffSettingsDialog()
         return
     end
 
-    hooksecurefunc(dialog, "UpdateDialog", function(_, systemFrame)
+    RefineUI:HookOnce(BuildPartyHookKey(dialog, "UpdateDialog:TrackedBuffSettings"), dialog, "UpdateDialog", function(_, systemFrame)
         RefreshTrackedBuffSettingsWindowVisibility(systemFrame)
     end)
-    dialog:HookScript("OnShow", function(self)
+    RefineUI:HookScriptOnce(BuildPartyHookKey(dialog, "OnShow:TrackedBuffSettings"), dialog, "OnShow", function(self)
         RefreshTrackedBuffSettingsWindowVisibility(self.attachedToSystem)
     end)
-    dialog:HookScript("OnHide", function()
+    RefineUI:HookScriptOnce(BuildPartyHookKey(dialog, "OnHide:TrackedBuffSettings"), dialog, "OnHide", function()
         if trackedBuffSettingsWindow then
             trackedBuffSettingsWindow:Hide()
         end
@@ -826,7 +827,7 @@ local function HookTrackedBuffSettingsDialog()
 
     local editMode = _G.EditModeManagerFrame
     if editMode then
-        hooksecurefunc(editMode, "ExitEditMode", function()
+        RefineUI:HookOnce(BuildPartyHookKey(editMode, "ExitEditMode:TrackedBuffSettings"), editMode, "ExitEditMode", function()
             if trackedBuffSettingsWindow then
                 trackedBuffSettingsWindow:Hide()
             end

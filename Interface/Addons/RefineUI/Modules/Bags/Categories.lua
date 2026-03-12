@@ -29,7 +29,9 @@ local table = table
 local tinsert = table.insert
 local tremove = table.remove
 local pcall = pcall
+local bitband = bit and bit.band
 local GetItemInfo = GetItemInfo
+local GetCursorInfo = GetCursorInfo
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -62,6 +64,11 @@ Bags.CATEGORY_SCHEMA_VERSION = 5
 Bags.BINNED_BLOCK_TOKEN = "__BAGS_BINNED_BLOCK__"
 Bags.CUSTOM_CATEGORY_KEY_PREFIX = "__BAGS_CUSTOM__"
 Bags.CUSTOM_CATEGORY_NAME_MAX_LENGTH = 15
+
+local BACKPACK_BAG_ID = BACKPACK_CONTAINER or 0
+local NORMAL_BAG_LAST_ID = NUM_BAG_SLOTS or 4
+local REAGENT_BAG_ID = REAGENTBAG_CONTAINER or ((Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5)
+local PLAYER_BAG_LAST_ID = math.max(NORMAL_BAG_LAST_ID, REAGENT_BAG_ID)
 
 Bags.DEFAULT_PINNED_TOP_CATEGORIES = {
     Recent = true,
@@ -636,42 +643,94 @@ function Bags.ClearItemCustomCategory(itemID)
     return true
 end
 
-function Bags.GetCursorItemID()
+function Bags.GetCursorItemContext()
     local cursorType, cursorValue, cursorLink = GetCursorInfo()
+    local hasCursorItem = (cursorType == "item")
+    local itemID = nil
+    local isFromPlayerBag = false
+    local sourceBagID = nil
+    local sourceSlotIndex = nil
+    local prefersReagentBag = false
+
     if cursorType == "item" then
         local link = (type(cursorLink) == "string" and cursorLink) or (type(cursorValue) == "string" and cursorValue) or nil
         if link then
             local itemIDFromLink = tonumber(string.match(link, "item:(%d+)"))
             if itemIDFromLink and itemIDFromLink > 0 then
-                return itemIDFromLink
+                itemID = itemIDFromLink
             end
         end
 
-        if type(cursorValue) == "number" and cursorValue > 0 then
-            return cursorValue
+        if not itemID and type(cursorValue) == "number" and cursorValue > 0 then
+            itemID = cursorValue
         end
 
-        if type(cursorValue) == "table" and C_Item and C_Item.GetItemID then
+        if not itemID and type(cursorValue) == "table" and C_Item and C_Item.GetItemID then
             local ok, itemIDFromLocation = pcall(C_Item.GetItemID, cursorValue)
             if ok and type(itemIDFromLocation) == "number" and itemIDFromLocation > 0 then
-                return itemIDFromLocation
+                itemID = itemIDFromLocation
             end
         end
     end
 
-    if Bags._draggingBagItemActive and type(Bags._draggingBagItemID) == "number" and Bags._draggingBagItemID > 0 then
-        return Bags._draggingBagItemID
+    if C_Cursor and C_Cursor.GetCursorItem then
+        local cursorItemLocation = C_Cursor.GetCursorItem()
+        if cursorItemLocation then
+            if cursorItemLocation.GetBagAndSlot then
+                local ok, bagID, slotIndex = pcall(cursorItemLocation.GetBagAndSlot, cursorItemLocation)
+                if ok and type(bagID) == "number" and type(slotIndex) == "number" then
+                    sourceBagID = bagID
+                    sourceSlotIndex = slotIndex
+                    isFromPlayerBag = bagID >= BACKPACK_BAG_ID and bagID <= PLAYER_BAG_LAST_ID
+                end
+            end
+
+            if not itemID and C_Item and C_Item.GetItemID then
+                local ok, locationItemID = pcall(C_Item.GetItemID, cursorItemLocation)
+                if ok and type(locationItemID) == "number" and locationItemID > 0 then
+                    itemID = locationItemID
+                    hasCursorItem = true
+                end
+            end
+        end
+    end
+
+    if not hasCursorItem and Bags._draggingBagItemActive and type(Bags._draggingBagItemID) == "number" and Bags._draggingBagItemID > 0 then
+        hasCursorItem = true
+        itemID = Bags._draggingBagItemID
+    end
+
+    if type(itemID) == "number" and itemID > 0 and C_Item and C_Item.GetItemFamily and C_Container and C_Container.GetContainerNumFreeSlots then
+        local _, reagentBagFamily = C_Container.GetContainerNumFreeSlots(REAGENT_BAG_ID)
+        local itemFamily = C_Item.GetItemFamily(itemID)
+        if bitband and type(itemFamily) == "number" and itemFamily > 0 and type(reagentBagFamily) == "number" and reagentBagFamily > 0 then
+            prefersReagentBag = bitband(itemFamily, reagentBagFamily) ~= 0
+        end
+    end
+
+    return hasCursorItem, itemID, isFromPlayerBag, prefersReagentBag, sourceBagID, sourceSlotIndex
+end
+
+function Bags.GetCursorItemID()
+    if not Bags.GetCursorItemContext then
+        return nil
+    end
+
+    local _, itemID = Bags.GetCursorItemContext()
+    if type(itemID) == "number" and itemID > 0 then
+        return itemID
     end
 
     return nil
 end
 
 function Bags.HasCursorItem()
-    local cursorType = GetCursorInfo()
-    if cursorType == "item" then
-        return true
+    if not Bags.GetCursorItemContext then
+        return false
     end
-    return Bags._draggingBagItemActive and type(Bags._draggingBagItemID) == "number" and Bags._draggingBagItemID > 0
+
+    local hasCursorItem = Bags.GetCursorItemContext()
+    return hasCursorItem and true or false
 end
 
 function Bags.HandleCustomCategoryDrop(categoryKey)
@@ -1042,4 +1101,3 @@ end
 function Bags.MovePinnedCategoryToIndex(categoryKey, targetIndex)
     Bags.MovePinnedTokenToIndex(categoryKey, targetIndex)
 end
-

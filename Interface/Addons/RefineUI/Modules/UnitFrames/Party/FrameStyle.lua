@@ -26,9 +26,7 @@ local CreateFrame = CreateFrame
 local UnitIsConnected = UnitIsConnected
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
 local UnitExists = UnitExists
-local UnitName = UnitName
 local UnitClass = UnitClass
-local UnitIsPlayer = UnitIsPlayer
 local UnitIsGroupLeader = UnitIsGroupLeader
 local UnitGroupRolesAssigned = UnitGroupRolesAssigned
 local UnitHealthPercent = UnitHealthPercent
@@ -57,6 +55,18 @@ local TEXTURE_ROLE_DAMAGER  = [[Interface\AddOns\RefineUI\Media\Textures\DAMAGER
 local TEXTURE_COMPACT_HEALTH = P.TEXTURE_COMPACT_HEALTH
 local TEXTURE_RAID_TARGET_ICONS = [[Interface\TargetingFrame\UI-RaidTargetingIcons]]
 local PARTY_RAID_ICON_SIZE = 24
+
+local function QueuePartyDeferred(frame, suffix, delay, fn)
+    if not frame or frame:IsForbidden() or type(fn) ~= "function" then
+        return
+    end
+
+    RefineUI:After(BuildPartyHookKey(frame, "Deferred:" .. suffix), delay, function()
+        if frame and not frame:IsForbidden() then
+            fn(frame)
+        end
+    end)
+end
 
 ----------------------------------------------------------------------------------------
 -- Health Bar Texture
@@ -116,9 +126,9 @@ local function UpdateCustomPartyHP(self)
     
     local isEditMode = EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()
     if isEditMode then
-        C_Timer.After(0.1, function()
-            if frame and not frame:IsForbidden() and not (EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()) then
-                UpdateCustomPartyHP({frame = frame})
+        QueuePartyDeferred(frame, "UpdateCustomPartyHP", 0.1, function(deferredFrame)
+            if not (EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()) then
+                UpdateCustomPartyHP({ frame = deferredFrame })
             end
         end)
         return
@@ -129,14 +139,14 @@ local function UpdateCustomPartyHP(self)
     if not percentText then return end
     
     if not UnitIsConnected(unit) then
-        percentText:SetText("OFFLINE")
+        RefineUI:SetFontStringValue(percentText, "OFFLINE", { emptyText = "" })
         percentText:SetTextColor(0.5, 0.5, 0.5)
     elseif UnitIsDeadOrGhost(unit) then
-        percentText:SetText("DEAD")
+        RefineUI:SetFontStringValue(percentText, "DEAD", { emptyText = "" })
         percentText:SetTextColor(0.5, 0.5, 0.5)
     else
         local percent = UnitHealthPercent(unit, true, RefineUI.GetPercentCurve())
-        percentText:SetText(percent)
+        RefineUI:SetFontStringValue(percentText, percent, { emptyText = "" })
         percentText:SetTextColor(1, 1, 1)
     end
     percentText:Show()
@@ -162,9 +172,7 @@ local function CreateCustomPartyText(frame)
         
         local frameName = frame.GetName and frame:GetName()
         local key = "Party_"..(frameName or tostring(frame))
-        RefineUI:RegisterEventCallback("UNIT_HEALTH", OnPartyEvent, key.."_HP")
-        RefineUI:RegisterEventCallback("UNIT_MAXHEALTH", OnPartyEvent, key.."_MHP")
-        RefineUI:RegisterEventCallback("UNIT_CONNECTION", OnPartyEvent, key.."_CON")
+        RefineUI:OnEvents({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, OnPartyEvent, key)
         
         data.customTextCreated = true
     end
@@ -242,9 +250,9 @@ local function UpdateCompactPartyNameColor(frame)
     
     local isEditMode = EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()
     if isEditMode then
-        C_Timer.After(0.1, function()
-            if frame and not frame:IsForbidden() and not (EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()) then
-                UpdateCompactPartyNameColor(frame)
+        QueuePartyDeferred(frame, "UpdateCompactPartyNameColor", 0.1, function(deferredFrame)
+            if not (EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()) then
+                UpdateCompactPartyNameColor(deferredFrame)
             end
         end)
         return
@@ -252,11 +260,6 @@ local function UpdateCompactPartyNameColor(frame)
     
     local unit = frame.displayedUnit or frame.unit
     if not unit then return end
-
-    if UnitIsPlayer(unit) then
-        local cleanName = UnitName(unit)
-        RefineUI:SetFontStringValue(frame.name, cleanName, { emptyText = "" })
-    end
 
     if IsCompactPetUnitToken(unit) then
         UpdateCompactPetFrameColors(frame)
@@ -374,9 +377,9 @@ function UF.StyleCompactPartyFrame(frame)
     
     local isEditMode = EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()
     if isEditMode then
-        C_Timer.After(0.1, function()
-            if frame and not frame:IsForbidden() and not (EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()) then
-                UF.StyleCompactPartyFrame(frame)
+        QueuePartyDeferred(frame, "StyleCompactPartyFrame", 0.1, function(deferredFrame)
+            if not (EditModeManagerFrame and EditModeManagerFrame:IsEditModeActive()) then
+                UF.StyleCompactPartyFrame(deferredFrame)
             end
         end)
         return
@@ -394,7 +397,7 @@ function UF.StyleCompactPartyFrame(frame)
     end
 
     P.HookSpacing(frame)
-
+    
     if frame.name then
         local function AnchorName(self)
             local d = GetPartyData(frame)

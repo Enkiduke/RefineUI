@@ -21,9 +21,19 @@ local InCombatLockdown = InCombatLockdown
 local IsPartyRaidCompactFrame     = P.IsCompactFrame
 local ForEachCompactPartyRaidFrame = P.ForEachRaidFrame
 local ForceRestoreSpacing          = P.ForceRestoreSpacing
-local ApplyCompactRaidLayout       = P.ApplyCompactRaidLayout
-local SetupSecurePartySpacing      = P.SetupSecurePartySpacing
-local ApplySecurePartySpacing      = P.ApplySecurePartySpacing
+
+local function ReconcileAuraHelpers(includeHidden, includePets)
+    if InCombatLockdown() or type(P.PrewarmAuraHelpersForFrame) ~= "function" then
+        return
+    end
+
+    ForEachCompactPartyRaidFrame(includeHidden, includePets, function(frame)
+        P.PrewarmAuraHelpersForFrame(frame)
+        if type(P.ApplyCompactAuraStylingForFrame) == "function" then
+            P.ApplyCompactAuraStylingForFrame(frame)
+        end
+    end)
+end
 
 ----------------------------------------------------------------------------------------
 -- Refresh Tracked Class Buff Settings
@@ -36,6 +46,9 @@ function UF.RefreshTrackedClassBuffSettings()
     end
 
     ForEachCompactPartyRaidFrame(true, false, function(frame)
+        if type(P.PrewarmAuraHelpersForFrame) == "function" then
+            P.PrewarmAuraHelpersForFrame(frame)
+        end
         if _G.CompactUnitFrame_UpdateAuras then
             pcall(_G.CompactUnitFrame_UpdateAuras, frame)
         end
@@ -51,9 +64,6 @@ function UF.InitPartyHooks()
 
     P.EnsureManualOrderIncludesAllEntries()
     P.HookTrackedBuffSettingsDialog()
-    if SetupSecurePartySpacing then
-        SetupSecurePartySpacing()
-    end
 
     local function RegisterCompactPartyHooks()
         local registered = false
@@ -139,6 +149,10 @@ function UF.InitPartyHooks()
         UnitFrames:SetState(UnitFrames, "PartyHooksRegistered", true)
     end
     
+    if CompactPartyFrameTitle then
+        CompactPartyFrameTitle:SetAlpha(0)
+    end
+    
     local manager = _G.CompactRaidFrameManager
     if manager then
         manager:SetAlpha(0)
@@ -151,23 +165,16 @@ function UF.InitPartyHooks()
     
     local function OnPartyEvent(event, addon)
          P.HookTrackedBuffSettingsDialog()
-         if SetupSecurePartySpacing then
-             SetupSecurePartySpacing()
-         end
          if event == "ADDON_LOADED" and (addon == "Blizzard_CompactRaidFrames" or addon == "Blizzard_UnitFrame") then
               if RegisterCompactPartyHooks() then
                   UnitFrames:SetState(UnitFrames, "PartyHooksRegistered", true)
               end
 
+              ReconcileAuraHelpers(true, true)
               ForEachCompactPartyRaidFrame(true, true, function(frame)
                   UF.StyleCompactPartyFrame(frame)
                   UF.UpdateRoleIcon(frame)
               end)
-              if ApplySecurePartySpacing then
-                  ApplySecurePartySpacing()
-              end
-              ForceRestoreSpacing()
-              ApplyCompactRaidLayout()
          elseif event == "RAID_TARGET_UPDATE" then
             ForEachCompactPartyRaidFrame(false, true, function(frame)
                 if UF.UpdateCompactPartyRaidTargetMark then
@@ -175,34 +182,22 @@ function UF.InitPartyHooks()
                 end
             end)
          elseif event == "PARTY_LEADER_CHANGED" or event == "GROUP_ROSTER_UPDATE" or event == "UNIT_PET" then
+            ReconcileAuraHelpers(false, true)
             ForEachCompactPartyRaidFrame(false, true, function(frame)
                 UF.StyleCompactPartyFrame(frame)
                 UF.UpdateRoleIcon(frame)
             end)
-            if ApplySecurePartySpacing then
-                ApplySecurePartySpacing()
-            end
-            ForceRestoreSpacing()
-            ApplyCompactRaidLayout()
+            ForceRestoreSpacing() 
             
          elseif event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_REGEN_ENABLED" then
+            ReconcileAuraHelpers(true, true)
             ForEachCompactPartyRaidFrame(true, true, function(frame)
                 UF.StyleCompactPartyFrame(frame)
                 UF.UpdateRoleIcon(frame)
             end)
-            if ApplySecurePartySpacing then
-                ApplySecurePartySpacing()
-            end
             ForceRestoreSpacing()
-            ApplyCompactRaidLayout()
             if event == "PLAYER_ENTERING_WORLD" then
-                C_Timer.After(0.1, function()
-                    if ApplySecurePartySpacing then
-                        ApplySecurePartySpacing()
-                    end
-                end)
-                C_Timer.After(0.1, ForceRestoreSpacing)
-                C_Timer.After(0.1, ApplyCompactRaidLayout)
+                RefineUI:After("UnitFramesParty:ForceRestoreSpacing:PLAYER_ENTERING_WORLD", 0.1, ForceRestoreSpacing)
             end
          end
     end

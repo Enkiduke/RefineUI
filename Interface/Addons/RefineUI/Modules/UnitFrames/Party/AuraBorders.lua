@@ -18,6 +18,7 @@ if not P then return end
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local CreateFrame = CreateFrame
+local pairs = pairs
 local ipairs = ipairs
 local type = type
 local tostring = tostring
@@ -25,6 +26,7 @@ local strlower = string.lower
 local strfind = string.find
 local floor = math.floor
 local tinsert = table.insert
+local wipe = wipe
 
 local GetPartyData        = P.GetData
 local GetPartyAuraData    = P.GetAuraData
@@ -47,6 +49,26 @@ local DEFAULT_COMPACT_AURA_COOLDOWN_X = 2
 local DEFAULT_COMPACT_AURA_COOLDOWN_Y = 2
 
 local CompactDispelColorProbeTexture
+local importantBuffFramesScratch = {}
+local bestFrameColorScratch = {}
+
+local function WipeTable(tbl)
+    if wipe then
+        wipe(tbl)
+        return tbl
+    end
+
+    for key in pairs(tbl) do
+        tbl[key] = nil
+    end
+    return tbl
+end
+
+local function ResetBestFrameColorState()
+    local state = WipeTable(bestFrameColorScratch)
+    state.priority = -1
+    return state
+end
 
 ----------------------------------------------------------------------------------------
 -- Cooldown Swipe Helpers
@@ -118,17 +140,18 @@ local function ApplyCompactAuraCooldownSwipe(auraFrame)
         cooldown:SetSwipeColor(0, 0, 0, .7)
     end
     local topLeftX, topLeftY, bottomRightX, bottomRightY = GetCompactAuraCooldownSwipeOffsets()
-    local anchorToken = table.concat({
-        tostring(topLeftX),
-        tostring(topLeftY),
-        tostring(bottomRightX),
-        tostring(bottomRightY),
-    }, ":")
-    if data.cooldownAnchorToken ~= anchorToken and cooldown.ClearAllPoints and cooldown.SetPoint then
+    if (data.cooldownAnchorTopLeftX ~= topLeftX
+        or data.cooldownAnchorTopLeftY ~= topLeftY
+        or data.cooldownAnchorBottomRightX ~= bottomRightX
+        or data.cooldownAnchorBottomRightY ~= bottomRightY)
+        and cooldown.ClearAllPoints and cooldown.SetPoint then
         cooldown:ClearAllPoints()
         cooldown:SetPoint("TOPLEFT", auraFrame, "TOPLEFT", topLeftX, topLeftY)
         cooldown:SetPoint("BOTTOMRIGHT", auraFrame, "BOTTOMRIGHT", bottomRightX, bottomRightY)
-        data.cooldownAnchorToken = anchorToken
+        data.cooldownAnchorTopLeftX = topLeftX
+        data.cooldownAnchorTopLeftY = topLeftY
+        data.cooldownAnchorBottomRightX = bottomRightX
+        data.cooldownAnchorBottomRightY = bottomRightY
     end
 
     if data.cooldownSwipeToken ~= swipeToken and swipeTexture and cooldown.SetSwipeTexture then
@@ -160,12 +183,11 @@ local function EnsureCompactAuraBorder(auraFrame)
         end
     end
 
-    if borderHost.ClearAllPoints then
+    if data.borderHostAnchorOwner ~= auraFrame and borderHost.ClearAllPoints and borderHost.SetPoint then
         pcall(borderHost.ClearAllPoints, borderHost)
-    end
-    if borderHost.SetPoint then
         pcall(borderHost.SetPoint, borderHost, "TOPLEFT", auraFrame, "TOPLEFT", 0, 0)
         pcall(borderHost.SetPoint, borderHost, "BOTTOMRIGHT", auraFrame, "BOTTOMRIGHT", 0, 0)
+        data.borderHostAnchorOwner = auraFrame
     end
     TrySetFrameStrata(borderHost, GetSafeFrameStrata(auraFrame, "LOW"))
     TrySetFrameLevel(borderHost, GetSafeFrameLevel(auraFrame, 0) + 5)
@@ -229,7 +251,12 @@ local function ApplyCompactAuraBorderColor(auraFrame, r, g, b, a)
     if border.Show then
         border:Show()
     end
-    border:SetBackdropBorderColor(r or 1, g or 1, b or 1, a or 1)
+
+    local colorR = r or 1
+    local colorG = g or 1
+    local colorB = b or 1
+    local colorA = a or 1
+    border:SetBackdropBorderColor(colorR, colorG, colorB, colorA)
     return true
 end
 
@@ -357,17 +384,6 @@ local function GetDirectDebuffTypeColorRGB(dispelType)
     return 0.80, 0.13, 0.13
 end
 
-local function GetBlizzardDebuffBorderColorRGB(auraFrame)
-    local borderRegion = auraFrame and (auraFrame.border or auraFrame.DebuffBorder)
-    if borderRegion and borderRegion.GetVertexColor then
-        local r, g, b = borderRegion:GetVertexColor()
-        if type(r) == "number" and type(g) == "number" and type(b) == "number" then
-            return r, g, b
-        end
-    end
-    return nil
-end
-
 local function GetDispelTypeFromAtlasName(atlasName)
     if type(atlasName) ~= "string" or IsSecretValue(atlasName) then return nil end
     local lowerAtlas = strlower(atlasName)
@@ -387,17 +403,12 @@ end
 
 local function ApplyCompactDebuffBorderColor(auraFrame, aura)
     ApplyCompactAuraCooldownSwipe(auraFrame)
-    local r, g, b = GetBlizzardDebuffBorderColorRGB(auraFrame)
-    if r then
-        return ApplyCompactAuraBorderColor(auraFrame, r, g, b, 1)
-    end
-
     local dispelType = aura and aura.dispelName
     if not dispelType and auraFrame and auraFrame.icon and auraFrame.icon.GetAtlas then
         dispelType = GetDispelTypeFromAtlasName(auraFrame.icon:GetAtlas())
     end
 
-    r, g, b = GetDirectDebuffTypeColorRGB(dispelType)
+    local r, g, b = GetDirectDebuffTypeColorRGB(dispelType)
     return ApplyCompactAuraBorderColor(auraFrame, r, g, b, 1)
 end
 
@@ -530,12 +541,8 @@ local function TrackCompactDispelBorderColor(frame, aura)
         return
     end
 
-    local r, g, b = ResolveBlizzardDispelColorFromAuraInstance(frame, aura)
-    if not r then
-        r, g, b = ResolveBlizzardDispelColorFromAura(aura)
-    end
-
-    if not r and aura and aura.dispelName then
+    local r, g, b
+    if aura and aura.dispelName then
         r, g, b = GetDirectDebuffTypeColorRGB(aura.dispelName)
     end
 
@@ -644,32 +651,35 @@ local function UpdateCompactPartyDispelBorderColor(frame)
         return
     end
 
+    local colorR, colorG, colorB, colorA
+
     if ShouldUseCompactDispelBorderColor(frame) then
         if type(data.auraBorderR) == "number" then
-            border:SetBackdropBorderColor(data.auraBorderR, data.auraBorderG or data.auraBorderR, data.auraBorderB or data.auraBorderR, 1)
-            return
-        end
-
-        local dispelFrames = frame.dispelDebuffFrames
-        if type(dispelFrames) == "table" then
-            for _, dispelFrame in ipairs(dispelFrames) do
-                if dispelFrame and dispelFrame:IsShown() and dispelFrame.icon and dispelFrame.icon.GetAtlas then
-                    local dispelType = GetDispelTypeFromAtlasName(dispelFrame.icon:GetAtlas())
-                    if dispelType then
-                        local r, g, b = GetDirectDebuffTypeColorRGB(dispelType)
-                        border:SetBackdropBorderColor(r, g, b, 1)
-                        return
+            colorR = data.auraBorderR
+            colorG = data.auraBorderG or data.auraBorderR
+            colorB = data.auraBorderB or data.auraBorderR
+            colorA = 1
+        else
+            local dispelFrames = frame.dispelDebuffFrames
+            if type(dispelFrames) == "table" then
+                for _, dispelFrame in ipairs(dispelFrames) do
+                    if dispelFrame and dispelFrame:IsShown() and dispelFrame.icon and dispelFrame.icon.GetAtlas then
+                        local dispelType = GetDispelTypeFromAtlasName(dispelFrame.icon:GetAtlas())
+                        if dispelType then
+                            colorR, colorG, colorB = GetDirectDebuffTypeColorRGB(dispelType)
+                            colorA = 1
+                            break
+                        end
                     end
                 end
             end
-        end
 
-        if frame.DispelOverlay and frame.DispelOverlay.IsShown and frame.DispelOverlay:IsShown() and frame.DispelOverlay.GetDispelType then
-            local dispelType = GetSafeDispelTypeKey(frame.DispelOverlay:GetDispelType())
-            if dispelType then
-                local r, g, b = GetDirectDebuffTypeColorRGB(dispelType)
-                border:SetBackdropBorderColor(r, g, b, 1)
-                return
+            if not colorR and frame.DispelOverlay and frame.DispelOverlay.IsShown and frame.DispelOverlay:IsShown() and frame.DispelOverlay.GetDispelType then
+                local dispelType = GetSafeDispelTypeKey(frame.DispelOverlay:GetDispelType())
+                if dispelType then
+                    colorR, colorG, colorB = GetDirectDebuffTypeColorRGB(dispelType)
+                    colorA = 1
+                end
             end
         end
     end
@@ -678,15 +688,49 @@ local function UpdateCompactPartyDispelBorderColor(frame)
     data.auraBorderG = nil
     data.auraBorderB = nil
 
-    if type(data.classBuffBorderR) == "number"
+    if not colorR and type(data.classBuffBorderR) == "number"
         and type(data.classBuffBorderG) == "number"
         and type(data.classBuffBorderB) == "number" then
-        border:SetBackdropBorderColor(data.classBuffBorderR, data.classBuffBorderG, data.classBuffBorderB, 1)
+        colorR = data.classBuffBorderR
+        colorG = data.classBuffBorderG
+        colorB = data.classBuffBorderB
+        colorA = 1
+    end
+
+    if not colorR then
+        colorR, colorG, colorB, colorA = GetConfiguredCompactPartyBorderColorRGBA()
+    end
+
+    border:SetBackdropBorderColor(colorR, colorG, colorB, colorA)
+end
+
+local function EvaluateFrameColorCandidate(buffFrame, settings, entryKey, bestState)
+    if not buffFrame or not settings or settings.FrameColor ~= true then
         return
     end
 
-    local r, g, b, a = GetConfiguredCompactPartyBorderColorRGBA()
-    border:SetBackdropBorderColor(r, g, b, a)
+    local priority = (settings.Important == true) and 2 or 1
+    local remaining = P.GetAuraRemainingSecondsFromData(GetPartyAuraData(buffFrame))
+
+    local shouldReplace = false
+    if priority > bestState.priority then
+        shouldReplace = true
+    elseif priority == bestState.priority then
+        if remaining and bestState.remaining then
+            shouldReplace = remaining < bestState.remaining
+        elseif remaining and not bestState.remaining then
+            shouldReplace = true
+        end
+    end
+
+    if shouldReplace then
+        local r, g, b = P.GetTrackedClassBuffColor(entryKey)
+        bestState.priority = priority
+        bestState.remaining = remaining
+        bestState.r = r
+        bestState.g = g
+        bestState.b = b
+    end
 end
 
 ----------------------------------------------------------------------------------------
@@ -701,37 +745,8 @@ local function ApplyCompactAuraStylingForFrame(frame)
     frameData.classBuffBorderG = nil
     frameData.classBuffBorderB = nil
 
-    local importantBuffFrames = {}
-    local bestFrameColorPriority = -1
-    local bestFrameColorRemaining = nil
-    local bestFrameColorR, bestFrameColorG, bestFrameColorB = nil, nil, nil
-
-    local function EvaluateFrameColorCandidate(buffFrame, settings, entryKey)
-        if not buffFrame or not settings or settings.FrameColor ~= true then
-            return
-        end
-
-        local priority = (settings.Important == true) and 2 or 1
-        local remaining = P.GetAuraRemainingSecondsFromData(GetPartyAuraData(buffFrame))
-
-        local shouldReplace = false
-        if priority > bestFrameColorPriority then
-            shouldReplace = true
-        elseif priority == bestFrameColorPriority then
-            if remaining and bestFrameColorRemaining then
-                shouldReplace = remaining < bestFrameColorRemaining
-            elseif remaining and not bestFrameColorRemaining then
-                shouldReplace = true
-            end
-        end
-
-        if shouldReplace then
-            local r, g, b = P.GetTrackedClassBuffColor(entryKey)
-            bestFrameColorPriority = priority
-            bestFrameColorRemaining = remaining
-            bestFrameColorR, bestFrameColorG, bestFrameColorB = r, g, b
-        end
-    end
+    local importantBuffFrames = WipeTable(importantBuffFramesScratch)
+    local bestFrameColor = ResetBestFrameColorState()
 
     local EnsureCompactAuraSpacing = P.EnsureCompactAuraSpacing
     local BUFF   = P.COMPACT_AURA_CONTAINER_BUFF
@@ -755,7 +770,7 @@ local function ApplyCompactAuraStylingForFrame(frame)
                     if settings and settings.Important == true then
                         tinsert(importantBuffFrames, buffFrame)
                     end
-                    EvaluateFrameColorCandidate(buffFrame, settings, entry.key)
+                    EvaluateFrameColorCandidate(buffFrame, settings, entry.key, bestFrameColor)
                 end
             end
         end
@@ -773,7 +788,7 @@ local function ApplyCompactAuraStylingForFrame(frame)
             local entry = GetTrackedClassBuffEntryForAuraFrame(frame.CenterDefensiveBuff)
             if entry then
                 local settings = P.GetTrackedClassBuffSettings(entry.key)
-                EvaluateFrameColorCandidate(frame.CenterDefensiveBuff, settings, entry.key)
+                EvaluateFrameColorCandidate(frame.CenterDefensiveBuff, settings, entry.key, bestFrameColor)
             end
         end
     end
@@ -801,10 +816,10 @@ local function ApplyCompactAuraStylingForFrame(frame)
         end
     end
 
-    if type(bestFrameColorR) == "number" then
-        frameData.classBuffBorderR = bestFrameColorR
-        frameData.classBuffBorderG = bestFrameColorG or bestFrameColorR
-        frameData.classBuffBorderB = bestFrameColorB or bestFrameColorR
+    if type(bestFrameColor.r) == "number" then
+        frameData.classBuffBorderR = bestFrameColor.r
+        frameData.classBuffBorderG = bestFrameColor.g or bestFrameColor.r
+        frameData.classBuffBorderB = bestFrameColor.b or bestFrameColor.r
     end
 
     UpdateCompactPartyDispelBorderColor(frame)

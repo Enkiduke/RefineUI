@@ -25,6 +25,7 @@ local issecretvalue = _G.issecretvalue
 -- Locals
 ----------------------------------------------------------------------------------------
 local originalZoom
+local originalUIParentAlpha
 local spinning = false
 local zoomFrame
 
@@ -75,11 +76,33 @@ local function ZoomOut()
     end
 end
 
+local function GetSafeFrameAlpha(frame, fallback)
+    if not frame or type(frame.GetAlpha) ~= "function" then
+        return fallback
+    end
+
+    local ok, alpha = pcall(frame.GetAlpha, frame)
+    if ok and type(alpha) == "number" then
+        return alpha
+    end
+
+    return fallback
+end
+
+local function SetSafeFrameAlpha(frame, alpha)
+    if not frame or type(frame.SetAlpha) ~= "function" or type(alpha) ~= "number" then
+        return
+    end
+
+    pcall(frame.SetAlpha, frame, alpha)
+end
+
 function AFK:SpinStart()
     if spinning then return end
     spinning = true
     MoveViewRightStart(0.1)
-    UIParent:Hide()
+    originalUIParentAlpha = GetSafeFrameAlpha(UIParent, 1)
+    SetSafeFrameAlpha(UIParent, 0)
     ZoomIn()
     DoEmote("SIT")
 end
@@ -88,8 +111,8 @@ function AFK:SpinStop()
     if not spinning then return end
     spinning = false
     MoveViewRightStop()
-    if InCombatLockdown() then return end
-    UIParent:Show()
+    SetSafeFrameAlpha(UIParent, type(originalUIParentAlpha) == "number" and originalUIParentAlpha or 1)
+    originalUIParentAlpha = nil
     ZoomOut()
 end
 

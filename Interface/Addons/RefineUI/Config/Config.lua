@@ -280,11 +280,14 @@ C.Chat = {
     Width = 600,
     Height = 300,
     TimeStamps = true,    -- Show timestamps in chat
+    TimestampFormat = "|cff808080[%H:%M]|r ", -- Timestamp format passed to Blizzard chat
     TabsMouseOver = true, -- Only show tabs on mouseover
     CombatLog = true,     -- Skin the Combat Log (Frame 2)
     History = true,       -- Enable Chat History
     ChatIcons = true,     -- Add icons to chat links
     RoleIcons = true,     -- Add class-colored role icons to party/raid chat messages
+    ItemLevelLinks = true, -- Show item level in rendered item hyperlinks
+    ShortChannels = true, -- Shorten rendered channel tags after Blizzard formats the line
 }
 
 ----------------------------------------------------------------------------------------

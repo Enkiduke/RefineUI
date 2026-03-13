@@ -57,8 +57,8 @@ Do not install from `Interface\\AddOns\\RefineUI` alone, because the repository 
 
 ## Status
 
-- Latest Version: `2026.03.12-beta`
-- Game version (TOC): `120000` (Retail)
+- Latest Version: `2026.03.12a-beta`
+- Game version (TOC): `120001` (Retail)
 
 ## Discord / Support
 

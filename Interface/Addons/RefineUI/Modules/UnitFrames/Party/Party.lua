@@ -42,7 +42,6 @@ local GAP     = 18
 local PET_GAP = 8
 
 local seenCompactFramesScratch = {}
-local spacingRestorePending = false
 
 local function WipeTable(tbl)
     if wipe then
@@ -242,54 +241,26 @@ local function GetCompactFrameVerticalGap(frame)
     return GAP
 end
 
-local function MarkSpacingRestorePending(frame)
-    if not frame then
-        return
-    end
-
-    GetPartyData(frame).pendingSpacingRestore = true
-    spacingRestorePending = true
-end
-
-local function ClearSpacingRestorePending(frame)
-    if not frame then
-        return
-    end
-
-    GetPartyData(frame).pendingSpacingRestore = nil
-end
-
 local function HookSpacing(frame)
     RefineUI:HookOnce(BuildPartyHookKey(frame, "SetPoint:Spacing"), frame, "SetPoint", function(self, point, relTo, relPoint, x, y)
+        if UnitFrames:GetState(self, "PartySpacingChange", false) or InCombatLockdown() or IsEditModeActiveNow() then return end
+        
         if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
              local desiredGap = GetCompactFrameVerticalGap(self)
              if IsUnreadableNumber(x) or IsUnreadableNumber(y) then return end
              local currentX = type(x) == "number" and x or 0
              local currentY = type(y) == "number" and y or 0
              if currentY ~= -desiredGap and abs(currentY) <= GAP then
-                  if UnitFrames:GetState(self, "PartySpacingChange", false) or IsEditModeActiveNow() then
-                      return
-                  end
-                  if InCombatLockdown() then
-                      MarkSpacingRestorePending(self)
-                      return
-                  end
-                  UnitFrames:WithStateGuard(self, "PartySpacingChange", function()
-                      self:SetPoint(point, relTo, relPoint, currentX, -desiredGap)
-                  end)
-                  ClearSpacingRestorePending(self)
-             else
-                  ClearSpacingRestorePending(self)
+                 UnitFrames:WithStateGuard(self, "PartySpacingChange", function()
+                     self:SetPoint(point, relTo, relPoint, currentX, -desiredGap)
+                 end)
              end
-        else
-             ClearSpacingRestorePending(self)
         end
     end)
 end
 
 local function ForceRestoreSpacing()
     if InCombatLockdown() or IsEditModeActiveNow() then return end
-    local stillPending = false
     for i = 1, 5 do
         local frame = _G["CompactPartyFrameMember"..i]
         if frame and frame:IsShown() then
@@ -297,18 +268,13 @@ local function ForceRestoreSpacing()
             if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
                  local desiredGap = GetCompactFrameVerticalGap(frame)
                  if not (IsUnreadableNumber(x) or IsUnreadableNumber(y)) then
-                      if type(y) == "number" and y ~= -desiredGap and abs(y) <= GAP then
-                          UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
-                              frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
-                          end)
-                      end
-                      ClearSpacingRestorePending(frame)
-                  end
-            else
-                 ClearSpacingRestorePending(frame)
+                     if type(y) == "number" and y ~= -desiredGap and abs(y) <= GAP then
+                         UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
+                             frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
+                         end)
+                     end
+                 end
             end
-        elseif frame and GetPartyData(frame).pendingSpacingRestore then
-            stillPending = true
         end
     end
 
@@ -319,22 +285,15 @@ local function ForceRestoreSpacing()
             if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
                  local desiredGap = GetCompactFrameVerticalGap(frame)
                  if not (IsUnreadableNumber(x) or IsUnreadableNumber(y)) then
-                      if type(y) == "number" and y ~= -desiredGap and abs(y) <= GAP then
-                          UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
-                              frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
-                          end)
-                      end
-                      ClearSpacingRestorePending(frame)
-                  end
-            else
-                 ClearSpacingRestorePending(frame)
+                     if type(y) == "number" and y ~= -desiredGap and abs(y) <= GAP then
+                         UnitFrames:WithStateGuard(frame, "PartySpacingChange", function()
+                             frame:SetPoint(point, relTo, relPoint, x, -desiredGap)
+                         end)
+                     end
+                 end
             end
-        elseif frame and GetPartyData(frame).pendingSpacingRestore then
-            stillPending = true
         end
     end
-
-    spacingRestorePending = stillPending
 end
 
 ----------------------------------------------------------------------------------------

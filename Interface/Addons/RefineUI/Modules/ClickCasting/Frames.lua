@@ -91,6 +91,31 @@ local function IsFrameNameplate(frame)
     return frameName:match("^NamePlate") ~= nil
 end
 
+local function IsCompactGroupFrame(frame)
+    if not frame then
+        return false
+    end
+
+    local frameName = frame.GetName and frame:GetName()
+    if type(frameName) ~= "string" then
+        return false
+    end
+
+    if frameName:match("^CompactPartyFrameMember%d+$") then
+        return true
+    end
+
+    if frameName:match("^CompactPartyFramePet%d+$") then
+        return true
+    end
+
+    if frameName:match("^CompactRaidFrame%d+$") then
+        return true
+    end
+
+    return false
+end
+
 ----------------------------------------------------------------------------------------
 -- Registration
 ----------------------------------------------------------------------------------------
@@ -102,6 +127,9 @@ function ClickCasting:TryRegisterSupportedFrame(frame, fallbackUnit)
         return false
     end
     if IsFrameNameplate(frame) then
+        return false
+    end
+    if IsCompactGroupFrame(frame) then
         return false
     end
 
@@ -146,7 +174,6 @@ end
 
 function ClickCasting:DiscoverSupportedFrames()
     self:DiscoverStaticFrames()
-    self:DiscoverCompactFrames()
     self:FlushPendingFrameRegistrations()
 end
 
@@ -154,28 +181,8 @@ end
 -- Hooks
 ----------------------------------------------------------------------------------------
 function ClickCasting:InitializeFrameDiscovery()
-    local ok = RefineUI:HookOnce(COMPACT_SETUP_HOOK_KEY, "CompactUnitFrame_SetUpFrame", function(frame)
-        if not frame or (frame.IsForbidden and frame:IsForbidden()) then
-            return
-        end
-        if IsFrameNameplate(frame) then
-            return
-        end
-        local unit = ResolveFrameUnit(frame)
-        if not unit then
-            return
-        end
-        if unit:match("^partypet%d+$") or unit:match("^raidpet%d+$") then
-            return
-        end
-        if ClickCasting:IsSupportedUnitToken(unit) then
-            ClickCasting:TryRegisterSupportedFrame(frame, unit)
-        end
-    end)
-
-    if not ok then
-        self:Print("Unable to hook CompactUnitFrame_SetUpFrame; compact frame auto-registration may be limited.")
-    end
+    -- Compact party/raid unit buttons are excluded from RefineUI click-casting to
+    -- avoid tainting Blizzard's secure compact frame update path.
 end
 
 function ClickCasting:HandleAddonLoaded(addonName)

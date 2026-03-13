@@ -70,6 +70,26 @@ function RefineUI:IsSecretValue(v)
     return issecretvalue and issecretvalue(v)
 end
 
+function RefineUI:IsAccessibleValue(v)
+    if v == nil then
+        return true
+    end
+    if self:IsSecretValue(v) then
+        return false
+    end
+    if canaccessvalue then
+        local ok, accessible = pcall(canaccessvalue, v)
+        if not ok or not accessible then
+            return false
+        end
+    end
+    return true
+end
+
+function RefineUI:IsAccessibleString(v)
+    return type(v) == "string" and self:IsAccessibleValue(v)
+end
+
 function RefineUI:HasValue(v)
     if self:IsSecretValue(v) then
         return true

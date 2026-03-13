@@ -24,12 +24,10 @@ local format, gsub, strsub, strfind = string.format, string.gsub, string.sub, st
 local type, tostring = type, tostring
 local math = math
 local tonumber = tonumber
-local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals (Upvalues)
 ----------------------------------------------------------------------------------------
-local ChatFrame_AddMessageEventFilter = ChatFrame_AddMessageEventFilter
 local FCF_GetChatWindowInfo = FCF_GetChatWindowInfo
 local FCF_SetChatWindowFontSize = FCF_SetChatWindowFontSize
 local FCF_SavePositionAndDimensions = FCF_SavePositionAndDimensions
@@ -88,16 +86,6 @@ local EDITBOX_BORDER_EDGE_SIZE = 12
 local EDITBOX_IDLE_ALPHA = 0
 local EDITBOX_ACTIVE_ALPHA = 1
 local MAX_CHAT_EDITBOX_SCAN = 40
-local FILTER_EVENTS = {
-    "CHAT_MSG_SAY", "CHAT_MSG_YELL", "CHAT_MSG_GUILD", "CHAT_MSG_OFFICER",
-    "CHAT_MSG_PARTY", "CHAT_MSG_PARTY_LEADER", "CHAT_MSG_RAID", "CHAT_MSG_RAID_LEADER",
-    "CHAT_MSG_RAID_WARNING", "CHAT_MSG_INSTANCE_CHAT", "CHAT_MSG_INSTANCE_CHAT_LEADER",
-    "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM", "CHAT_MSG_BN_WHISPER",
-    "CHAT_MSG_BN_WHISPER_INFORM", "CHAT_MSG_CHANNEL", "CHAT_MSG_EMOTE", "CHAT_MSG_TEXT_EMOTE",
-    "CHAT_MSG_SYSTEM", "CHAT_MSG_LOOT", "CHAT_MSG_CURRENCY", "CHAT_MSG_MONEY",
-    "CHAT_MSG_ACHIEVEMENT", "CHAT_MSG_GUILD_ACHIEVEMENT"
-}
-
 local function BuildChatFramesHookKey(owner, method, suffix)
 	local ownerId
 	if type(owner) == "table" and owner.GetName then
@@ -401,34 +389,6 @@ local function InstallGlobalStringsOnce()
     end
 end
 
-----------------------------------------------------------------------------------------
--- Utility Functions
-----------------------------------------------------------------------------------------
-
--- Modify chat messages (simplify level display) via filter (taint-safe).
--- Use varargs so newer client payload fields (e.g., bnSenderID) are preserved.
-local function ChatMessageFilter(self, event, ...)
-    local argc = select("#", ...)
-    local args = { ... }
-    local msg = args[1]
-    local author = args[2]
-
-    -- WoW 12.0+: Check for secret values to prevent crashes.
-    if issecretvalue and (issecretvalue(msg) or issecretvalue(author)) then
-        return false, unpack(args, 1, argc)
-    end
-
-    if type(msg) == "string" then
-        -- Simplify level display e.g., |h[100. Foobar]|h -> |h[100]|h
-        local success, newText = pcall(string.gsub, msg, "|h%[(%d+)%. .-%]|h", "|h[%1]|h")
-        if success then
-            args[1] = newText
-        end
-    end
-
-    return false, unpack(args, 1, argc)
-end
-
 -- Update editbox border color and hide header text
 local function UpdateEditBoxStyle(editBox)
 	if not editBox then return end
@@ -493,37 +453,14 @@ local function HookEditBoxBorderColor()
     end
 end
 
--- Remove realm name from system messages
-local function RemoveRealmName(_, _, ...)
-    local argc = select("#", ...)
-    local args = { ... }
-    local msg = args[1]
-
-    -- Strict check for secret values or non-strings
-    if (issecretvalue and issecretvalue(msg)) or type(msg) ~= "string" then
-        return false, unpack(args, 1, argc)
-    end
-	
-    local realm = gsub(RefineUI.MyRealm, " ", "")
-    
-    -- Safe find
-    local success, found = pcall(string.find, msg, "-" .. realm, 1, true)
-    
-	if success and found then
-        -- Safe gsub
-        local successGsub, newMsg = pcall(string.gsub, msg, "%-" .. realm, "")
-        if successGsub then
-            args[1] = newMsg
-		    return false, unpack(args, 1, argc)
-        end
-	end
-    
-    return false, unpack(args, 1, argc)
-end
-
 -- Switch channels by Tab
 local function UpdateTabChannelSwitch(self)
-	if strsub(tostring(self:GetText()), 1, 1) == "/" then return end
+    if not self or type(self.GetText) ~= "function" then return end
+    local text = self:GetText()
+    if type(text) ~= "string" or (RefineUI.IsAccessibleValue and not RefineUI:IsAccessibleValue(text)) then
+        return
+    end
+	if strsub(text, 1, 1) == "/" then return end
 	local currChatType = self:GetAttribute("chatType")
 	for i, curr in ipairs(CHANNEL_CYCLES) do
 		if curr.chatType == currChatType then
@@ -793,7 +730,9 @@ local function SetupChat()
     end
 
     -- Use native timestamp rendering so timestamps appear at the start of each line.
-    if Chat.db and Chat.db.TimeStamps then
+    if Chat.ApplyTimestampSetting then
+        Chat:ApplyTimestampSetting()
+    elseif Chat.db and Chat.db.TimeStamps then
         C_CVar.SetCVar("showTimestamps", "|cff808080[%H:%M]|r ")
     else
         C_CVar.SetCVar("showTimestamps", "none")
@@ -1001,12 +940,6 @@ local function InstallRuntimeHooksOnce()
         end)
     end
 
-    -- Register message filters
-    ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", RemoveRealmName)
-    for _, event in ipairs(FILTER_EVENTS) do
-        ChatFrame_AddMessageEventFilter(event, ChatMessageFilter)
-    end
-
     -- Hook temporary window creation
     RefineUI:HookOnce("ChatFrames:FCF_OpenTemporaryWindow", "FCF_OpenTemporaryWindow", SetupTempChat)
 
@@ -1060,8 +993,6 @@ local function RunInitialChatSetup()
     SetupChat()
     SetupChatPosAndFontSafe()
     Chat:SetupTabs()
-    Chat:SetupIcons()
-    Chat:SetupLootIcons()
     Chat:SetupCopy()
     if Chat.SetupHistory then
         Chat:SetupHistory()
@@ -1101,6 +1032,21 @@ function Chat:OnEnable()
     end
 
     InstallGlobalStringsOnce()
+    if self.SetupIcons then
+        self:SetupIcons()
+    end
+    if self.SetupLootIcons then
+        self:SetupLootIcons()
+    end
+    if self.SetupRoleIcons then
+        self:SetupRoleIcons()
+    end
+    if self.InitializeEditModeSettings then
+        self:InitializeEditModeSettings()
+    end
+    if self.InstallMessagePipeline then
+        self:InstallMessagePipeline()
+    end
 
     if not RunInitialChatSetup() then
         RunCombatSafeChatVisualSetup()

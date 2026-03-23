@@ -24,6 +24,7 @@ local CreateFrame = CreateFrame
 local CreateFramePool = CreateFramePool
 local UIParent = UIParent
 local GetCursorPosition = GetCursorPosition
+local GetTime = GetTime
 local GetCVarBool = GetCVarBool
 local SetCVar = SetCVar
 local ShowUIPanel = ShowUIPanel
@@ -33,7 +34,7 @@ local InCombatLockdown = InCombatLockdown
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local SETTINGS_BUCKET_ORDER = { "Left", "Right", "Bottom", CDM.NOT_TRACKED_KEY }
+local SETTINGS_BUCKET_ORDER = { "Left", "Right", "Bottom", "Radial", CDM.NOT_TRACKED_KEY }
 local PANEL_REFRESH_TIMER_KEY = CDM:BuildKey("Settings", "PanelRefresh")
 local SEARCH_DEBOUNCE_KEY = CDM:BuildKey("Settings", "SearchRefresh")
 local HEADER_HEIGHT = 32
@@ -42,12 +43,31 @@ local ITEM_SPACING = 6
 local ITEM_COLUMNS = 10
 local PANEL_WIDTH = 900
 local PANEL_HEIGHT = 640
+local DISPLAY_MODE_SPELLS = "spells"
+local DISPLAY_MODE_AURAS = "auras"
+local DISPLAY_MODE_REFINE = "refineui"
 local EMPTY_ICON_TEXTURE = 134400
 local ICON_BORDER_TEXTURE = [[Interface\Buttons\UI-Quickslot2]]
 local ICON_HIGHLIGHT_TEXTURE = [[Interface\Buttons\ButtonHilight-Square]]
 local ITEM_BACKGROUND_TEXTURE = [[Interface\Buttons\WHITE8x8]]
 local BLIZZARD_FALLBACK_WIDTH = 860
 local BLIZZARD_FALLBACK_HEIGHT = 620
+local BLIZZARD_SETTINGS_REDIRECT_HOOK_KEY = "CDM:Settings:Blizzard:RedirectOnShow"
+local POST_RELOAD_OPEN_TIMER_KEY = CDM:BuildKey("Settings", "PostReloadOpen")
+local REFINE_TAB_TOOLTIP = "RefineUI"
+local REFINE_TAB_ATLAS = "minimap-genericevent-hornicon-small"
+local REFINE_TAB_TEXTURE = (RefineUI.Media and RefineUI.Media.Logo) or [[Interface\AddOns\RefineUI\Media\Logo\Logo.blp]]
+local SPELLS_TAB_TOOLTIP = _G.COOLDOWN_VIEWER_SETTINGS_TAB_SPELLS or "Spells"
+local AURAS_TAB_TOOLTIP = _G.COOLDOWN_VIEWER_SETTINGS_TAB_BUFFS or "Auras"
+local SPELLS_TAB_ATLAS = "icon_cooldownmanager"
+local AURAS_TAB_ATLAS = "icon_trackedbuffs"
+local BLIZZARD_OWNER_OVERLAY_TITLE = "Blizzard CDM Disabled"
+local BLIZZARD_OWNER_OVERLAY_TEXT = "RefineUI CDM is enabled. Enable Blizzard CDM for this tab to edit Blizzard cooldown settings here."
+local BLIZZARD_OWNER_OVERLAY_BUTTON = "Enable Blizzard CDM"
+local REFINE_OWNER_OVERLAY_TITLE = "RefineUI CDM Disabled"
+local REFINE_OWNER_OVERLAY_TEXT = "Blizzard CDM is enabled. Enable RefineUI CDM for this tab to edit RefineUI tracker assignments here."
+local REFINE_OWNER_OVERLAY_BUTTON = "Enable RefineUI CDM"
+local POST_COMBAT_SETTINGS_OPEN_DELAY = 0.75
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
@@ -71,6 +91,44 @@ end
 
 local function ToggleShowUnlearned()
     SetCVar("cooldownViewerShowUnlearned", not IsShowingUnlearned())
+end
+
+local function CreateOwnerOverlay(parent, titleText, bodyText, buttonText, onClick)
+    local overlay = CreateFrame("Frame", nil, parent)
+    overlay:EnableMouse(true)
+    overlay:SetFrameStrata("DIALOG")
+
+    local frameLevel = 1
+    if parent and type(parent.GetFrameLevel) == "function" then
+        local ok, level = pcall(parent.GetFrameLevel, parent)
+        if ok and type(level) == "number" then
+            frameLevel = level
+        end
+    end
+    overlay:SetFrameLevel(frameLevel + 30)
+    overlay:Hide()
+
+    overlay.Background = overlay:CreateTexture(nil, "BACKGROUND")
+    overlay.Background:SetAllPoints()
+    overlay.Background:SetColorTexture(0, 0, 0, 0.8)
+
+    overlay.Title = overlay:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    overlay.Title:SetPoint("TOP", overlay, "TOP", 0, -120)
+    overlay.Title:SetText(titleText)
+
+    overlay.Text = overlay:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    overlay.Text:SetPoint("TOP", overlay.Title, "BOTTOM", 0, -12)
+    overlay.Text:SetWidth(300)
+    overlay.Text:SetJustifyH("CENTER")
+    overlay.Text:SetText(bodyText)
+
+    overlay.Button = CreateFrame("Button", nil, overlay, "UIPanelButtonTemplate")
+    overlay.Button:SetSize(180, 24)
+    overlay.Button:SetPoint("TOP", overlay.Text, "BOTTOM", 0, -18)
+    overlay.Button:SetText(buttonText)
+    overlay.Button:SetScript("OnClick", onClick)
+
+    return overlay
 end
 
 local function EnsureCategoryObject(bucketKey, titleText)
@@ -261,8 +319,10 @@ local function ApplyItemBorder(itemFrame, cooldownID)
     end
 
     local color
-    if type(cooldownID) == "number" and cooldownID > 0 and CDM.GetCooldownBorderColor then
-        color = CDM:GetCooldownBorderColor(cooldownID)
+    if type(cooldownID) == "number" and cooldownID > 0 then
+        if CDM.GetCooldownBorderColor then
+            color = CDM:GetCooldownBorderColor(cooldownID)
+        end
     elseif CDM.GetDefaultBorderColor then
         color = CDM:GetDefaultBorderColor()
     else
@@ -625,29 +685,195 @@ local function InitializeInjectedItem(settingsFrame, itemFrame, categoryFrame)
     CDM:StateSet(itemFrame, "categoryFrame", categoryFrame)
 end
 
-local function SyncStandaloneFrameGeometry(frame)
-    if not frame then
+local function ApplyRefineTabIcon(tab)
+    if not tab or not tab.Icon then
         return
     end
 
-    local source = _G.CooldownViewerSettings
-    if source and source ~= frame then
-        local width, height = source:GetSize()
-        if type(width) == "number" and width > 0 and type(height) == "number" and height > 0 then
-            frame:SetSize(width, height)
+    tab.Icon:SetTexture(REFINE_TAB_TEXTURE)
+    tab.Icon:SetTexCoord(0, 1, 0, 1)
+    tab.Icon:SetSize(18, 18)
+end
+
+local function HookRefineTabIcon(tab, hookKey)
+    if not tab then
+        return
+    end
+
+    ApplyRefineTabIcon(tab)
+    RefineUI:HookOnce(hookKey .. ":SetChecked", tab, "SetChecked", function()
+        ApplyRefineTabIcon(tab)
+    end)
+    RefineUI:HookScriptOnce(hookKey .. ":OnShow", tab, "OnShow", function()
+        ApplyRefineTabIcon(tab)
+    end)
+end
+
+local function SetTabMouseUpHandler(tab, handler)
+    if not tab or type(handler) ~= "function" then
+        return
+    end
+
+    if type(tab.SetCustomOnMouseUpHandler) == "function" then
+        tab:SetCustomOnMouseUpHandler(function(self, button, upInside)
+            if button == "LeftButton" and upInside then
+                handler(self)
+            end
+        end)
+        return
+    end
+
+    tab:SetScript("OnMouseUp", function(self, button)
+        if button == "LeftButton" then
+            handler(self)
+        end
+    end)
+end
+
+local function SetPanelShown(frame, shown)
+    if not frame then
+        return false
+    end
+
+    if shown then
+        if (not InCombatLockdown or not InCombatLockdown()) and type(frame.ShowUIPanel) == "function" then
+            local ok = pcall(frame.ShowUIPanel, frame, false)
+            if ok and frame:IsShown() then
+                return true
+            end
         end
 
-        local point, relativeTo, relativePoint, xOfs, yOfs = source:GetPoint(1)
+        if (not InCombatLockdown or not InCombatLockdown()) and type(ShowUIPanel) == "function" then
+            local ok, didShow = pcall(ShowUIPanel, frame)
+            if ok and didShow ~= false then
+                return true
+            end
+        end
+
+        frame:Show()
+        return frame:IsShown()
+    end
+
+    if (not InCombatLockdown or not InCombatLockdown()) and type(HideUIPanel) == "function" then
+        local ok = pcall(HideUIPanel, frame)
+        if ok then
+            return true
+        end
+    end
+
+    frame:Hide()
+    return true
+end
+
+local function GetRemainingPostCombatOpenDelay(self)
+    if type(GetTime) ~= "function" then
+        return 0
+    end
+
+    local activeTrackerEntryCount = type(self.activeTrackerEntryCount) == "number" and self.activeTrackerEntryCount or 0
+    local lastCombatEndedTime = self.lastCombatEndedTime
+    if activeTrackerEntryCount <= 0 or type(lastCombatEndedTime) ~= "number" then
+        return 0
+    end
+
+    local remaining = POST_COMBAT_SETTINGS_OPEN_DELAY - (GetTime() - lastCombatEndedTime)
+    if remaining > 0 then
+        return remaining
+    end
+
+    return 0
+end
+
+local function GetSettingsOpenGuardReason(self)
+    if type(InCombatLockdown) == "function" and InCombatLockdown() then
+        return "combat"
+    end
+
+    if GetRemainingPostCombatOpenDelay(self) > 0 then
+        return "stabilizing"
+    end
+
+    return nil
+end
+
+local function SyncSettingsWindowGeometry(sourceFrame, targetFrame)
+    if not targetFrame then
+        return
+    end
+
+    if sourceFrame and sourceFrame ~= targetFrame then
+        local width, height = sourceFrame:GetSize()
+        if type(width) == "number" and width > 0 and type(height) == "number" and height > 0 then
+            targetFrame:SetSize(width, height)
+        end
+
+        local point, relativeTo, relativePoint, xOfs, yOfs = sourceFrame:GetPoint(1)
         if point then
-            frame:ClearAllPoints()
-            frame:SetPoint(point, relativeTo or UIParent, relativePoint or point, xOfs or 0, yOfs or 0)
+            targetFrame:ClearAllPoints()
+            targetFrame:SetPoint(point, relativeTo or UIParent, relativePoint or point, xOfs or 0, yOfs or 0)
             return
         end
     end
 
-    if frame:GetNumPoints() == 0 then
-        frame:SetSize(BLIZZARD_FALLBACK_WIDTH, BLIZZARD_FALLBACK_HEIGHT)
-        frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    if targetFrame:GetNumPoints() == 0 then
+        targetFrame:SetSize(BLIZZARD_FALLBACK_WIDTH, BLIZZARD_FALLBACK_HEIGHT)
+        targetFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    end
+end
+
+local function SyncStandaloneFrameGeometry(frame)
+    SyncSettingsWindowGeometry(_G.CooldownViewerSettings, frame)
+end
+
+local function CreateSettingsShellTab(parent, tooltipText, atlas, point, relativeTo, relativePoint, xOffset, yOffset)
+    local tab = CreateFrame("Button", nil, parent, "CooldownViewerSettingsTabTemplate")
+    tab.tooltipText = tooltipText
+    tab.activeAtlas = atlas
+    tab.inactiveAtlas = atlas
+    tab:SetChecked(false)
+    tab:SetPoint(point, relativeTo, relativePoint, xOffset, yOffset)
+    return tab
+end
+
+local function GetBlizzardSettingsFrame()
+    return _G.CooldownViewerSettings
+end
+
+local function EnsureBlizzardSettingsFrameAvailable()
+    local settingsFrame = GetBlizzardSettingsFrame()
+    if settingsFrame then
+        return settingsFrame
+    end
+
+    local addonsAPI = _G.C_AddOns
+    if addonsAPI and type(addonsAPI.LoadAddOn) == "function" then
+        pcall(addonsAPI.LoadAddOn, "Blizzard_CooldownViewer")
+    elseif type(_G.LoadAddOn) == "function" then
+        pcall(_G.LoadAddOn, "Blizzard_CooldownViewer")
+    end
+
+    return GetBlizzardSettingsFrame()
+end
+
+local function AnchorBlizzardRefineTab(tab, settingsFrame)
+    if not tab or not settingsFrame then
+        return
+    end
+
+    local anchor = settingsFrame.AurasTab or settingsFrame.SpellsTab or settingsFrame
+    local point = anchor == settingsFrame and "TOPLEFT" or "TOPLEFT"
+    local relativePoint = anchor == settingsFrame and "TOPRIGHT" or "BOTTOMLEFT"
+    local xOffset = anchor == settingsFrame and 0 or 0
+    local yOffset = anchor == settingsFrame and -28 or -3
+
+    tab:ClearAllPoints()
+    tab:SetPoint(point, anchor, relativePoint, xOffset, yOffset)
+
+    if type(settingsFrame.GetFrameStrata) == "function" then
+        tab:SetFrameStrata(settingsFrame:GetFrameStrata())
+    end
+    if type(settingsFrame.GetFrameLevel) == "function" then
+        tab:SetFrameLevel(settingsFrame:GetFrameLevel() + 4)
     end
 end
 
@@ -858,6 +1084,7 @@ function CDM:LayoutInjectedCategory(settingsFrame, categoryFrame, categoryData, 
                 self:StateSet(item, "isEmpty", false)
                 self:StateSet(item, "displayIndex", shownItems)
                 self:StateSet(item, "assignmentIndex", assignmentIndex)
+                self:RefreshStandaloneSettingsItemVisual(item)
             end
         end
 
@@ -875,6 +1102,7 @@ function CDM:LayoutInjectedCategory(settingsFrame, categoryFrame, categoryData, 
             self:StateSet(emptyItem, "isEmpty", true)
             self:StateSet(emptyItem, "displayIndex", 1)
             self:StateSet(emptyItem, "assignmentIndex", nil)
+            self:RefreshStandaloneSettingsItemVisual(emptyItem)
         end
 
         if container and container.Layout then
@@ -917,6 +1145,7 @@ function CDM:LayoutInjectedCategory(settingsFrame, categoryFrame, categoryData, 
             self:StateSet(item, "isEmpty", false)
             self:StateSet(item, "displayIndex", shownItems)
             self:StateSet(item, "assignmentIndex", assignmentIndex)
+            self:RefreshStandaloneSettingsItemVisual(item)
 
             InitializeInjectedItem(settingsFrame, item, categoryFrame)
         end
@@ -937,6 +1166,7 @@ function CDM:LayoutInjectedCategory(settingsFrame, categoryFrame, categoryData, 
         self:StateSet(emptyItem, "isEmpty", true)
         self:StateSet(emptyItem, "displayIndex", 1)
         self:StateSet(emptyItem, "assignmentIndex", nil)
+        self:RefreshStandaloneSettingsItemVisual(emptyItem)
     end
 
     for i = shownItems + 1, #container.itemFrames do
@@ -968,7 +1198,12 @@ function CDM:RequestRefineTabPanelRefresh(settingsFrame)
 end
 
 function CDM:RefreshRefineTabPanel(settingsFrame)
-    if not settingsFrame or not settingsFrame:IsShown() then
+    if not settingsFrame then
+        return
+    end
+
+    self:RefreshSettingsOwnerOverlays(nil, settingsFrame)
+    if not self:CanRefreshRefineSettingsPanel(settingsFrame) then
         return
     end
 
@@ -999,11 +1234,13 @@ function CDM:RefreshRefineTabPanel(settingsFrame)
     local leftIDs, leftAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Left, validAuraSet)
     local rightIDs, rightAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Right, validAuraSet)
     local bottomIDs, bottomAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Bottom, validAuraSet)
+    local radialIDs, radialAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Radial, validAuraSet)
 
     local categoryInput = {
         Left = { cooldownIDs = leftIDs, assignmentIndices = leftAssignmentIndices },
         Right = { cooldownIDs = rightIDs, assignmentIndices = rightAssignmentIndices },
         Bottom = { cooldownIDs = bottomIDs, assignmentIndices = bottomAssignmentIndices },
+        Radial = { cooldownIDs = radialIDs, assignmentIndices = radialAssignmentIndices },
         [CDM.NOT_TRACKED_KEY] = { cooldownIDs = notTrackedIDs, assignmentIndices = nil },
     }
 
@@ -1048,6 +1285,564 @@ function CDM:RefreshSettingsSection()
     if settingsFrame and settingsFrame:IsShown() then
         self:RefreshRefineTabPanel(settingsFrame)
     end
+end
+
+function CDM:SyncSettingsWindowGeometry(sourceFrame, targetFrame)
+    SyncSettingsWindowGeometry(sourceFrame, targetFrame)
+end
+
+function CDM:IsRefineSettingsOwnerActive()
+    if self.IsEnabled and not self:IsEnabled() then
+        return false
+    end
+    return self.GetAuraMode and self:GetAuraMode() == DISPLAY_MODE_REFINE
+end
+
+function CDM:ShouldManageBlizzardSettingsOwnership()
+    return self.IsRefineSettingsOwnerActive and self:IsRefineSettingsOwnerActive()
+end
+
+function CDM:CancelStandaloneSettingsWork(settingsFrame)
+    if not settingsFrame then
+        return
+    end
+
+    local state = GetSettingsState(self, settingsFrame)
+    state.panelRefreshQueued = nil
+    state.lastRefineTabRefreshToken = nil
+
+    if RefineUI.CancelDebounce then
+        RefineUI:CancelDebounce(SEARCH_DEBOUNCE_KEY)
+    end
+    if RefineUI.CancelTimer then
+        RefineUI:CancelTimer(PANEL_REFRESH_TIMER_KEY)
+    end
+
+    self:EndInjectedOrderChange(false)
+
+    if settingsFrame.ScrollChild and type(settingsFrame.ScrollChild.categories) == "table" then
+        for _, categoryFrame in pairs(settingsFrame.ScrollChild.categories) do
+            if categoryFrame.itemPool and type(categoryFrame.itemPool.ReleaseAll) == "function" then
+                categoryFrame.itemPool:ReleaseAll()
+            end
+            if categoryFrame.Container and type(categoryFrame.Container.itemFrames) == "table" then
+                for i = 1, #categoryFrame.Container.itemFrames do
+                    categoryFrame.Container.itemFrames[i]:Hide()
+                end
+            end
+            categoryFrame:Hide()
+        end
+    end
+
+    if settingsFrame.ScrollChild then
+        settingsFrame.ScrollChild:SetHeight(1)
+    end
+    if settingsFrame.ScrollFrame and settingsFrame.ScrollFrame.UpdateScrollChildRect then
+        settingsFrame.ScrollFrame:UpdateScrollChildRect()
+    end
+end
+
+function CDM:EnsureBlizzardOwnerOverlay(settingsFrame)
+    if not settingsFrame then
+        return nil
+    end
+
+    local state = GetSettingsState(self, settingsFrame)
+    if state.blizzardOwnerOverlay then
+        return state.blizzardOwnerOverlay
+    end
+
+    local parent = settingsFrame.Inset or settingsFrame
+    local overlay = CreateOwnerOverlay(
+        parent,
+        BLIZZARD_OWNER_OVERLAY_TITLE,
+        BLIZZARD_OWNER_OVERLAY_TEXT,
+        BLIZZARD_OWNER_OVERLAY_BUTTON,
+        function()
+            if CDM.ShowCooldownManagerSwitchPrompt then
+                CDM:ShowCooldownManagerSwitchPrompt("blizzard")
+            elseif CDM.SetAuraMode then
+                CDM:SetAuraMode("blizzard")
+            end
+            CDM:RefreshSettingsOwnerOverlays(settingsFrame, CDM:GetCooldownViewerSettingsFrame())
+        end
+    )
+
+    if settingsFrame.Inset then
+        overlay:SetPoint("TOPLEFT", settingsFrame.Inset, "TOPLEFT", 0, 0)
+        overlay:SetPoint("BOTTOMRIGHT", settingsFrame.Inset, "BOTTOMRIGHT", 0, 0)
+    else
+        overlay:SetAllPoints(settingsFrame)
+    end
+
+    state.blizzardOwnerOverlay = overlay
+    return overlay
+end
+
+function CDM:EnsureRefineOwnerOverlay(settingsFrame)
+    if not settingsFrame then
+        return nil
+    end
+
+    local state = GetSettingsState(self, settingsFrame)
+    if state.refineOwnerOverlay then
+        return state.refineOwnerOverlay
+    end
+
+    local parent = settingsFrame.Inset or settingsFrame
+    local overlay = CreateOwnerOverlay(
+        parent,
+        REFINE_OWNER_OVERLAY_TITLE,
+        REFINE_OWNER_OVERLAY_TEXT,
+        REFINE_OWNER_OVERLAY_BUTTON,
+        function()
+            if CDM.ShowCooldownManagerSwitchPrompt then
+                CDM:ShowCooldownManagerSwitchPrompt(DISPLAY_MODE_REFINE)
+            elseif CDM.SetAuraMode then
+                CDM:SetAuraMode(DISPLAY_MODE_REFINE)
+            end
+            CDM:RefreshSettingsOwnerOverlays(nil, settingsFrame)
+            CDM:RequestRefineTabPanelRefresh(settingsFrame)
+        end
+    )
+
+    if settingsFrame.Inset then
+        overlay:SetPoint("TOPLEFT", settingsFrame.Inset, "TOPLEFT", 0, 0)
+        overlay:SetPoint("BOTTOMRIGHT", settingsFrame.Inset, "BOTTOMRIGHT", 0, 0)
+    else
+        overlay:SetAllPoints(settingsFrame)
+    end
+
+    state.refineOwnerOverlay = overlay
+    return overlay
+end
+
+function CDM:CanRefreshRefineSettingsPanel(settingsFrame)
+    if not settingsFrame or not settingsFrame:IsShown() then
+        return false
+    end
+    if not self:IsRefineSettingsOwnerActive() then
+        return false
+    end
+
+    local state = GetSettingsState(self, settingsFrame)
+    if state.refineOwnerOverlay and state.refineOwnerOverlay:IsShown() then
+        return false
+    end
+
+    return true
+end
+
+function CDM:RequestDeferredSettingsOpen(reason)
+    if reason == "combat" then
+        if self.settingsOpenGuardReason ~= reason then
+            RefineUI:Print("CDM settings will open after combat ends.")
+            self.settingsOpenGuardReason = reason
+        end
+        return false
+    end
+
+    if self.settingsOpenGuardReason ~= reason then
+        RefineUI:Print("CDM settings are temporarily blocked while combat cooldowns settle.")
+        self.settingsOpenGuardReason = reason
+    end
+    return false
+end
+
+function CDM:RefreshSettingsOwnerOverlays(blizzardFrame, refineFrame)
+    local manageBlizzardOwnership = self:ShouldManageBlizzardSettingsOwnership()
+    if blizzardFrame == nil and manageBlizzardOwnership then
+        blizzardFrame = GetBlizzardSettingsFrame()
+    end
+    refineFrame = refineFrame or self:GetCooldownViewerSettingsFrame()
+
+    local ownerActive = self:IsRefineSettingsOwnerActive()
+    local showBlizzardOverlay = false
+    if manageBlizzardOwnership and blizzardFrame and blizzardFrame:IsShown() and not self.settingsRouteInProgress then
+        showBlizzardOverlay = ownerActive
+    end
+
+    local blizzardOverlay = nil
+    if blizzardFrame then
+        local blizzardState = GetSettingsState(self, blizzardFrame)
+        blizzardOverlay = blizzardState.blizzardOwnerOverlay
+        if showBlizzardOverlay and not blizzardOverlay then
+            blizzardOverlay = self:EnsureBlizzardOwnerOverlay(blizzardFrame)
+        end
+    end
+    if blizzardOverlay then
+        blizzardOverlay:SetShown(showBlizzardOverlay)
+    end
+
+    local showRefineOverlay = refineFrame and refineFrame:IsShown() and (not ownerActive) and not self.settingsRouteInProgress
+    local refineOverlay = nil
+    if refineFrame then
+        local refineState = GetSettingsState(self, refineFrame)
+        refineOverlay = refineState.refineOwnerOverlay
+        if showRefineOverlay and not refineOverlay then
+            refineOverlay = self:EnsureRefineOwnerOverlay(refineFrame)
+        end
+    end
+    if refineOverlay then
+        refineOverlay:SetShown(showRefineOverlay)
+    end
+
+    if showRefineOverlay and refineFrame then
+        self:CancelStandaloneSettingsWork(refineFrame)
+    end
+end
+
+function CDM:HandleSettingsOwnerStateChanged(ownerActive)
+    if ownerActive == nil then
+        ownerActive = self:IsRefineSettingsOwnerActive()
+    else
+        ownerActive = ownerActive and true or false
+    end
+
+    if self.settingsOwnerStateKnown and self.settingsOwnerActive == ownerActive then
+        return
+    end
+
+    self.settingsOwnerStateKnown = true
+    self.settingsOwnerActive = ownerActive
+
+    if ownerActive and self.EnsureBlizzardSettingsOwnerHooks then
+        self:EnsureBlizzardSettingsOwnerHooks()
+    end
+
+    local refineFrame = self:GetCooldownViewerSettingsFrame()
+    if refineFrame then
+        local state = GetSettingsState(self, refineFrame)
+        state.lastRefineTabRefreshToken = nil
+        if not ownerActive then
+            self:CancelStandaloneSettingsWork(refineFrame)
+        end
+    end
+
+    self:RefreshSettingsOwnerOverlays(nil, refineFrame)
+
+    if ownerActive and refineFrame and refineFrame:IsShown() then
+        self:RequestRefineTabPanelRefresh(refineFrame)
+    end
+end
+
+function CDM:RefreshStandaloneSettingsTabs(settingsFrame)
+    settingsFrame = settingsFrame or self:GetCooldownViewerSettingsFrame()
+    if not settingsFrame or type(settingsFrame.SettingsTabs) ~= "table" then
+        return
+    end
+
+    local tabs = settingsFrame.SettingsTabs
+    if tabs.Spells then
+        tabs.Spells:SetChecked(false)
+    end
+    if tabs.Auras then
+        tabs.Auras:SetChecked(false)
+    end
+    if tabs.RefineUI then
+        tabs.RefineUI:SetChecked(true)
+        ApplyRefineTabIcon(tabs.RefineUI)
+    end
+end
+
+function CDM:OpenRefineSettingsPanelFromBlizzard(sourceFrame, skipGuard)
+    if self.settingsRouteInProgress then
+        return false
+    end
+    if not skipGuard then
+        local reason = GetSettingsOpenGuardReason(self)
+        if reason then
+            return self:RequestDeferredSettingsOpen(reason)
+        end
+    end
+
+    local targetFrame = self:CreateStandaloneSettingsFrame()
+    if not targetFrame then
+        RefineUI:Print("CDM settings are unavailable right now.")
+        return false
+    end
+
+    sourceFrame = sourceFrame or GetBlizzardSettingsFrame()
+    local manageBlizzardOwnership = self:ShouldManageBlizzardSettingsOwnership()
+
+    self.settingsRouteInProgress = true
+
+    SyncSettingsWindowGeometry(sourceFrame, targetFrame)
+    UpdateReadOnlyState(targetFrame)
+    self:RefreshStandaloneSettingsTabs(targetFrame)
+
+    local sourceWasShown = sourceFrame and sourceFrame:IsShown()
+    if sourceWasShown then
+        SetPanelShown(sourceFrame, false)
+    end
+
+    local shown = SetPanelShown(targetFrame, true)
+    if not shown and sourceWasShown then
+        SetPanelShown(sourceFrame, true)
+    end
+
+    self.settingsRouteInProgress = nil
+
+    if shown then
+        self.settingsOpenGuardReason = nil
+        if manageBlizzardOwnership then
+            self:RefreshSettingsOwnerOverlays(sourceFrame, targetFrame)
+        else
+            self:RefreshSettingsOwnerOverlays(nil, targetFrame)
+        end
+        self:RefreshStandaloneSettingsTabs(targetFrame)
+        self:RefreshRefineTabPanel(targetFrame)
+        return true
+    end
+
+    return false
+end
+
+function CDM:OpenBlizzardSettingsPanelFromRefine(displayMode, sourceFrame)
+    if self.settingsRouteInProgress then
+        return false
+    end
+
+    if self.IsRefineRuntimeOwnerActive and self:IsRefineRuntimeOwnerActive() then
+        if self.ShowCooldownManagerSwitchPrompt then
+            self:ShowCooldownManagerSwitchPrompt("blizzard", { displayMode = displayMode })
+        else
+            RefineUI:Print("Blizzard cooldown settings are disabled while RefineUI CDM is active.")
+        end
+        return false
+    end
+
+    if displayMode ~= DISPLAY_MODE_SPELLS and displayMode ~= DISPLAY_MODE_AURAS then
+        displayMode = DISPLAY_MODE_SPELLS
+    end
+
+    local targetFrame = EnsureBlizzardSettingsFrameAvailable()
+    if not targetFrame then
+        RefineUI:Print("Blizzard cooldown settings are unavailable right now.")
+        return false
+    end
+
+    if self.InstallBlizzardSettingsIntegration then
+        self:InstallBlizzardSettingsIntegration()
+    end
+    if self.EnsureBlizzardSettingsOwnerHooks then
+        self:EnsureBlizzardSettingsOwnerHooks()
+    end
+
+    self.settingsRouteInProgress = true
+
+    SyncSettingsWindowGeometry(sourceFrame, targetFrame)
+
+    if type(targetFrame.SetDisplayMode) == "function" then
+        pcall(targetFrame.SetDisplayMode, targetFrame, displayMode)
+    end
+
+    local sourceWasShown = sourceFrame and sourceFrame:IsShown()
+    if sourceWasShown then
+        SetPanelShown(sourceFrame, false)
+    end
+
+    local shown = SetPanelShown(targetFrame, true)
+    if not shown and sourceWasShown then
+        SetPanelShown(sourceFrame, true)
+    end
+
+    if shown and type(targetFrame.SetDisplayMode) == "function" and targetFrame.displayMode ~= displayMode then
+        pcall(targetFrame.SetDisplayMode, targetFrame, displayMode)
+    end
+
+    self.settingsRouteInProgress = nil
+
+    if shown then
+        self:RefreshSettingsOwnerOverlays(targetFrame, sourceFrame)
+        if self.blizzardRefineTab then
+            self.blizzardRefineTab:SetChecked(false)
+            ApplyRefineTabIcon(self.blizzardRefineTab)
+        end
+        return true
+    end
+
+    return false
+end
+
+function CDM:RequestPendingPostReloadSettingsOpen()
+    if self.pendingPostReloadSettingsOpenQueued then
+        return
+    end
+
+    local pendingRequest = self.GetPendingPostReloadSettingsOpen and self:GetPendingPostReloadSettingsOpen() or nil
+    if type(pendingRequest) ~= "table" then
+        return
+    end
+
+    self.pendingPostReloadSettingsOpenQueued = true
+
+    local function TryOpen()
+        CDM.pendingPostReloadSettingsOpenQueued = nil
+
+        local request = CDM.GetPendingPostReloadSettingsOpen and CDM:GetPendingPostReloadSettingsOpen() or nil
+        if type(request) ~= "table" then
+            return
+        end
+
+        local opened = false
+        if request.mode == DISPLAY_MODE_REFINE then
+            opened = CDM:OpenSettingsPanel(true)
+        elseif request.mode == "blizzard" then
+            local displayMode = request.displayMode
+            if displayMode ~= DISPLAY_MODE_AURAS and displayMode ~= DISPLAY_MODE_SPELLS then
+                displayMode = DISPLAY_MODE_SPELLS
+            end
+            opened = CDM:OpenBlizzardSettingsPanelFromRefine(displayMode, nil)
+        end
+
+        if opened and CDM.ClearPendingPostReloadSettingsOpen then
+            CDM:ClearPendingPostReloadSettingsOpen()
+        end
+    end
+
+    if RefineUI.After then
+        RefineUI:After(POST_RELOAD_OPEN_TIMER_KEY, 0, TryOpen)
+    else
+        TryOpen()
+    end
+end
+
+function CDM:RefreshBlizzardSettingsRefineTab()
+    local tab = self.blizzardRefineTab
+    local host = self.blizzardRefineTabHost
+    local settingsFrame = GetBlizzardSettingsFrame()
+    if not tab then
+        return
+    end
+
+    if settingsFrame and settingsFrame:IsShown() then
+        AnchorBlizzardRefineTab(tab, settingsFrame)
+        tab:SetChecked(false)
+        ApplyRefineTabIcon(tab)
+        if host then
+            host:Show()
+        end
+        tab:Show()
+    else
+        tab:SetChecked(false)
+        tab:Hide()
+        if host then
+            host:Hide()
+        end
+    end
+
+    if self:ShouldManageBlizzardSettingsOwnership() then
+        self:RefreshSettingsOwnerOverlays(settingsFrame, self:GetCooldownViewerSettingsFrame())
+    end
+end
+
+function CDM:HandleBlizzardSettingsPanelShown(settingsFrame)
+    if self.settingsRouteInProgress or self.blizzardSettingsRedirectInProgress then
+        return
+    end
+    if not (self.IsRefineRuntimeOwnerActive and self:IsRefineRuntimeOwnerActive()) then
+        return
+    end
+    if not settingsFrame or not settingsFrame:IsShown() then
+        return
+    end
+
+    self.blizzardSettingsRedirectInProgress = true
+    self:OpenRefineSettingsPanelFromBlizzard(settingsFrame)
+    self.blizzardSettingsRedirectInProgress = nil
+end
+
+function CDM:InstallBlizzardSettingsRedirect()
+    local settingsFrame = GetBlizzardSettingsFrame()
+    if not settingsFrame or self.blizzardSettingsRedirectInstalled then
+        return
+    end
+
+    RefineUI:HookScriptOnce(BLIZZARD_SETTINGS_REDIRECT_HOOK_KEY, settingsFrame, "OnShow", function()
+        CDM:HandleBlizzardSettingsPanelShown(settingsFrame)
+    end)
+
+    self.blizzardSettingsRedirectInstalled = true
+end
+
+function CDM:EnsureBlizzardSettingsOwnerHooks()
+    local settingsFrame = GetBlizzardSettingsFrame()
+    if not settingsFrame then
+        return
+    end
+    if not self:ShouldManageBlizzardSettingsOwnership() then
+        return
+    end
+    if self.blizzardSettingsOwnerHooksInstalled then
+        return
+    end
+
+    RefineUI:HookOnce("CDM:Settings:Blizzard:SetDisplayMode", settingsFrame, "SetDisplayMode", function()
+        if not CDM:ShouldManageBlizzardSettingsOwnership() then
+            return
+        end
+        CDM:RefreshSettingsOwnerOverlays(settingsFrame, CDM:GetCooldownViewerSettingsFrame())
+    end)
+
+    self.blizzardSettingsOwnerHooksInstalled = true
+end
+
+function CDM:InstallBlizzardSettingsIntegration()
+    local settingsFrame = GetBlizzardSettingsFrame()
+    if not settingsFrame then
+        return
+    end
+
+    self:InstallBlizzardSettingsRedirect()
+
+    if not self.blizzardRefineTabHost then
+        local host = CreateFrame("Frame", nil, UIParent)
+        host:Hide()
+        self.blizzardRefineTabHost = host
+    end
+
+    if not self.blizzardRefineTab then
+        local anchor = settingsFrame.AurasTab or settingsFrame.SpellsTab or settingsFrame
+        local anchorPoint = anchor == settingsFrame and "TOPLEFT" or "TOPLEFT"
+        local relativePoint = anchor == settingsFrame and "TOPRIGHT" or "BOTTOMLEFT"
+        local xOffset = 0
+        local yOffset = anchor == settingsFrame and -28 or -3
+        local tab = CreateSettingsShellTab(
+            self.blizzardRefineTabHost,
+            REFINE_TAB_TOOLTIP,
+            REFINE_TAB_ATLAS,
+            anchorPoint,
+            anchor,
+            relativePoint,
+            xOffset,
+            yOffset
+        )
+        HookRefineTabIcon(tab, "CDM:Settings:BlizzardRefineTab")
+        SetTabMouseUpHandler(tab, function()
+            CDM:OpenRefineSettingsPanelFromBlizzard(GetBlizzardSettingsFrame())
+        end)
+        tab:Hide()
+        self.blizzardRefineTab = tab
+    end
+
+    AnchorBlizzardRefineTab(self.blizzardRefineTab, settingsFrame)
+    self:EnsureBlizzardSettingsOwnerHooks()
+
+    if self.blizzardSettingsIntegrationInstalled then
+        self:RefreshBlizzardSettingsRefineTab()
+        return
+    end
+
+    RefineUI:HookScriptOnce("CDM:Settings:Blizzard:OnShow", settingsFrame, "OnShow", function()
+        CDM:RefreshBlizzardSettingsRefineTab()
+    end)
+    RefineUI:HookScriptOnce("CDM:Settings:Blizzard:OnHide", settingsFrame, "OnHide", function()
+        CDM:RefreshBlizzardSettingsRefineTab()
+    end)
+
+    self.blizzardSettingsIntegrationInstalled = true
+    self:RefreshBlizzardSettingsRefineTab()
 end
 
 function CDM:CreateStandaloneSettingsFrame()
@@ -1099,6 +1894,52 @@ function CDM:CreateStandaloneSettingsFrame()
             end
         end)
     end
+
+    local spellsTab = CreateSettingsShellTab(
+        frame,
+        SPELLS_TAB_TOOLTIP,
+        SPELLS_TAB_ATLAS,
+        "TOPLEFT",
+        frame,
+        "TOPRIGHT",
+        0,
+        -28
+    )
+    local aurasTab = CreateSettingsShellTab(
+        frame,
+        AURAS_TAB_TOOLTIP,
+        AURAS_TAB_ATLAS,
+        "TOP",
+        spellsTab,
+        "BOTTOM",
+        0,
+        -3
+    )
+    local refineTab = CreateSettingsShellTab(
+        frame,
+        REFINE_TAB_TOOLTIP,
+        REFINE_TAB_ATLAS,
+        "TOP",
+        aurasTab,
+        "BOTTOM",
+        0,
+        -3
+    )
+    HookRefineTabIcon(refineTab, "CDM:Settings:StandaloneRefineTab")
+    SetTabMouseUpHandler(spellsTab, function()
+        CDM:OpenBlizzardSettingsPanelFromRefine(DISPLAY_MODE_SPELLS, frame)
+    end)
+    SetTabMouseUpHandler(aurasTab, function()
+        CDM:OpenBlizzardSettingsPanelFromRefine(DISPLAY_MODE_AURAS, frame)
+    end)
+    SetTabMouseUpHandler(refineTab, function()
+        CDM:RefreshStandaloneSettingsTabs(frame)
+    end)
+    frame.SettingsTabs = {
+        Spells = spellsTab,
+        Auras = aurasTab,
+        RefineUI = refineTab,
+    }
 
     local searchBox = CreateFrame("EditBox", nil, frame, "SearchBoxTemplate")
     searchBox:SetSize(290, 30)
@@ -1184,28 +2025,44 @@ function CDM:CreateStandaloneSettingsFrame()
                 frame.SearchBox.Instructions:SetShown((state.filterText or "") == "")
             end
         end
+        CDM:RefreshStandaloneSettingsTabs(frame)
+        CDM:RefreshSettingsOwnerOverlays(nil, frame)
         scrollChild:SetWidth(scrollFrame:GetWidth())
-        CDM:RequestRefineTabPanelRefresh(frame)
+        if CDM:CanRefreshRefineSettingsPanel(frame) then
+            CDM:RequestRefineTabPanelRefresh(frame)
+        else
+            CDM:CancelStandaloneSettingsWork(frame)
+        end
     end)
 
     frame:HookScript("OnHide", function()
-        if RefineUI.CancelDebounce then
-            RefineUI:CancelDebounce(SEARCH_DEBOUNCE_KEY)
-        end
-        if RefineUI.CancelTimer then
-            RefineUI:CancelTimer(PANEL_REFRESH_TIMER_KEY)
-        end
-        CDM:EndInjectedOrderChange(false)
+        CDM:CancelStandaloneSettingsWork(frame)
+        CDM:RefreshSettingsOwnerOverlays(nil, frame)
     end)
 
     self.settingsFrame = frame
     local state = GetSettingsState(self, frame)
     state.filterText = state.filterText or ""
+    self:RefreshStandaloneSettingsTabs(frame)
     SyncStandaloneFrameGeometry(frame)
     return frame
 end
 
-function CDM:OpenSettingsPanel()
+function CDM:OpenSettingsPanel(skipGuard)
+    if not skipGuard then
+        local reason = GetSettingsOpenGuardReason(self)
+        if reason then
+            return self:RequestDeferredSettingsOpen(reason)
+        end
+    end
+
+    self.settingsOpenGuardReason = nil
+
+    local blizzardSettingsFrame = GetBlizzardSettingsFrame()
+    if blizzardSettingsFrame and blizzardSettingsFrame:IsShown() then
+        return self:OpenRefineSettingsPanelFromBlizzard(blizzardSettingsFrame)
+    end
+
     local settingsFrame = self:CreateStandaloneSettingsFrame()
     if not settingsFrame then
         RefineUI:Print("CDM settings are unavailable right now.")
@@ -1213,46 +2070,11 @@ function CDM:OpenSettingsPanel()
     end
 
     UpdateReadOnlyState(settingsFrame)
-    SyncStandaloneFrameGeometry(settingsFrame)
-    if (not InCombatLockdown or not InCombatLockdown()) and type(ShowUIPanel) == "function" then
-        local ok, shown = pcall(ShowUIPanel, settingsFrame)
-        if not ok or shown == false then
-            settingsFrame:Show()
-        end
-    else
-        settingsFrame:Show()
-    end
+    self:RefreshStandaloneSettingsTabs(settingsFrame)
+    SetPanelShown(settingsFrame, true)
+    self:RefreshSettingsOwnerOverlays(nil, settingsFrame)
     self:RefreshRefineTabPanel(settingsFrame)
     return true
-end
-
-function CDM:InstallBlizzardSettingsRedirect()
-    if self.blizzardSettingsRedirectInstalled then
-        return
-    end
-
-    local settingsFrame = _G.CooldownViewerSettings
-    if not settingsFrame then
-        return
-    end
-
-    settingsFrame:HookScript("OnShow", function(frame)
-        if CDM.redirectingBlizzardSettings then
-            return
-        end
-
-        CDM.redirectingBlizzardSettings = true
-        SyncStandaloneFrameGeometry(CDM.settingsFrame)
-        if (not InCombatLockdown or not InCombatLockdown()) and type(HideUIPanel) == "function" then
-            HideUIPanel(frame)
-        else
-            frame:Hide()
-        end
-        CDM:OpenSettingsPanel()
-        CDM.redirectingBlizzardSettings = nil
-    end)
-
-    self.blizzardSettingsRedirectInstalled = true
 end
 
 function CDM:InitializeSettingsInjection()
@@ -1263,7 +2085,19 @@ function CDM:InitializeSettingsInjection()
     self:CreateStandaloneSettingsFrame()
 
     if _G.CooldownViewerSettings then
-        self:InstallBlizzardSettingsRedirect()
+        self:InstallBlizzardSettingsIntegration()
+    end
+
+    if not self.settingsIntegrationAddonHookRegistered and RefineUI.RegisterEventCallback then
+        RefineUI:RegisterEventCallback("ADDON_LOADED", function(_event, addonName)
+            if addonName ~= "Blizzard_CooldownViewer" then
+                return
+            end
+            if CDM.InstallBlizzardSettingsIntegration then
+                CDM:InstallBlizzardSettingsIntegration()
+            end
+        end, "CDM:Settings:AddonLoaded")
+        self.settingsIntegrationAddonHookRegistered = true
     end
 
     self.settingsInjectionInitialized = true

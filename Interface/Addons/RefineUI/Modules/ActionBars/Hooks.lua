@@ -37,6 +37,12 @@ local function QueueStateUpdate(button)
     end
 end
 
+local function QueueUsabilityUpdate(button, isUsable, notEnoughMana)
+    if button then
+        private.QueueDeferredUsabilityUpdate(button, isUsable, notEnoughMana)
+    end
+end
+
 ----------------------------------------------------------------------------------------
 -- Public Methods
 ----------------------------------------------------------------------------------------
@@ -56,7 +62,7 @@ function ActionBars:SetupHooks()
     do
         local function TriggerPressed(button, pressed)
             if button then
-                private.SetPressedVisual(button, pressed)
+                private.QueueDeferredPress(button, pressed)
             end
         end
 
@@ -120,16 +126,16 @@ function ActionBars:SetupHooks()
     end
 
     if ActionBarActionButtonMixin and ActionBarActionButtonMixin.UpdateUsable then
-        RefineUI:HookOnce("ActionBars:ActionBarActionButtonMixin:UpdateUsable", ActionBarActionButtonMixin, "UpdateUsable", function(button)
-            QueueStateUpdate(button)
+        RefineUI:HookOnce("ActionBars:ActionBarActionButtonMixin:UpdateUsable", ActionBarActionButtonMixin, "UpdateUsable", function(button, action, isUsable, notEnoughMana)
+            QueueUsabilityUpdate(button, isUsable, notEnoughMana)
         end)
     elseif ActionButtonMixin and ActionButtonMixin.UpdateUsable then
-        RefineUI:HookOnce("ActionBars:ActionButtonMixin:UpdateUsable", ActionButtonMixin, "UpdateUsable", function(button)
-            QueueStateUpdate(button)
+        RefineUI:HookOnce("ActionBars:ActionButtonMixin:UpdateUsable", ActionButtonMixin, "UpdateUsable", function(button, action, isUsable, notEnoughMana)
+            QueueUsabilityUpdate(button, isUsable, notEnoughMana)
         end)
     elseif _G.ActionButton_UpdateUsable then
-        RefineUI:HookOnce("ActionBars:ActionButton_UpdateUsable", "ActionButton_UpdateUsable", function(button)
-            QueueStateUpdate(button)
+        RefineUI:HookOnce("ActionBars:ActionButton_UpdateUsable", "ActionButton_UpdateUsable", function(button, action, isUsable, notEnoughMana)
+            QueueUsabilityUpdate(button, isUsable, notEnoughMana)
         end)
     end
 

@@ -57,6 +57,13 @@ local function ResolveDefaultPosition()
     }
 end
 
+local function GetBagViewMode()
+    if Bags.GetViewMode then
+        return Bags.GetViewMode()
+    end
+    return (Bags.BAG_VIEW_MODE and Bags.BAG_VIEW_MODE.CATEGORIES) or "Categories"
+end
+
 local function RefreshBagLayout()
     if Bags.ApplyLayoutConfig then
         Bags.ApplyLayoutConfig()
@@ -99,17 +106,17 @@ function Bags.RegisterEditModeSettings()
     table.insert(settings, {
         kind = RefineUI.LibEditMode.SettingType.Slider,
         name = "Slot Size",
-        default = 37,
+        default = 36,
         minValue = 24,
         maxValue = 56,
         valueStep = 1,
         get = function()
             local cfg = Bags.GetConfig and Bags.GetConfig() or {}
-            return cfg.SlotSize or 37
+            return cfg.SlotSize or 36
         end,
         set = function(_, value)
             local cfg = Bags.GetConfig and Bags.GetConfig() or {}
-            cfg.SlotSize = math.floor((tonumber(value) or 37) + 0.5)
+            cfg.SlotSize = math.floor((tonumber(value) or 36) + 0.5)
             RefreshBagLayout()
             if Bags.RequestUpdate then
                 Bags.RequestUpdate()
@@ -141,17 +148,17 @@ function Bags.RegisterEditModeSettings()
     table.insert(settings, {
         kind = RefineUI.LibEditMode.SettingType.Slider,
         name = "Vertical Spacing",
-        default = 5,
+        default = 2,
         minValue = 0,
         maxValue = 20,
         valueStep = 1,
         get = function()
             local cfg = Bags.GetConfig and Bags.GetConfig() or {}
-            return cfg.ItemSpacingY or 5
+            return cfg.ItemSpacingY or 2
         end,
         set = function(_, value)
             local cfg = Bags.GetConfig and Bags.GetConfig() or {}
-            cfg.ItemSpacingY = math.floor((tonumber(value) or 5) + 0.5)
+            cfg.ItemSpacingY = math.floor((tonumber(value) or 2) + 0.5)
             RefreshBagLayout()
             if Bags.RequestUpdate then
                 Bags.RequestUpdate()
@@ -161,42 +168,30 @@ function Bags.RegisterEditModeSettings()
 
     table.insert(settings, {
         kind = RefineUI.LibEditMode.SettingType.Dropdown,
-        name = "Quality Borders",
-        default = true,
+        name = "Bag View",
+        default = GetBagViewMode(),
         values = {
-            { text = "Enabled", value = true },
-            { text = "Disabled", value = false },
+            { text = "Categories", value = (Bags.BAG_VIEW_MODE and Bags.BAG_VIEW_MODE.CATEGORIES) or "Categories" },
+            { text = "Combined Bag", value = (Bags.BAG_VIEW_MODE and Bags.BAG_VIEW_MODE.COMBINED) or "Combined" },
+            { text = "By Bag", value = (Bags.BAG_VIEW_MODE and Bags.BAG_VIEW_MODE.BY_BAG) or "ByBag" },
         },
         get = function()
-            local cfg = Bags.GetConfig and Bags.GetConfig() or {}
-            return cfg.ShowQualityBorder ~= false
+            return GetBagViewMode()
         end,
         set = function(_, value)
             local cfg = Bags.GetConfig and Bags.GetConfig() or {}
-            cfg.ShowQualityBorder = value and true or false
-            if Bags.RequestUpdate then
-                Bags.RequestUpdate()
+            if value == (Bags.BAG_VIEW_MODE and Bags.BAG_VIEW_MODE.COMBINED) then
+                cfg.ViewMode = Bags.BAG_VIEW_MODE.COMBINED
+            elseif value == (Bags.BAG_VIEW_MODE and Bags.BAG_VIEW_MODE.BY_BAG) then
+                cfg.ViewMode = Bags.BAG_VIEW_MODE.BY_BAG
+            else
+                cfg.ViewMode = (Bags.BAG_VIEW_MODE and Bags.BAG_VIEW_MODE.CATEGORIES) or "Categories"
             end
-        end,
-    })
 
-    table.insert(settings, {
-        kind = RefineUI.LibEditMode.SettingType.Dropdown,
-        name = "Item Level Text",
-        default = true,
-        values = {
-            { text = "Enabled", value = true },
-            { text = "Disabled", value = false },
-        },
-        get = function()
-            local cfg = Bags.GetConfig and Bags.GetConfig() or {}
-            return cfg.ShowItemLevel ~= false
-        end,
-        set = function(_, value)
-            local cfg = Bags.GetConfig and Bags.GetConfig() or {}
-            cfg.ShowItemLevel = value and true or false
             if Bags.RequestUpdate then
-                Bags.RequestUpdate()
+                Bags.RequestUpdate({ forceReflow = true })
+            else
+                RefreshBagLayout()
             end
         end,
     })
@@ -277,4 +272,3 @@ function Bags.InitializeEditMode()
 end
 
 Bags.InitializeEditMode()
-

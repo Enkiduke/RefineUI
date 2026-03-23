@@ -17,19 +17,110 @@ if not LibEditModeOverride or not RefineUI.LibEditMode then
     return
 end
 
-local INSTALL_LAYOUT_NAME = "RefineUI"
 local READY_WAIT_INTERVAL = 0.5
 local READY_WAIT_ATTEMPTS = 60
+local LAYOUT_EVENT_KEY = {
+    DISPLAY_SIZE_CHANGED = "EditMode:DisplaySizeChanged",
+    UI_SCALE_CHANGED = "EditMode:UIScaleChanged",
+    PLAYER_REGEN_ENABLED = "EditMode:PlayerRegenEnabled",
+}
 
--- Stored EditMode slider values for Damage Meter.
--- Display equivalents: width=314, height=294, bar=15, padding=5, bg=0, text=100.
-local DAMAGE_METER_SETTING_FRAME_WIDTH = 14
-local DAMAGE_METER_SETTING_FRAME_HEIGHT = 174
-local DAMAGE_METER_SETTING_BAR_HEIGHT = 14
-local DAMAGE_METER_SETTING_PADDING = 4
-local DAMAGE_METER_SETTING_BACKGROUND_OPACITY = 0
-local DAMAGE_METER_SETTING_TEXT_SIZE = 7
-local TIMER_BARS_SETTING_SIZE = 2 -- Blizzard Edit Mode "Duration Bars" scale percentage
+local MICRO_MENU_SIZE = 115
+local TIMER_BARS_SIZE = 120
+
+local function ClampNumber(value, minValue, maxValue)
+    local numericValue = tonumber(value) or minValue
+    if numericValue < minValue then
+        return minValue
+    end
+    if numericValue > maxValue then
+        return maxValue
+    end
+    return numericValue
+end
+
+local function SplitChatFrameDimension(value)
+    local size = math.floor(tonumber(value) or 0)
+    if size < 0 then
+        size = 0
+    end
+    if size > 999 then
+        size = 999
+    end
+    return math.floor(size / 100), size % 100
+end
+
+local function GetLayoutDefaults(tierKey)
+    return RefineUI:GetLayoutDefaults(tierKey)
+end
+
+local function GetLayoutNameForTier(tierKey)
+    return RefineUI:GetManagedLayoutName(tierKey)
+end
+
+local function GetTierForManagedLayoutName(layoutName)
+    if type(layoutName) ~= "string" or layoutName == "" then
+        return nil
+    end
+
+    for tierKey, managedName in pairs(RefineUI.ManagedLayoutNames or {}) do
+        if managedName == layoutName then
+            return tierKey
+        end
+    end
+
+    return nil
+end
+
+local function GetDisplayLayoutTier()
+    return RefineUI:GetLayoutTier()
+end
+
+local function GetActionBarIconSize(defaults)
+    local actionBarDefaults = defaults and defaults.actionBars or nil
+    local iconSize = actionBarDefaults and tonumber(actionBarDefaults.iconSize) or 100
+    return iconSize
+end
+
+local function GetActionBarIconPadding(defaults)
+    local actionBarDefaults = defaults and defaults.actionBars or nil
+    local iconPadding = actionBarDefaults and tonumber(actionBarDefaults.iconPadding) or 4
+    return iconPadding
+end
+
+local function GetDamageMeterSettings(defaults)
+    local damageMeterDefaults = defaults and defaults.damageMeter or {}
+    return {
+        -- Blizzard's native Damage Meter settings have hard minimums that are
+        -- larger than our desired 1080/1440 targets. Clamp here so layout
+        -- installation remains deterministic instead of failing mid-apply.
+        frameWidth = ClampNumber(damageMeterDefaults.frameWidth, 300, 600),
+        frameHeight = ClampNumber(damageMeterDefaults.frameHeight, 120, 400),
+        barHeight = ClampNumber(damageMeterDefaults.barHeight, 15, 40),
+        padding = ClampNumber(damageMeterDefaults.padding, 2, 10),
+        textSize = ClampNumber(damageMeterDefaults.textSize, 50, 150),
+        backgroundTransparency = ClampNumber(damageMeterDefaults.backgroundTransparency, 0, 100),
+    }
+end
+
+local function GetPartyFrameSize(defaults)
+    local unitFrameDefaults = defaults and defaults.unitFrames or {}
+    return {
+        -- Raid-style party frames also have hard floors in Blizzard Edit Mode.
+        width = ClampNumber(unitFrameDefaults.partyWidth, 72, 144),
+        height = ClampNumber(unitFrameDefaults.partyHeight, 36, 72),
+    }
+end
+
+local function GetPlayerTargetFrameSize(defaults)
+    local unitFrameDefaults = defaults and defaults.unitFrames or {}
+    return tonumber(unitFrameDefaults.playerTargetFrameSize) or 150
+end
+
+local function GetFocusUseLargerFrame(defaults)
+    local unitFrameDefaults = defaults and defaults.unitFrames or {}
+    return unitFrameDefaults.focusUseLargerFrame ~= false
+end
 
 local function GetPosition(name)
     if RefineUI.Positions and RefineUI.Positions[name] then
@@ -53,6 +144,19 @@ local function GetSystemFrameByIndex(systemID, systemIndex)
             return frame
         end
     end
+end
+
+local function EnsureDamageMeterSystemFrame()
+    local damageMeterSystemID = Enum.EditModeSystem and Enum.EditModeSystem.DamageMeter
+    if not damageMeterSystemID then
+        return nil
+    end
+
+    if C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.LoadAddOn and not C_AddOns.IsAddOnLoaded("Blizzard_DamageMeter") then
+        C_AddOns.LoadAddOn("Blizzard_DamageMeter")
+    end
+
+    return GetSystemFrame(damageMeterSystemID)
 end
 
 local ACTION_BAR_NAMES_BY_INDEX = {
@@ -101,6 +205,34 @@ local function TrySetFrameSetting(frame, setting, value)
     return true
 end
 
+local function TrySetFrameSettingStored(frame, setting, value)
+    if not frame then
+        return true
+    end
+
+    local getSystemByFrame = LibEditModeOverride and LibEditModeOverride.GetSystemByFrame
+    if type(getSystemByFrame) ~= "function" then
+        return false, "missing_get_system_by_frame"
+    end
+
+    local ok, system = pcall(getSystemByFrame, frame)
+    if not ok then
+        return false, system
+    end
+    if not system or type(system.settings) ~= "table" then
+        return false, "missing_system_settings"
+    end
+
+    for _, item in pairs(system.settings) do
+        if item.setting == setting then
+            item.value = value
+            return true
+        end
+    end
+
+    return false, "setting_not_found"
+end
+
 local function TryReanchorFrame(frame, point, relativeTo, relativePoint, x, y)
     if not frame then
         return true
@@ -120,6 +252,26 @@ local function TrySetGlobalSetting(setting, value)
     return true
 end
 
+local function GetActiveLayoutName()
+    local activeOk, activeLayout = CallOverride("GetActiveLayout")
+    if not activeOk then
+        return nil, activeLayout
+    end
+    return activeLayout
+end
+
+local function RefreshTierAwareModules()
+    local maps = RefineUI.GetModule and RefineUI:GetModule("Maps")
+    if maps and type(maps.RefreshMinimapSize) == "function" then
+        pcall(maps.RefreshMinimapSize, maps)
+    end
+
+    local quests = RefineUI.GetModule and RefineUI:GetModule("Quests")
+    if quests and type(quests.ApplyObjectiveTrackerScale) == "function" then
+        pcall(quests.ApplyObjectiveTrackerScale, quests)
+    end
+end
+
 function Module:OnInitialize()
     -- Nothing to do early
 end
@@ -135,6 +287,8 @@ function Module:OnEnable()
     self:RegisterCustomFrames()
 
     self:HookExitEditMode()
+    self:RegisterManagedLayoutEvents()
+    self:HandleManagedLayoutEnvironmentChange("OnEnable")
 end
 
 function Module:RegisterCustomFrames()
@@ -171,8 +325,92 @@ function Module:RegisterCustomFrames()
     end
 end
 
-function Module:ConfigureRefineUILayout()
-    -- Enforce settings for the "RefineUI" layout
+function Module:RegisterManagedLayoutEvents()
+    if self._managedLayoutEventsRegistered then
+        return
+    end
+
+    self._managedLayoutEventsRegistered = true
+
+    RefineUI:RegisterEventCallback("DISPLAY_SIZE_CHANGED", function()
+        self:HandleManagedLayoutEnvironmentChange("DISPLAY_SIZE_CHANGED")
+    end, LAYOUT_EVENT_KEY.DISPLAY_SIZE_CHANGED)
+
+    RefineUI:RegisterEventCallback("UI_SCALE_CHANGED", function()
+        self:HandleManagedLayoutEnvironmentChange("UI_SCALE_CHANGED")
+    end, LAYOUT_EVENT_KEY.UI_SCALE_CHANGED)
+
+    RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
+        self:HandleManagedLayoutEnvironmentChange("PLAYER_REGEN_ENABLED")
+    end, LAYOUT_EVENT_KEY.PLAYER_REGEN_ENABLED)
+end
+
+function Module:HandleManagedLayoutEnvironmentChange(source)
+    local db = RefineUI.DB
+    if not db or db.InstallState ~= "ready" then
+        return
+    end
+
+    local readyOk, isReady = CallOverride("IsReady")
+    if not readyOk then
+        return
+    end
+
+    if not isReady then
+        if not self._managedLayoutReadyRetryScheduled then
+            self._managedLayoutReadyRetryScheduled = true
+            C_Timer.After(READY_WAIT_INTERVAL, function()
+                self._managedLayoutReadyRetryScheduled = nil
+                if RefineUI.DB and RefineUI.DB.InstallState == "ready" then
+                    self:HandleManagedLayoutEnvironmentChange(source or "READY_RETRY")
+                end
+            end)
+        end
+        return
+    end
+
+    local loadOk = CallOverride("LoadLayouts")
+    if not loadOk then
+        return
+    end
+
+    local activeLayout, activeLayoutErr = GetActiveLayoutName()
+    if not activeLayout then
+        return activeLayoutErr
+    end
+
+    local activeTier = GetTierForManagedLayoutName(activeLayout)
+    if not activeTier then
+        self.pendingManagedLayoutTier = nil
+        self.pendingManagedLayoutSource = nil
+        return
+    end
+
+    RefineUI:BindActiveLayoutProfile(db, activeTier)
+
+    local targetTier = self.pendingManagedLayoutTier or GetDisplayLayoutTier()
+    if targetTier == activeTier then
+        self.pendingManagedLayoutTier = nil
+        self.pendingManagedLayoutSource = nil
+        RefreshTierAwareModules()
+        return
+    end
+
+    if InCombatLockdown() then
+        self.pendingManagedLayoutTier = GetDisplayLayoutTier()
+        self.pendingManagedLayoutSource = source
+        return
+    end
+
+    self.pendingManagedLayoutTier = nil
+    self.pendingManagedLayoutSource = nil
+    self:EnsureRefineUILayout(false, true, nil, targetTier)
+end
+
+function Module:ConfigureRefineUILayout(tierKey)
+    local targetTier = tierKey or RefineUI:GetStoredLayoutTier() or GetDisplayLayoutTier()
+    local layoutDefaults = GetLayoutDefaults(targetTier)
+
     local readyOk, isReady = CallOverride("IsReady")
     if not readyOk then
         return false, isReady
@@ -207,11 +445,8 @@ function Module:ConfigureRefineUILayout()
     end
 
     -- Explicit Damage Meter system anchor (supports either Positions.DamageMeter or legacy Positions.DamageMeterSessionWindow1).
-    if C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.LoadAddOn and not C_AddOns.IsAddOnLoaded("Blizzard_DamageMeter") then
-        C_AddOns.LoadAddOn("Blizzard_DamageMeter")
-    end
     local damageMeterPos = RefineUI.Positions.DamageMeter or RefineUI.Positions.DamageMeterSessionWindow1
-    local damageMeterSystem = GetSystemFrame(Enum.EditModeSystem.DamageMeter)
+    local damageMeterSystem = EnsureDamageMeterSystemFrame()
     if damageMeterPos and damageMeterSystem then
         local point, relativeTo, relativePoint, x, y = unpack(damageMeterPos)
         relativeTo = ResolveRelativeFrame(relativeTo)
@@ -222,11 +457,19 @@ function Module:ConfigureRefineUILayout()
     end
 
     -- 2. Specific Settings
-    local activeOk, activeLayout = CallOverride("GetActiveLayout")
-    if not activeOk then
-        return false, activeLayout
+    local activeLayout, activeLayoutErr = GetActiveLayoutName()
+    if not activeLayout then
+        return false, activeLayoutErr
     end
-    if activeLayout == INSTALL_LAYOUT_NAME then
+    if RefineUI:IsManagedLayoutName(activeLayout) then
+        local playerTargetFrameSize = GetPlayerTargetFrameSize(layoutDefaults)
+        local focusUseLargerFrame = GetFocusUseLargerFrame(layoutDefaults)
+        local partyFrameSize = GetPartyFrameSize(layoutDefaults)
+        local actionBarIconSize = GetActionBarIconSize(layoutDefaults)
+        local actionBarIconPadding = GetActionBarIconPadding(layoutDefaults)
+        local damageMeterSettings = GetDamageMeterSettings(layoutDefaults)
+        local useLegacyWideSizing = targetTier == RefineUI.LayoutTier.WIDE_1440
+
         -- Enable Blizzard Duration Bars (MirrorTimerContainer) by default for the RefineUI layout.
         if Enum.EditModeAccountSetting and Enum.EditModeAccountSetting.ShowTimerBars then
             local ok, err = TrySetGlobalSetting(Enum.EditModeAccountSetting.ShowTimerBars, 1)
@@ -243,16 +486,20 @@ function Module:ConfigureRefineUILayout()
             if not ok then return false, err end
             ok, err = TrySetFrameSetting(MainActionBar, Enum.EditModeActionBarSetting.AlwaysShowButtons, 0)
             if not ok then return false, err end
-            ok, err = TrySetFrameSetting(MainActionBar, Enum.EditModeActionBarSetting.IconPadding, 4)
+            ok, err = TrySetFrameSetting(MainActionBar, Enum.EditModeActionBarSetting.IconSize, actionBarIconSize)
+            if not ok then return false, err end
+            ok, err = TrySetFrameSetting(MainActionBar, Enum.EditModeActionBarSetting.IconPadding, actionBarIconPadding)
             if not ok then return false, err end
         end
         
-        -- Action Bars 2-5 baseline settings
-        for _, bar in ipairs({MultiBarBottomLeft, MultiBarBottomRight, MultiBarRight, MultiBarLeft}) do
+        -- Action Bars 2-8 baseline settings
+        for _, bar in ipairs({MultiBarBottomLeft, MultiBarBottomRight, MultiBarRight, MultiBarLeft, MultiBar5, MultiBar6, MultiBar7}) do
             if bar then
                 local ok, err = TrySetFrameSetting(bar, Enum.EditModeActionBarSetting.AlwaysShowButtons, 0)
                 if not ok then return false, err end
-                ok, err = TrySetFrameSetting(bar, Enum.EditModeActionBarSetting.IconPadding, 4)
+                ok, err = TrySetFrameSetting(bar, Enum.EditModeActionBarSetting.IconSize, actionBarIconSize)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSetting(bar, Enum.EditModeActionBarSetting.IconPadding, actionBarIconPadding)
                 if not ok then return false, err end
             end
         end
@@ -290,13 +537,27 @@ function Module:ConfigureRefineUILayout()
         
         -- Stance Bar Padding
         if StanceBar then
-            local ok, err = TrySetFrameSetting(StanceBar, Enum.EditModeActionBarSetting.IconPadding, 4)
+            local ok, err = TrySetFrameSetting(StanceBar, Enum.EditModeActionBarSetting.IconSize, actionBarIconSize)
+            if not ok then return false, err end
+            ok, err = TrySetFrameSetting(StanceBar, Enum.EditModeActionBarSetting.IconPadding, actionBarIconPadding)
             if not ok then return false, err end
         end
 
         -- Pet Bar Padding
         if PetActionBar then
-            local ok, err = TrySetFrameSetting(PetActionBar, Enum.EditModeActionBarSetting.IconPadding, 4)
+            local ok, err = TrySetFrameSetting(PetActionBar, Enum.EditModeActionBarSetting.IconSize, actionBarIconSize)
+            if not ok then return false, err end
+            ok, err = TrySetFrameSetting(PetActionBar, Enum.EditModeActionBarSetting.IconPadding, actionBarIconPadding)
+            if not ok then return false, err end
+        end
+
+        if PlayerFrame then
+            local ok, err = TrySetFrameSetting(PlayerFrame, Enum.EditModeUnitFrameSetting.FrameSize, playerTargetFrameSize)
+            if not ok then return false, err end
+        end
+
+        if TargetFrame then
+            local ok, err = TrySetFrameSetting(TargetFrame, Enum.EditModeUnitFrameSetting.FrameSize, playerTargetFrameSize)
             if not ok then return false, err end
         end
 
@@ -306,17 +567,40 @@ function Module:ConfigureRefineUILayout()
             if not ok then return false, err end
             ok, err = TrySetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.SortPlayersBy, Enum.SortPlayersBy.Role)
             if not ok then return false, err end
-            ok, err = TrySetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.FrameWidth, 72)
-            if not ok then return false, err end
-            ok, err = TrySetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.FrameHeight, 28)
-            if not ok then return false, err end
+            if useLegacyWideSizing then
+                ok, err = TrySetFrameSettingStored(PartyFrame, Enum.EditModeUnitFrameSetting.FrameWidth, 72)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSettingStored(PartyFrame, Enum.EditModeUnitFrameSetting.FrameHeight, 28)
+                if not ok then return false, err end
+            else
+                ok, err = TrySetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.FrameWidth, partyFrameSize.width)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.FrameHeight, partyFrameSize.height)
+                if not ok then return false, err end
+            end
             ok, err = TrySetFrameSetting(PartyFrame, Enum.EditModeUnitFrameSetting.AuraOrganizationType, Enum.RaidAuraOrganizationType.BuffsRightDebuffsLeft)
+            if not ok then return false, err end
+        end
+
+        -- Chat Frame defaults are seeded into the install layout once so users can resize later.
+        local chatFrame = GetSystemFrame(Enum.EditModeSystem.ChatFrame)
+        local chatDefaults = layoutDefaults and layoutDefaults.chat or nil
+        if chatFrame and chatDefaults and Enum.EditModeChatFrameSetting then
+            local widthHundreds, widthTensAndOnes = SplitChatFrameDimension(chatDefaults.width)
+            local heightHundreds, heightTensAndOnes = SplitChatFrameDimension(chatDefaults.height)
+            local ok, err = TrySetFrameSetting(chatFrame, Enum.EditModeChatFrameSetting.WidthHundreds, widthHundreds)
+            if not ok then return false, err end
+            ok, err = TrySetFrameSetting(chatFrame, Enum.EditModeChatFrameSetting.WidthTensAndOnes, widthTensAndOnes)
+            if not ok then return false, err end
+            ok, err = TrySetFrameSetting(chatFrame, Enum.EditModeChatFrameSetting.HeightHundreds, heightHundreds)
+            if not ok then return false, err end
+            ok, err = TrySetFrameSetting(chatFrame, Enum.EditModeChatFrameSetting.HeightTensAndOnes, heightTensAndOnes)
             if not ok then return false, err end
         end
         
         -- Set BuffFrame settings
         if BuffFrame then
-            local ok, err = TrySetFrameSetting(BuffFrame, Enum.EditModeAuraFrameSetting.IconSize, 10)
+            local ok, err = TrySetFrameSetting(BuffFrame, Enum.EditModeAuraFrameSetting.IconSize, 150)
             if not ok then return false, err end
             ok, err = TrySetFrameSetting(BuffFrame, Enum.EditModeAuraFrameSetting.IconLimitBuffFrame, 12)
             if not ok then return false, err end
@@ -330,7 +614,7 @@ function Module:ConfigureRefineUILayout()
             if not ok then return false, err end
             ok, err = TrySetFrameSetting(DebuffFrame, Enum.EditModeAuraFrameSetting.IconDirection, Enum.AuraFrameIconDirection.Right)
             if not ok then return false, err end
-            ok, err = TrySetFrameSetting(DebuffFrame, Enum.EditModeAuraFrameSetting.IconSize, 5)
+            ok, err = TrySetFrameSetting(DebuffFrame, Enum.EditModeAuraFrameSetting.IconSize, 100)
             if not ok then return false, err end
             ok, err = TrySetFrameSetting(DebuffFrame, Enum.EditModeAuraFrameSetting.IconLimitDebuffFrame, 5)
             if not ok then return false, err end
@@ -341,25 +625,50 @@ function Module:ConfigureRefineUILayout()
         -- Set MicroMenu Size
         local microMenu = GetSystemFrame(Enum.EditModeSystem.MicroMenu)
         if microMenu then
-            local ok, err = TrySetFrameSetting(microMenu, Enum.EditModeMicroMenuSetting.Size, 9)
+            local ok, err = TrySetFrameSetting(microMenu, Enum.EditModeMicroMenuSetting.Size, MICRO_MENU_SIZE)
+            if not ok then return false, err end
+        end
+
+        local minimap = GetSystemFrame(Enum.EditModeSystem.Minimap)
+        if minimap and Enum.EditModeMinimapSetting then
+            local ok, err = TrySetFrameSetting(minimap, Enum.EditModeMinimapSetting.Size, 100)
             if not ok then return false, err end
         end
 
         -- Damage Meter defaults
-        local damageMeter = GetSystemFrame(Enum.EditModeSystem.DamageMeter)
+        local damageMeter = EnsureDamageMeterSystemFrame()
+        if Enum.EditModeDamageMeterSetting and not damageMeter then
+            return false, "damage_meter_system_unavailable"
+        end
         if damageMeter and Enum.EditModeDamageMeterSetting then
-            local ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.FrameWidth, DAMAGE_METER_SETTING_FRAME_WIDTH)
-            if not ok then return false, err end
-            ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.FrameHeight, DAMAGE_METER_SETTING_FRAME_HEIGHT)
-            if not ok then return false, err end
-            ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.BarHeight, DAMAGE_METER_SETTING_BAR_HEIGHT)
-            if not ok then return false, err end
-            ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.Padding, DAMAGE_METER_SETTING_PADDING)
-            if not ok then return false, err end
-            ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.BackgroundTransparency, DAMAGE_METER_SETTING_BACKGROUND_OPACITY)
-            if not ok then return false, err end
-            ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.TextSize, DAMAGE_METER_SETTING_TEXT_SIZE)
-            if not ok then return false, err end
+            local ok, err
+            if useLegacyWideSizing then
+                ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.FrameWidth, 14)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.FrameHeight, 174)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.BarHeight, 14)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.Padding, 4)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.BackgroundTransparency, 0)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.TextSize, 7)
+                if not ok then return false, err end
+            else
+                ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.FrameWidth, damageMeterSettings.frameWidth)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.FrameHeight, damageMeterSettings.frameHeight)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.BarHeight, damageMeterSettings.barHeight)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.Padding, damageMeterSettings.padding)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.BackgroundTransparency, damageMeterSettings.backgroundTransparency)
+                if not ok then return false, err end
+                ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.TextSize, damageMeterSettings.textSize)
+                if not ok then return false, err end
+            end
         end
 
         -- Duration Bars (MirrorTimerContainer) default size in Blizzard Edit Mode.
@@ -371,7 +680,7 @@ function Module:ConfigureRefineUILayout()
             timerBars = _G.MirrorTimerContainer
         end
         if timerBars and Enum.EditModeTimerBarsSetting then
-            local ok, err = TrySetFrameSetting(timerBars, Enum.EditModeTimerBarsSetting.Size, TIMER_BARS_SETTING_SIZE)
+            local ok, err = TrySetFrameSetting(timerBars, Enum.EditModeTimerBarsSetting.Size, TIMER_BARS_SIZE)
             if not ok then return false, err end
         end
         
@@ -383,7 +692,7 @@ function Module:ConfigureRefineUILayout()
 
         -- Focus Frame Settings
         if FocusFrame then
-            local ok, err = TrySetFrameSetting(FocusFrame, Enum.EditModeUnitFrameSetting.UseLargerFrame, 1)
+            local ok, err = TrySetFrameSetting(FocusFrame, Enum.EditModeUnitFrameSetting.UseLargerFrame, focusUseLargerFrame and 1 or 0)
             if not ok then return false, err end
             ok, err = TrySetFrameSetting(FocusFrame, Enum.EditModeUnitFrameSetting.BuffsOnTop, 1)
             if not ok then return false, err end
@@ -393,7 +702,7 @@ function Module:ConfigureRefineUILayout()
     return true
 end
 
-function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
+function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks, tierKey)
     callbacks = callbacks or {}
 
     if self._ensureFlow and self._ensureFlow.cleanup then
@@ -462,6 +771,9 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
             return
         end
 
+        local targetTier = tierKey or RefineUI:GetStoredLayoutTier() or GetDisplayLayoutTier()
+        local layoutName = GetLayoutNameForTier(targetTier)
+
         if InCombatLockdown() then
             block("combat_locked", "Cannot apply the RefineUI layout while in combat.", "apply_layout")
             return
@@ -473,7 +785,7 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
             return
         end
 
-        local existsOk, layoutExists = CallOverride("DoesLayoutExist", INSTALL_LAYOUT_NAME)
+        local existsOk, layoutExists = CallOverride("DoesLayoutExist", layoutName)
         if not existsOk then
             fail("unexpected_error", tostring(layoutExists), "preflight")
             return
@@ -488,7 +800,7 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
 
             fireCallback("onPhaseChanged", { state = "running", phase = "create_layout" })
 
-            local addOk, addErr = CallOverride("AddLayout", Enum.EditModeLayoutType.Account, INSTALL_LAYOUT_NAME)
+            local addOk, addErr = CallOverride("AddLayout", Enum.EditModeLayoutType.Account, layoutName)
             if not addOk then
                 fail("layout_create_failed", tostring(addErr), "create_layout")
                 return
@@ -506,7 +818,7 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
                 return
             end
 
-            existsOk, layoutExists = CallOverride("DoesLayoutExist", INSTALL_LAYOUT_NAME)
+            existsOk, layoutExists = CallOverride("DoesLayoutExist", layoutName)
             if not existsOk then
                 fail("layout_create_failed", tostring(layoutExists), "create_layout")
                 return
@@ -527,8 +839,8 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
             return
         end
 
-        if activeLayout ~= INSTALL_LAYOUT_NAME then
-            local setOk, setErr = CallOverride("SetActiveLayout", INSTALL_LAYOUT_NAME)
+        if activeLayout ~= layoutName then
+            local setOk, setErr = CallOverride("SetActiveLayout", layoutName)
             if not setOk then
                 fail("layout_activate_failed", tostring(setErr), "activate_layout")
                 return
@@ -551,7 +863,7 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
                 fail("layout_activate_failed", tostring(activeLayout), "activate_layout")
                 return
             end
-            if activeLayout ~= INSTALL_LAYOUT_NAME then
+            if activeLayout ~= layoutName then
                 fail("layout_activate_failed", "RefineUI layout could not be activated.", "activate_layout")
                 return
             end
@@ -559,8 +871,10 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
 
         fireCallback("onPhaseChanged", { state = "running", phase = "apply_layout" })
 
+        RefineUI:BindActiveLayoutProfile(RefineUI.DB, targetTier)
+
         if allowCreate then
-            local configureOk, configureErr = self:ConfigureRefineUILayout()
+            local configureOk, configureErr = self:ConfigureRefineUILayout(targetTier)
             if not configureOk then
                 fail("layout_apply_failed", tostring(configureErr), "apply_layout")
                 return
@@ -589,7 +903,7 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
             return
         end
 
-        existsOk, layoutExists = CallOverride("DoesLayoutExist", INSTALL_LAYOUT_NAME)
+        existsOk, layoutExists = CallOverride("DoesLayoutExist", layoutName)
         if not existsOk then
             fail("layout_apply_failed", tostring(layoutExists), "apply_layout")
             return
@@ -604,17 +918,21 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks)
             fail("layout_apply_failed", tostring(activeLayout), "apply_layout")
             return
         end
-        if activeLayout ~= INSTALL_LAYOUT_NAME then
+        if activeLayout ~= layoutName then
             fail("layout_activate_failed", "RefineUI layout is no longer active after applying changes.", "apply_layout")
             return
         end
+
+        RefineUI:SetStoredLayoutTier(targetTier, RefineUI.DB)
+        RefreshTierAwareModules()
 
         if allowCreate and SetActionBarToggles then
             pcall(SetActionBarToggles, true, true, true, false, false, false, false, true)
         end
 
         succeed({
-            layoutName = INSTALL_LAYOUT_NAME,
+            layoutName = layoutName,
+            tierKey = targetTier,
             created = created,
             phase = "apply_layout",
         })

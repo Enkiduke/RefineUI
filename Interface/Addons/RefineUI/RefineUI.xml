@@ -22,6 +22,7 @@
     <Script file="Core\Modules.lua"/>
     <Script file="Core\Events.lua"/>
     <Script file="Core\EditMode.lua"/>
+    <Script file="Core\CVars.lua"/>
     <Script file="Core\PixelPerfect.lua"/>
     <Script file="Core\Install.lua"/>
     <Script file="Core\Utilities.lua"/>

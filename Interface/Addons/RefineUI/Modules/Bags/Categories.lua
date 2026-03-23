@@ -43,24 +43,20 @@ Bags.CATEGORY_ORDER = {
     "BoE/WuE",
     "Warbound",
     "Equipment Sets",
+    "Crafting",
     "Consumable",
     "Weapon",
     "Armor",
     "Gem",
-    "Reagent",
     "Projectile",
-    "Trade Goods",
-    "Item Enhancement",
-    "Recipe",
     "Quest",
     "Miscellaneous",
     "Container",
     "Glyph",
-    "Battle Pets",
-    "Other",
+    "Collections",
 }
 
-Bags.CATEGORY_SCHEMA_VERSION = 5
+Bags.CATEGORY_SCHEMA_VERSION = 7
 Bags.BINNED_BLOCK_TOKEN = "__BAGS_BINNED_BLOCK__"
 Bags.CUSTOM_CATEGORY_KEY_PREFIX = "__BAGS_CUSTOM__"
 Bags.CUSTOM_CATEGORY_NAME_MAX_LENGTH = 15
@@ -80,6 +76,29 @@ Bags.DEFAULT_PINNED_BOTTOM_CATEGORIES = {
 
 local ITEM_BIND_BOE = 2
 local ITEM_BIND_WUE = 9
+
+local ITEM_CLASS_PROFESSION = (Enum and Enum.ItemClass and Enum.ItemClass.Profession) or 19
+local ITEM_CLASS_HOUSING = (Enum and Enum.ItemClass and Enum.ItemClass.Housing) or 20
+local ITEM_CLASS_BATTLEPET = (Enum and Enum.ItemClass and Enum.ItemClass.Battlepet) or 17
+local ITEM_CLASS_MISCELLANEOUS = (Enum and Enum.ItemClass and Enum.ItemClass.Miscellaneous) or 15
+local ITEM_CLASS_REAGENT = (Enum and Enum.ItemClass and Enum.ItemClass.Reagent) or 5
+local ITEM_CLASS_TRADE_GOODS = (Enum and Enum.ItemClass and (Enum.ItemClass.Tradegoods or Enum.ItemClass.TradeGoods)) or 7
+local ITEM_CLASS_ITEM_ENHANCEMENT = (Enum and Enum.ItemClass and Enum.ItemClass.ItemEnhancement) or 8
+local ITEM_CLASS_RECIPE = (Enum and Enum.ItemClass and Enum.ItemClass.Recipe) or 9
+local ITEM_MISC_SUBCLASS_COMPANION_PET = (Enum and Enum.ItemMiscellaneousSubclass and Enum.ItemMiscellaneousSubclass.CompanionPet) or 2
+local ITEM_MISC_SUBCLASS_REAGENT = (Enum and Enum.ItemMiscellaneousSubclass and Enum.ItemMiscellaneousSubclass.Reagent) or 1
+local ITEM_MISC_SUBCLASS_MOUNT = (Enum and Enum.ItemMiscellaneousSubclass and Enum.ItemMiscellaneousSubclass.Mount) or 5
+local ITEM_MISC_SUBCLASS_MOUNT_EQUIPMENT = (Enum and Enum.ItemMiscellaneousSubclass and Enum.ItemMiscellaneousSubclass.MountEquipment) or 6
+
+local LEGACY_CATEGORY_KEY_MAP = {
+    ["Battle Pets"] = "Collections",
+    ["Profession"] = "Crafting",
+    ["Reagent"] = "Crafting",
+    ["Trade Goods"] = "Crafting",
+    ["Item Enhancement"] = "Crafting",
+    ["Recipe"] = "Crafting",
+    ["Other"] = "Miscellaneous",
+}
 
 local EQUIP_LOC_NAMES = {
     INVTYPE_HEAD = "Head",
@@ -135,7 +154,16 @@ local function GetCachedItemMetadata(itemID, itemLink)
     end
 
     if not meta.loaded then
-        local name, _, quality, _, _, itemType, itemSubType, stackCount, itemEquipLoc, _, _, _, _, bindType = GetItemInfo(itemLink or itemID)
+        if C_Item and C_Item.GetItemInfoInstant then
+            local _, itemType, itemSubType, itemEquipLoc, _, itemClassID, itemSubClassID = C_Item.GetItemInfoInstant(itemLink or itemID)
+            meta.itemType = meta.itemType or itemType
+            meta.itemSubType = meta.itemSubType or itemSubType
+            meta.itemEquipLoc = meta.itemEquipLoc or itemEquipLoc
+            meta.itemClassID = meta.itemClassID or itemClassID
+            meta.itemSubClassID = meta.itemSubClassID or itemSubClassID
+        end
+
+        local name, _, quality, _, _, itemType, itemSubType, stackCount, itemEquipLoc, _, _, itemClassID, itemSubClassID, bindType = GetItemInfo(itemLink or itemID)
         if not name then
             meta.loaded = false
             meta.pending = true
@@ -149,10 +177,12 @@ local function GetCachedItemMetadata(itemID, itemLink)
         meta.name = name
         meta.nameLower = string.lower(name)
         meta.quality = quality
-        meta.itemType = itemType
-        meta.itemSubType = itemSubType
+        meta.itemType = itemType or meta.itemType
+        meta.itemSubType = itemSubType or meta.itemSubType
         meta.stackCount = stackCount or 1
-        meta.itemEquipLoc = itemEquipLoc
+        meta.itemEquipLoc = itemEquipLoc or meta.itemEquipLoc
+        meta.itemClassID = itemClassID or meta.itemClassID
+        meta.itemSubClassID = itemSubClassID or meta.itemSubClassID
         meta.bindType = bindType
         meta.loaded = true
         meta.pending = nil
@@ -289,6 +319,96 @@ local function IsWarboundBoundItem(itemLocation, isItemBound)
     return C_Bank.IsItemAllowedInBankType(Enum.BankType.Account, itemLocation) and true or false
 end
 
+local function IsToyItem(itemID)
+    if type(itemID) ~= "number" or itemID <= 0 then
+        return false
+    end
+
+    if C_ToyBox and C_ToyBox.GetToyInfo then
+        local ok, toyItemID = pcall(C_ToyBox.GetToyInfo, itemID)
+        if ok and toyItemID then
+            return true
+        end
+    end
+
+    if PlayerHasToy then
+        local ok, hasToy = pcall(PlayerHasToy, itemID)
+        if ok and hasToy then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function IsMountEquipmentItem(itemLocation)
+    if not itemLocation or not C_MountJournal or not C_MountJournal.IsItemMountEquipment then
+        return false
+    end
+
+    local ok, isMountEquipment = pcall(C_MountJournal.IsItemMountEquipment, itemLocation)
+    return ok and isMountEquipment and true or false
+end
+
+local function IsHousingItem(itemID, itemLink, itemClassID)
+    if itemClassID == ITEM_CLASS_HOUSING then
+        return true
+    end
+
+    if C_Item and C_Item.IsDecorItem then
+        local ok, isDecor = pcall(C_Item.IsDecorItem, itemLink or itemID)
+        if ok and isDecor then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function ResolveSpecialCategory(itemID, itemLink, itemLocation, itemClassID, itemSubClassID)
+    if itemClassID == ITEM_CLASS_PROFESSION
+        or itemClassID == ITEM_CLASS_REAGENT
+        or itemClassID == ITEM_CLASS_TRADE_GOODS
+        or itemClassID == ITEM_CLASS_ITEM_ENHANCEMENT
+        or itemClassID == ITEM_CLASS_RECIPE
+        or (itemClassID == ITEM_CLASS_MISCELLANEOUS and itemSubClassID == ITEM_MISC_SUBCLASS_REAGENT)
+    then
+        return "Crafting", nil
+    end
+
+    if itemClassID == ITEM_CLASS_BATTLEPET
+        or (itemClassID == ITEM_CLASS_MISCELLANEOUS and itemSubClassID == ITEM_MISC_SUBCLASS_COMPANION_PET)
+    then
+        return "Collections", nil
+    end
+
+    if itemClassID == ITEM_CLASS_MISCELLANEOUS and itemSubClassID == ITEM_MISC_SUBCLASS_MOUNT_EQUIPMENT then
+        return "Collections", nil
+    end
+
+    if IsMountEquipmentItem(itemLocation) then
+        return "Collections", nil
+    end
+
+    if itemClassID == ITEM_CLASS_MISCELLANEOUS and itemSubClassID == ITEM_MISC_SUBCLASS_MOUNT then
+        return "Collections", nil
+    end
+
+    if IsToyItem(itemID) then
+        return "Collections", nil
+    end
+
+    if IsHousingItem(itemID, itemLink, itemClassID) then
+        return "Collections", nil
+    end
+
+    if itemClassID == ITEM_CLASS_MISCELLANEOUS then
+        return "Miscellaneous", nil
+    end
+
+    return nil, nil
+end
+
 function Bags.GetItemCategory(bagID, slotIndex, info)
     info = info or (C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bagID, slotIndex))
     if not info or not info.itemID then
@@ -310,6 +430,8 @@ function Bags.GetItemCategory(bagID, slotIndex, info)
     local itemType = itemMeta and itemMeta.itemType
     local itemSubType = itemMeta and itemMeta.itemSubType
     local itemEquipLoc = itemMeta and itemMeta.itemEquipLoc
+    local itemClassID = itemMeta and itemMeta.itemClassID
+    local itemSubClassID = itemMeta and itemMeta.itemSubClassID
     local bindType = itemMeta and itemMeta.bindType
     local itemLocation = nil
 
@@ -352,8 +474,13 @@ function Bags.GetItemCategory(bagID, slotIndex, info)
         return "Warbound", nil
     end
 
-    if not itemType or itemType == "" then
-        return "Other", nil
+    local specialCategoryKey, specialSubCategoryKey = ResolveSpecialCategory(info.itemID, info.hyperlink, ResolveItemLocation(), itemClassID, itemSubClassID)
+    if specialCategoryKey then
+        return specialCategoryKey, specialSubCategoryKey
+    end
+
+    if not itemType or itemType == "" or itemType == "Other" then
+        return "Miscellaneous", nil
     end
 
     if SLOT_SUBCATEGORIES[itemType] and itemEquipLoc and itemEquipLoc ~= "" then
@@ -432,6 +559,13 @@ local function BuildCategoryIndexMap(order)
         index[key] = i
     end
     return index
+end
+
+local function NormalizeLegacyCategoryKey(key)
+    if type(key) ~= "string" then
+        return key
+    end
+    return LEGACY_CATEGORY_KEY_MAP[key] or key
 end
 
 local function IsKnownCategory(defsByKey, key)
@@ -821,6 +955,33 @@ function Bags.EnsureCategoryConfig()
     end
 
     local cfg = Bags.GetConfig()
+
+    if type(cfg.CategoryOrder) == "table" then
+        for i = 1, #cfg.CategoryOrder do
+            cfg.CategoryOrder[i] = NormalizeLegacyCategoryKey(cfg.CategoryOrder[i])
+        end
+    end
+    if type(cfg.PinnedOrder) == "table" then
+        for i = 1, #cfg.PinnedOrder do
+            cfg.PinnedOrder[i] = NormalizeLegacyCategoryKey(cfg.PinnedOrder[i])
+        end
+    end
+    if type(cfg.CategoryPinned) == "table" then
+        for legacyKey, mappedKey in pairs(LEGACY_CATEGORY_KEY_MAP) do
+            if cfg.CategoryPinned[legacyKey] ~= nil then
+                cfg.CategoryPinned[mappedKey] = cfg.CategoryPinned[mappedKey] or cfg.CategoryPinned[legacyKey]
+                cfg.CategoryPinned[legacyKey] = nil
+            end
+        end
+    end
+    if type(cfg.CategoryEnabled) == "table" then
+        for legacyKey, mappedKey in pairs(LEGACY_CATEGORY_KEY_MAP) do
+            if cfg.CategoryEnabled[legacyKey] ~= nil then
+                cfg.CategoryEnabled[mappedKey] = cfg.CategoryEnabled[mappedKey] or cfg.CategoryEnabled[legacyKey]
+                cfg.CategoryEnabled[legacyKey] = nil
+            end
+        end
+    end
 
     if type(cfg.CustomCategories) ~= "table" then
         cfg.CustomCategories = {}

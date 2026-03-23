@@ -9,6 +9,7 @@ local Install = RefineUI:RegisterModule("Install")
 local C_Timer = C_Timer
 local ReloadUI = ReloadUI
 local wipe = wipe
+local pairs = pairs
 local LibEditModeOverride = LibStub("LibEditModeOverride-1.0", true)
 
 local INSTALL_STATES = {
@@ -103,6 +104,37 @@ local function SafeOverrideCall(method, ...)
         return false
     end
     return pcall(fn, LibEditModeOverride, ...)
+end
+
+local function HasAnyManagedLayout()
+    local managedLayoutNames = RefineUI.ManagedLayoutNames
+    if type(managedLayoutNames) ~= "table" then
+        return false
+    end
+
+    for _, layoutName in pairs(managedLayoutNames) do
+        local existsOk, layoutExists = SafeOverrideCall("DoesLayoutExist", layoutName)
+        if existsOk and layoutExists then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function GetManagedLayoutTierByName(layoutName)
+    local managedLayoutNames = RefineUI.ManagedLayoutNames
+    if type(layoutName) ~= "string" or type(managedLayoutNames) ~= "table" then
+        return nil
+    end
+
+    for tierKey, managedName in pairs(managedLayoutNames) do
+        if managedName == layoutName then
+            return tierKey
+        end
+    end
+
+    return nil
 end
 
 function Install:GetDB()
@@ -274,46 +306,16 @@ function Install:PrintFailureToChat(code, message, phase, mode)
     end
 end
 
-----------------------------------------------------------------------------------------
--- CVar + Defaults
+-- Install Defaults
 ----------------------------------------------------------------------------------------
 
-function Install:SetupCVars()
-    local C_CVar = C_CVar
-    local GetCVar = GetCVar
-
-    local function SetCVarIfDifferent(cvar, value)
-        local current = GetCVar(cvar)
-        if current ~= tostring(value) then
-            C_CVar.SetCVar(cvar, value)
-        end
+function Install:ApplyInstallCVars()
+    if type(RefineUI.ApplyInstallCVars) ~= "function" then
+        return
     end
 
-    SetCVarIfDifferent("buffDurations", 1)
-    SetCVarIfDifferent("damageMeterEnabled", 1)
-    SetCVarIfDifferent("countdownForCooldowns", 1)
-    SetCVarIfDifferent("chatMouseScroll", 1)
-    SetCVarIfDifferent("screenshotQuality", 10)
-    SetCVarIfDifferent("showTutorials", 0)
-    SetCVarIfDifferent("autoQuestWatch", 1)
-    SetCVarIfDifferent("alwaysShowActionBars", 1)
-    SetCVarIfDifferent("statusText", 1)
-    SetCVarIfDifferent("statusTextDisplay", "BOTH")
-    SetCVarIfDifferent("nameplateUseClassColorForFriendlyPlayerUnitNames", 1)
-    SetCVarIfDifferent("UnitNameNPC", 1)
-    SetCVarIfDifferent("nameplateMinScale", 1)
-    SetCVarIfDifferent("nameplateMaxScale", 1)
-    SetCVarIfDifferent("nameplateLargerScale", 1)
-    SetCVarIfDifferent("nameplateSelectedScale", 1)
-    SetCVarIfDifferent("nameplateMinAlpha", 0.5)
-    SetCVarIfDifferent("nameplateMaxAlpha", 1)
-    SetCVarIfDifferent("nameplateMaxDistance", 60)
-    SetCVarIfDifferent("nameplateMinAlphaDistance", 0)
-    SetCVarIfDifferent("nameplateMaxAlphaDistance", 40)
-    SetCVarIfDifferent("nameplateOccludedAlphaMult", 0.1)
-    SetCVarIfDifferent("nameplateSelectedAlpha", 1)
-
-    RefineUI:Print("Install: CVars setup complete.")
+    RefineUI:ApplyInstallCVars()
+    RefineUI:Print("Install: CVar defaults applied.")
 end
 
 function Install:RestoreDefaults()
@@ -385,6 +387,8 @@ function Install:FinalizeInstall(mode)
             return
         end
         db = self:GetDB()
+
+        self:ApplyInstallCVars()
     end
 
     self:SetInstallState("ready", {
@@ -444,6 +448,8 @@ function Install:RunEditModeInstall(mode, automatic)
         automatic = automatic == true,
     }
 
+    local targetTier = RefineUI.GetLayoutTier and RefineUI:GetLayoutTier() or nil
+
     EditMode:EnsureRefineUILayout(false, true, {
         onPhaseChanged = function(payload)
             local db = self:GetDB()
@@ -462,7 +468,7 @@ function Install:RunEditModeInstall(mode, automatic)
         onSuccess = function()
             self:FinalizeInstall(mode)
         end,
-    })
+    }, targetTier)
 end
 
 function Install:StartInstall(mode, opts)
@@ -481,7 +487,6 @@ function Install:StartInstall(mode, opts)
     end
 
     db.InstallAttempts = (tonumber(db.InstallAttempts) or 0) + 1
-    self:SetupCVars()
 
     self:SetInstallState("running", {
         mode = mode,
@@ -539,6 +544,30 @@ function Install:CheckInstalledLayout()
         return
     end
 
+    local readyOk, isReady = SafeOverrideCall("IsReady")
+    if not readyOk or not isReady then
+        return
+    end
+
+    local loadOk = SafeOverrideCall("LoadLayouts")
+    if not loadOk then
+        return
+    end
+
+    local activeOk, activeLayout = SafeOverrideCall("GetActiveLayout")
+    if not activeOk then
+        return
+    end
+
+    if not RefineUI:IsManagedLayoutName(activeLayout) then
+        if not HasAnyManagedLayout() then
+            self:SetFailure("layout_not_found", "RefineUI could not find any managed Edit Mode layout.", "preflight", "repair")
+            self:Toggle(true)
+        end
+        return
+    end
+
+    local activeTier = GetManagedLayoutTierByName(activeLayout)
     EditMode:EnsureRefineUILayout(false, false, {
         onBlocked = function()
             -- Login while in combat can delay layout verification until later.
@@ -557,7 +586,7 @@ function Install:CheckInstalledLayout()
             self:SetFailure(code, message, "preflight", "repair")
             self:Toggle(true)
         end,
-    })
+    }, activeTier)
 end
 
 function Install:SyncReadyStateWithExistingLayout()
@@ -576,9 +605,8 @@ function Install:SyncReadyStateWithExistingLayout()
         return
     end
 
-    local existsOk, layoutExists = SafeOverrideCall("DoesLayoutExist", "RefineUI")
-    if existsOk and not layoutExists then
-        self:SetFailure("layout_not_found", "RefineUI could not find its Edit Mode layout.", "preflight", "repair")
+    if not HasAnyManagedLayout() then
+        self:SetFailure("layout_not_found", "RefineUI could not find any managed Edit Mode layout.", "preflight", "repair")
     end
 end
 

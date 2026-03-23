@@ -88,6 +88,10 @@ function EncounterTimeline:OnEncounterTimelineReady()
         self:InstallSkinHooks()
     end
 
+    if config.BigIconEnable == true and type(self.PrepareBigIconRuntime) == "function" then
+        self:PrepareBigIconRuntime()
+    end
+
     if config.SkinEnabled == true then
         self:RefreshTimelineSkins(true)
     end

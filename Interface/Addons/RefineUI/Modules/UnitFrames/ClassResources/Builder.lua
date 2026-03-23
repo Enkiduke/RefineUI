@@ -16,7 +16,10 @@ local K = CR.Constants
 local CreateFrame = CreateFrame
 local GetSpecialization = GetSpecialization
 local UnitPowerType = UnitPowerType
+local Mixin = Mixin
 local floor = math.floor
+local format = string.format
+local TextStatusBarSparkMixin = TextStatusBarSparkMixin
 
 function UnitFrames:CreateClassResources(frame)
     if frame ~= PlayerFrame then
@@ -26,6 +29,11 @@ function UnitFrames:CreateClassResources(frame)
     local resources = UnitFrames.ClassResources
     local dataBars = Config.UnitFrames.DataBars
     local class = CR.PlayerClass
+
+    local function BuildResourceEventKey(bar, suffix)
+        local barName = bar and bar.GetName and bar:GetName()
+        return format("UnitFrames:ClassResources:%s:%s", barName or "Anonymous", suffix)
+    end
 
     local function ResolveResourceAnchor()
         local anchor = (frame.RefineUF and frame.RefineUF.Texture) or frame
@@ -130,12 +138,6 @@ function UnitFrames:CreateClassResources(frame)
         resources.ClassPower.PowerType = classPowerType
         resources.ClassPower.Height = dataBars.Height or 8
 
-        bar:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
-        bar:RegisterUnitEvent("UNIT_MAXPOWER", "player")
-        bar:RegisterUnitEvent("UNIT_DISPLAYPOWER", "player")
-        bar:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-        bar:RegisterEvent("PLAYER_ENTERING_WORLD")
-
         local powerTypeNames = {
             [K.POWER_COMBO_POINTS] = "COMBO_POINTS",
             [K.POWER_SOUL_SHARDS] = "SOUL_SHARDS",
@@ -159,7 +161,7 @@ function UnitFrames:CreateClassResources(frame)
                 return
             end
             resource.updateQueued = true
-            C_Timer.After(0, function()
+            RefineUI:After(BuildResourceEventKey(bar, "ClassPower:DeferredUpdate"), 0, function()
                 local queuedResource = resources.ClassPower
                 if not queuedResource then
                     return
@@ -176,22 +178,21 @@ function UnitFrames:CreateClassResources(frame)
             end)
         end
 
-        bar:SetScript("OnEvent", function(_, event, unit, powerType)
+        local function OnClassPowerEvent(event, _, powerType)
             if event == "UNIT_POWER_UPDATE" then
-                if unit ~= "player" then
-                    return
-                end
                 if powerType ~= resources.ClassPower.PowerTypeName then
-                    return
-                end
-            elseif event == "UNIT_MAXPOWER" or event == "UNIT_DISPLAYPOWER" then
-                if unit ~= "player" then
                     return
                 end
             end
 
             QueueClassPowerUpdate()
-        end)
+        end
+
+        if not resources.ClassPower.EventsRegistered then
+            RefineUI:OnUnitEvents("player", { "UNIT_POWER_UPDATE", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }, OnClassPowerEvent, BuildResourceEventKey(bar, "ClassPower:Unit"))
+            RefineUI:OnEvents({ "PLAYER_SPECIALIZATION_CHANGED", "PLAYER_ENTERING_WORLD" }, OnClassPowerEvent, BuildResourceEventKey(bar, "ClassPower:Event"))
+            resources.ClassPower.EventsRegistered = true
+        end
 
         CR.HideBlizzardResource(_G.ComboPointPlayerFrame)
         CR.HideBlizzardResource(_G.WarlockShardBarFrame)
@@ -239,20 +240,13 @@ function UnitFrames:CreateClassResources(frame)
             resource.Text = bar.Text
         end
 
-        bar:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
-        bar:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
-        bar:RegisterUnitEvent("UNIT_MAXPOWER", "player")
-        bar:RegisterUnitEvent("UNIT_DISPLAYPOWER", "player")
-        bar:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-        bar:RegisterEvent("PLAYER_ENTERING_WORLD")
-
         local function QueueSecondaryPowerUpdate()
             local resource = resources.SecondaryPower
             if not resource or resource.updateQueued then
                 return
             end
             resource.updateQueued = true
-            C_Timer.After(0, function()
+            RefineUI:After(BuildResourceEventKey(bar, "SecondaryPower:DeferredUpdate"), 0, function()
                 local queuedResource = resources.SecondaryPower
                 if not queuedResource then
                     return
@@ -272,19 +266,15 @@ function UnitFrames:CreateClassResources(frame)
             end)
         end
 
-        bar:SetScript("OnEvent", function(_, event, unit)
-            if event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
-                if unit ~= "player" then
-                    return
-                end
-            elseif event == "UNIT_MAXPOWER" or event == "UNIT_DISPLAYPOWER" then
-                if unit ~= "player" then
-                    return
-                end
-            end
-
+        local function OnSecondaryPowerEvent()
             QueueSecondaryPowerUpdate()
-        end)
+        end
+
+        if not resources.SecondaryPower.EventsRegistered then
+            RefineUI:OnUnitEvents("player", { "UNIT_POWER_UPDATE", "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }, OnSecondaryPowerEvent, BuildResourceEventKey(bar, "SecondaryPower:Unit"))
+            RefineUI:OnEvents({ "PLAYER_SPECIALIZATION_CHANGED", "PLAYER_ENTERING_WORLD" }, OnSecondaryPowerEvent, BuildResourceEventKey(bar, "SecondaryPower:Event"))
+            resources.SecondaryPower.EventsRegistered = true
+        end
 
         CR.HideBlizzardResource(_G.AlternatePowerBar)
         CR.HideBlizzardResource(_G.InsanityBarFrame)
@@ -365,17 +355,20 @@ function UnitFrames:CreateClassResources(frame)
             resource.Text = bar.Text
         end
 
-        bar:RegisterEvent("UNIT_AURA")
-        bar:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-        bar:RegisterEvent("PLAYER_ENTERING_WORLD")
-        bar:SetScript("OnEvent", function()
+        local function OnMaelstromEvent()
             if GetSpecialization() == K.SPEC_SHAMAN_ENHANCEMENT then
                 bar:Show()
                 CR.UpdateSegmentedBar(resources.Maelstrom)
             else
                 bar:Hide()
             end
-        end)
+        end
+
+        if not resources.Maelstrom.EventsRegistered then
+            RefineUI:RegisterUnitEventCallback("UNIT_AURA", "player", OnMaelstromEvent, BuildResourceEventKey(bar, "Maelstrom:UnitAura"))
+            RefineUI:OnEvents({ "PLAYER_SPECIALIZATION_CHANGED", "PLAYER_ENTERING_WORLD" }, OnMaelstromEvent, BuildResourceEventKey(bar, "Maelstrom:Event"))
+            resources.Maelstrom.EventsRegistered = true
+        end
     end
 
     if class == "MONK" and dataBars.StaggerBar then
@@ -417,38 +410,80 @@ function UnitFrames:CreateClassResources(frame)
             resource.TextPer = bar.TextPer
         end
 
-        bar:RegisterEvent("UNIT_AURA")
-        bar:RegisterEvent("UNIT_MAXPOWER")
-        bar:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-        bar:RegisterEvent("PLAYER_ENTERING_WORLD")
-        bar:SetScript("OnEvent", function()
+        local function OnStaggerEvent()
             if GetSpecialization() == K.SPEC_MONK_BREWMASTER then
                 bar:Show()
                 CR.UpdateStatusBar(resources.Stagger)
             else
                 bar:Hide()
             end
-        end)
+        end
+
+        if not resources.Stagger.EventsRegistered then
+            RefineUI:RegisterUnitEventCallback("UNIT_AURA", "player", OnStaggerEvent, BuildResourceEventKey(bar, "Stagger:UnitAura"))
+            RefineUI:RegisterUnitEventCallback("UNIT_MAXPOWER", "player", OnStaggerEvent, BuildResourceEventKey(bar, "Stagger:UnitMaxPower"))
+            RefineUI:OnEvents({ "PLAYER_SPECIALIZATION_CHANGED", "PLAYER_ENTERING_WORLD" }, OnStaggerEvent, BuildResourceEventKey(bar, "Stagger:Event"))
+            resources.Stagger.EventsRegistered = true
+        end
 
         CR.HideBlizzardResource(_G.MonkStaggerBar)
     end
 
-    if class == "DEMONHUNTER" and GetSpecialization() == 2 and dataBars.SoulFragmentsBar then
+    if class == "DEMONHUNTER" and dataBars.SoulFragmentsBar then
         local bar, glow = CreateBaseBar("SoulFragmentsBar", "STATUS", nil, dataBars.Height or 4, dataBars.YOffset or 4)
+        local textParent = bar.border or bar
+        local sparkParent = bar.border or bar
         bar:SetStatusBarTexture(K.RESOURCE_BAR_TEXTURE)
 
         if not bar.Text then
-            local text = bar:CreateFontString(nil, "OVERLAY")
+            local text = textParent:CreateFontString(nil, "OVERLAY")
             RefineUI:AddAPI(text)
-            text:Point("CENTER", bar, 0, 0)
+            text:Point("CENTER", textParent, 0, 0)
             text:Font(16)
+            if text.SetDrawLayer then
+                text:SetDrawLayer("OVERLAY", 7)
+            end
             bar.Text = text
+        else
+            if bar.Text:GetParent() ~= textParent then
+                bar.Text:SetParent(textParent)
+            end
+            bar.Text:ClearAllPoints()
+            bar.Text:SetPoint("CENTER", textParent, 0, 0)
+            if bar.Text.SetDrawLayer then
+                bar.Text:SetDrawLayer("OVERLAY", 7)
+            end
+        end
+
+        if not bar.Spark then
+            local spark = sparkParent:CreateTexture(nil, "OVERLAY")
+            if spark.SetDrawLayer then
+                spark:SetDrawLayer("OVERLAY", 6)
+            end
+            if type(Mixin) == "function" and TextStatusBarSparkMixin then
+                Mixin(spark, TextStatusBarSparkMixin)
+                spark.statusBar = bar
+            end
+            spark:Hide()
+            bar.Spark = spark
+        else
+            if bar.Spark.SetParent and bar.Spark:GetParent() ~= sparkParent then
+                bar.Spark:SetParent(sparkParent)
+            end
+            if bar.Spark.SetDrawLayer then
+                bar.Spark:SetDrawLayer("OVERLAY", 6)
+            end
+            if type(Mixin) == "function" and TextStatusBarSparkMixin and not bar.Spark.SetVisuals then
+                Mixin(bar.Spark, TextStatusBarSparkMixin)
+            end
+            bar.Spark.statusBar = bar
         end
 
         if not resources.SoulFragments then
             resources.SoulFragments = {
                 Bar = bar,
                 PulseGlow = glow,
+                Spark = bar.Spark,
                 Type = "SOUL_FRAGMENTS",
                 Text = bar.Text,
             }
@@ -456,12 +491,9 @@ function UnitFrames:CreateClassResources(frame)
             local resource = resources.SoulFragments
             resource.Bar = bar
             resource.PulseGlow = glow
+            resource.Spark = bar.Spark
             resource.Text = bar.Text
         end
-
-        bar:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
-        bar:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-        bar:RegisterEvent("PLAYER_ENTERING_WORLD")
 
         local function QueueSoulFragmentsUpdate()
             local resource = resources.SoulFragments
@@ -469,13 +501,15 @@ function UnitFrames:CreateClassResources(frame)
                 return
             end
             resource.updateQueued = true
-            C_Timer.After(0, function()
+            RefineUI:After(BuildResourceEventKey(bar, "SoulFragments:DeferredUpdate"), 0, function()
                 local queuedResource = resources.SoulFragments
                 if not queuedResource then
                     return
                 end
                 queuedResource.updateQueued = false
-                if GetSpecialization() == 2 then
+
+                local specID = CR.GetPlayerSpecID()
+                if CR.ShouldShowSoulFragments(specID) then
                     bar:Show()
                     CR.UpdateStatusBar(queuedResource)
                 else
@@ -484,17 +518,15 @@ function UnitFrames:CreateClassResources(frame)
             end)
         end
 
-        bar:SetScript("OnEvent", function(_, event, unit, powerType)
-            if event == "UNIT_POWER_UPDATE" then
-                if unit ~= "player" then
-                    return
-                end
-                if powerType ~= "SOUL_FRAGMENTS" then
-                    return
-                end
-            end
+        local function OnSoulFragmentsEvent()
             QueueSoulFragmentsUpdate()
-        end)
+        end
+
+        if not resources.SoulFragments.EventsRegistered then
+            RefineUI:OnUnitEvents("player", { "UNIT_AURA", "UNIT_POWER_UPDATE", "UNIT_MAXPOWER" }, OnSoulFragmentsEvent, BuildResourceEventKey(bar, "SoulFragments:Unit"))
+            RefineUI:OnEvents({ "PLAYER_SPECIALIZATION_CHANGED", "PLAYER_ENTERING_WORLD", "SPELLS_CHANGED" }, OnSoulFragmentsEvent, BuildResourceEventKey(bar, "SoulFragments:Event"))
+            resources.SoulFragments.EventsRegistered = true
+        end
 
         CR.HideBlizzardResource(_G.DemonHunterSoulFragmentsBar)
     end

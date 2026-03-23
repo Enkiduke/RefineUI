@@ -120,11 +120,11 @@ local ITEM_HOUSING_SUBCLASS_DECOR = (Enum and Enum.ItemHousingSubclass and Enum.
 
 local DEFAULTS = {
     Enable = true,
-    ButtonSize = 48,
+    ButtonSize = 36,
     ButtonSpacing = 8,
     ButtonLimit = 10,
-    Orientation = ORIENTATION.HORIZONTAL,
-    Direction = DIRECTION.LEFT,
+    Orientation = ORIENTATION.VERTICAL,
+    Direction = DIRECTION.DOWN,
 }
 
 local EVENT_KEY = {
@@ -212,7 +212,7 @@ end
 local function GetDefaultPosition()
     local defaultPos = RefineUI.Positions and RefineUI.Positions[MOVER_FRAME_NAME]
     if type(defaultPos) ~= "table" then
-        return "BOTTOMRIGHT", _G.ChatFrame1 or UIParent, "TOPRIGHT", 0, 6
+        return "TOPLEFT", _G.ChatFrame1 or UIParent, "TOPRIGHT", 2, 0
     end
 
     local point, relativeTo, relativePoint, x, y = unpack(defaultPos)

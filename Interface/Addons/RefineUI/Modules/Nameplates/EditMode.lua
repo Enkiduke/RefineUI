@@ -26,6 +26,7 @@ local CreateColor = CreateColor
 -- WoW Globals
 ----------------------------------------------------------------------------------------
 local CreateFrame = CreateFrame
+local GetCVar = GetCVar
 local SetCVar = SetCVar
 local UIParent = UIParent
 local SetPortraitTexture = SetPortraitTexture
@@ -79,11 +80,24 @@ local DEFAULT_CC_COLORS = {
     Color = { 0.2, 0.6, 1.0 },
     BorderColor = { 0.2, 0.6, 1.0 },
 }
+local DEFAULT_ENEMY_AURA_LAYOUT = {
+    BaseOffsetY = 6,
+    DebuffOffsetX = 0,
+    DebuffOffsetY = 0,
+    DebuffSpacing = 2,
+    BuffOffsetX = 0,
+    BuffOffsetY = 0,
+    BuffSpacing = 2,
+}
 local DEFAULT_TEXT_SCALE = 1
-local DEFAULT_DYNAMIC_PORTRAIT_SCALE = 1
-local NAMEPLATE_TEXT_SCALE_MIN = 0.5
-local NAMEPLATE_TEXT_SCALE_MAX = 2.0
-local NAMEPLATE_SCALE_STEP = 0.1
+local NAMEPLATE_SCALE_MIN = 0.5
+local NAMEPLATE_SCALE_MAX = 2.0
+local NAMEPLATE_SCALE_STEP = 0.05
+local WORLD_TEXT_SCALE_CVAR = "WorldTextScale_v2"
+local WORLD_TEXT_SCALE_DEFAULT = 0.1
+local WORLD_TEXT_SCALE_MIN = 0.05
+local WORLD_TEXT_SCALE_MAX = 2.0
+local WORLD_TEXT_SCALE_STEP = 0.05
 local PREVIEW_NAME_FONT_SIZE = 12
 local PREVIEW_HEALTH_FONT_SIZE = 14
 local PREVIEW_PORTRAIT_BASE_SIZE = 36
@@ -185,12 +199,34 @@ local function RoundToStep(value, step)
     return floor((value / step) + 0.5) * step
 end
 
-local function FormatScaleValue(value)
+local function FormatScaleValue(value, low, high, fallback, step)
     local rounded = RoundToStep(
-        ClampNumber(value, NAMEPLATE_TEXT_SCALE_MIN, NAMEPLATE_TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE),
-        NAMEPLATE_SCALE_STEP
+        ClampNumber(value, low, high, fallback),
+        step
     )
-    return format("%.1f", rounded)
+    return format("%.2f", rounded)
+end
+
+local function FormatNameplateScaleValue(value)
+    return FormatScaleValue(value, NAMEPLATE_SCALE_MIN, NAMEPLATE_SCALE_MAX, DEFAULT_TEXT_SCALE, NAMEPLATE_SCALE_STEP)
+end
+
+local function FormatWorldTextScaleValue(value)
+    return FormatScaleValue(
+        value,
+        WORLD_TEXT_SCALE_MIN,
+        WORLD_TEXT_SCALE_MAX,
+        WORLD_TEXT_SCALE_DEFAULT,
+        WORLD_TEXT_SCALE_STEP
+    )
+end
+
+local function GetConfiguredWorldTextScale()
+    local currentValue = type(GetCVar) == "function" and GetCVar(WORLD_TEXT_SCALE_CVAR) or nil
+    return RoundToStep(
+        ClampNumber(currentValue, WORLD_TEXT_SCALE_MIN, WORLD_TEXT_SCALE_MAX, WORLD_TEXT_SCALE_DEFAULT),
+        WORLD_TEXT_SCALE_STEP
+    )
 end
 
 local function EnsureColorTable(root, key, fallback)
@@ -237,14 +273,14 @@ local function GetNameplatesConfig()
     if not Config.Nameplates.CastBar.Colors then
         Config.Nameplates.CastBar.Colors = {}
     end
-    if not Config.Nameplates.Size then
-        Config.Nameplates.Size = { DEFAULT_PLATE_SIZE[1], DEFAULT_PLATE_SIZE[2] }
-    end
     if not Config.Nameplates.Threat then
         Config.Nameplates.Threat = {}
     end
     if not Config.Nameplates.CrowdControl then
         Config.Nameplates.CrowdControl = {}
+    end
+    if not Config.Nameplates.EnemyAuras then
+        Config.Nameplates.EnemyAuras = {}
     end
     if Config.Nameplates.ShowNPCTitles == nil then
         Config.Nameplates.ShowNPCTitles = true
@@ -252,30 +288,16 @@ local function GetNameplatesConfig()
     if Config.Nameplates.ShowPetNames == nil then
         Config.Nameplates.ShowPetNames = false
     end
-    Config.Nameplates.UnitNameScale = RoundToStep(
+    local resolvedScale = DEFAULT_TEXT_SCALE
+    if Nameplates and Nameplates.GetConfiguredNameplateScale then
+        resolvedScale = Nameplates:GetConfiguredNameplateScale()
+    end
+    Config.Nameplates.Scale = RoundToStep(
         ClampNumber(
-            Config.Nameplates.UnitNameScale,
-            NAMEPLATE_TEXT_SCALE_MIN,
-            NAMEPLATE_TEXT_SCALE_MAX,
+            resolvedScale,
+            NAMEPLATE_SCALE_MIN,
+            NAMEPLATE_SCALE_MAX,
             DEFAULT_TEXT_SCALE
-        ),
-        NAMEPLATE_SCALE_STEP
-    )
-    Config.Nameplates.HealthTextScale = RoundToStep(
-        ClampNumber(
-            Config.Nameplates.HealthTextScale,
-            NAMEPLATE_TEXT_SCALE_MIN,
-            NAMEPLATE_TEXT_SCALE_MAX,
-            DEFAULT_TEXT_SCALE
-        ),
-        NAMEPLATE_SCALE_STEP
-    )
-    Config.Nameplates.DynamicPortraitScale = RoundToStep(
-        ClampNumber(
-            Config.Nameplates.DynamicPortraitScale,
-            NAMEPLATE_TEXT_SCALE_MIN,
-            NAMEPLATE_TEXT_SCALE_MAX,
-            DEFAULT_DYNAMIC_PORTRAIT_SCALE
         ),
         NAMEPLATE_SCALE_STEP
     )
@@ -333,6 +355,36 @@ local function GetNameplatesConfig()
         ccBorderColor[4] = ccColor[4]
     end
 
+    local enemyAuras = Config.Nameplates.EnemyAuras
+    enemyAuras.BaseOffsetY = RoundToStep(
+        ClampNumber(enemyAuras.BaseOffsetY, -20, 40, DEFAULT_ENEMY_AURA_LAYOUT.BaseOffsetY),
+        1
+    )
+    enemyAuras.DebuffOffsetX = RoundToStep(
+        ClampNumber(enemyAuras.DebuffOffsetX, -80, 80, DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetX),
+        1
+    )
+    enemyAuras.DebuffOffsetY = RoundToStep(
+        ClampNumber(enemyAuras.DebuffOffsetY, -40, 80, DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetY),
+        1
+    )
+    enemyAuras.DebuffSpacing = RoundToStep(
+        ClampNumber(enemyAuras.DebuffSpacing, 0, 16, DEFAULT_ENEMY_AURA_LAYOUT.DebuffSpacing),
+        1
+    )
+    enemyAuras.BuffOffsetX = RoundToStep(
+        ClampNumber(enemyAuras.BuffOffsetX, -80, 80, DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetX),
+        1
+    )
+    enemyAuras.BuffOffsetY = RoundToStep(
+        ClampNumber(enemyAuras.BuffOffsetY, -40, 80, DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetY),
+        1
+    )
+    enemyAuras.BuffSpacing = RoundToStep(
+        ClampNumber(enemyAuras.BuffSpacing, 0, 16, DEFAULT_ENEMY_AURA_LAYOUT.BuffSpacing),
+        1
+    )
+
     return Config.Nameplates
 end
 
@@ -353,8 +405,7 @@ local function RefreshThreatSettingAvailability()
 end
 
 local function ApplyStoredPosition(point, x, y)
-    RefineUI.Positions = RefineUI.Positions or {}
-    RefineUI.Positions[EDITMODE_FRAME_NAME] = { point, "UIParent", point, x, y }
+    RefineUI:SetPosition(EDITMODE_FRAME_NAME, { point, "UIParent", point, x, y })
 end
 
 local function ApplyStoredAnchor(frame)
@@ -463,14 +514,8 @@ local function RefreshLiveNameplates()
     local castConfig = config.CastBar or {}
     local castColors = castConfig.Colors or {}
     local interruptibleColor = castColors.Interruptible or DEFAULT_CAST_COLORS.Interruptible
-    local plateWidth = ClampNumber(config.Size and config.Size[1], 120, 320, DEFAULT_PLATE_SIZE[1])
-    local plateHeight = ClampNumber(config.Size and config.Size[2], 10, 48, DEFAULT_PLATE_SIZE[2])
     local castHeight = ClampNumber(castConfig.Height, 8, 48, 20)
-    local scaledPlateWidth = (type(RefineUI.Scale) == "function" and RefineUI:Scale(plateWidth)) or plateWidth
-    local scaledPlateHeight = (type(RefineUI.Scale) == "function" and RefineUI:Scale(plateHeight)) or plateHeight
     local scaledCastHeight = (type(RefineUI.Scale) == "function" and RefineUI:Scale(castHeight)) or castHeight
-    local sideInset = (type(RefineUI.Scale) == "function" and RefineUI:Scale(12)) or 12
-    local unitFrameWidth = scaledPlateWidth + (sideInset * 2)
 
     for nameplate in pairs(active) do
         local unitFrame = nameplate and nameplate.UnitFrame
@@ -480,18 +525,9 @@ local function RefreshLiveNameplates()
                 unitToken = nil
             end
 
-            if unitFrame.SetWidth then
-                unitFrame:SetWidth(unitFrameWidth)
-            end
-
             local healthContainer = unitFrame.HealthBarsContainer
-            if healthContainer and healthContainer.SetHeight then
-                healthContainer:SetHeight(scaledPlateHeight)
-            end
-
-            local health = unitFrame.healthBar or unitFrame.HealthBar
-            if health and health.SetHeight then
-                health:SetHeight(scaledPlateHeight)
+            if Nameplates and Nameplates.ApplyConfiguredNameplateSize then
+                Nameplates:ApplyConfiguredNameplateSize(unitFrame, nameplate)
             end
 
             if config.TargetIndicator ~= false and type(RefineUI.CreateTargetArrows) == "function" then
@@ -549,6 +585,10 @@ local function RefreshLiveNameplates()
     elseif type(RefineUI.RefreshNameplateThreatColors) == "function" then
         RefineUI:RefreshNameplateThreatColors(true)
     end
+
+    if type(RefineUI.RefreshAllNameplateAuraAnchors) == "function" then
+        RefineUI:RefreshAllNameplateAuraAnchors("EDIT_MODE_SETTINGS")
+    end
 end
 
 local function RefreshPreviewFrame()
@@ -573,17 +613,13 @@ local function RefreshPreviewFrame()
     local showNpcTitles = config.ShowNPCTitles ~= false
     local ccColor = ccConfig.Color or DEFAULT_CC_COLORS.Color
 
-    local unitNameScale = ClampNumber(config.UnitNameScale, NAMEPLATE_TEXT_SCALE_MIN, NAMEPLATE_TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE)
-    local healthTextScale = ClampNumber(config.HealthTextScale, NAMEPLATE_TEXT_SCALE_MIN, NAMEPLATE_TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE)
-    local dynamicPortraitScale = ClampNumber(
-        config.DynamicPortraitScale,
-        NAMEPLATE_TEXT_SCALE_MIN,
-        NAMEPLATE_TEXT_SCALE_MAX,
-        DEFAULT_DYNAMIC_PORTRAIT_SCALE
-    )
+    local scale = ClampNumber(config.Scale, NAMEPLATE_SCALE_MIN, NAMEPLATE_SCALE_MAX, DEFAULT_TEXT_SCALE)
+    local unitNameScale = scale
+    local healthTextScale = scale
+    local dynamicPortraitScale = scale
 
-    local plateWidth = ClampNumber(config.Size and config.Size[1], 120, 320, DEFAULT_PLATE_SIZE[1])
-    local plateHeight = ClampNumber(config.Size and config.Size[2], 10, 48, DEFAULT_PLATE_SIZE[2])
+    local plateWidth = DEFAULT_PLATE_SIZE[1] * scale
+    local plateHeight = DEFAULT_PLATE_SIZE[2] * scale
     local castHeight = ClampNumber(castConfig.Height, 8, 48, 20)
     local ccHeight = 10
     local portraitSize = RefineUI:Scale(PREVIEW_PORTRAIT_BASE_SIZE * dynamicPortraitScale)
@@ -946,58 +982,22 @@ local function RegisterEditModeSettings()
 
     settings[#settings + 1] = {
         kind = settingType.Slider,
-        name = "Nameplate Width",
-        default = DEFAULT_PLATE_SIZE[1],
-        minValue = 120,
-        maxValue = 320,
-        valueStep = 1,
-        get = function()
-            return ClampNumber(GetNameplatesConfig().Size[1], 120, 320, DEFAULT_PLATE_SIZE[1])
-        end,
-        set = function(_, value)
-            local config = GetNameplatesConfig()
-            config.Size[1] = floor(ClampNumber(value, 120, 320, DEFAULT_PLATE_SIZE[1]) + 0.5)
-            RefreshPreviewFrame()
-            RefreshLiveNameplates()
-        end,
-    }
-
-    settings[#settings + 1] = {
-        kind = settingType.Slider,
-        name = "Nameplate Height",
-        default = DEFAULT_PLATE_SIZE[2],
-        minValue = 10,
-        maxValue = 48,
-        valueStep = 1,
-        get = function()
-            return ClampNumber(GetNameplatesConfig().Size[2], 10, 48, DEFAULT_PLATE_SIZE[2])
-        end,
-        set = function(_, value)
-            local config = GetNameplatesConfig()
-            config.Size[2] = floor(ClampNumber(value, 10, 48, DEFAULT_PLATE_SIZE[2]) + 0.5)
-            RefreshPreviewFrame()
-            RefreshLiveNameplates()
-        end,
-    }
-
-    settings[#settings + 1] = {
-        kind = settingType.Slider,
-        name = "Unit Name Scale",
+        name = "Scale",
         default = DEFAULT_TEXT_SCALE,
-        minValue = NAMEPLATE_TEXT_SCALE_MIN,
-        maxValue = NAMEPLATE_TEXT_SCALE_MAX,
+        minValue = NAMEPLATE_SCALE_MIN,
+        maxValue = NAMEPLATE_SCALE_MAX,
         valueStep = NAMEPLATE_SCALE_STEP,
-        formatter = FormatScaleValue,
+        formatter = FormatNameplateScaleValue,
         get = function()
             return RoundToStep(
-                ClampNumber(GetNameplatesConfig().UnitNameScale, NAMEPLATE_TEXT_SCALE_MIN, NAMEPLATE_TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE),
+                ClampNumber(GetNameplatesConfig().Scale, NAMEPLATE_SCALE_MIN, NAMEPLATE_SCALE_MAX, DEFAULT_TEXT_SCALE),
                 NAMEPLATE_SCALE_STEP
             )
         end,
         set = function(_, value)
             local config = GetNameplatesConfig()
-            config.UnitNameScale = RoundToStep(
-                ClampNumber(value, NAMEPLATE_TEXT_SCALE_MIN, NAMEPLATE_TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE),
+            config.Scale = RoundToStep(
+                ClampNumber(value, NAMEPLATE_SCALE_MIN, NAMEPLATE_SCALE_MAX, DEFAULT_TEXT_SCALE),
                 NAMEPLATE_SCALE_STEP
             )
             RefreshPreviewFrame()
@@ -1007,56 +1007,21 @@ local function RegisterEditModeSettings()
 
     settings[#settings + 1] = {
         kind = settingType.Slider,
-        name = "HP Text Scale",
-        default = DEFAULT_TEXT_SCALE,
-        minValue = NAMEPLATE_TEXT_SCALE_MIN,
-        maxValue = NAMEPLATE_TEXT_SCALE_MAX,
-        valueStep = NAMEPLATE_SCALE_STEP,
-        formatter = FormatScaleValue,
+        name = "Floating Combat Text",
+        default = WORLD_TEXT_SCALE_DEFAULT,
+        minValue = WORLD_TEXT_SCALE_MIN,
+        maxValue = WORLD_TEXT_SCALE_MAX,
+        valueStep = WORLD_TEXT_SCALE_STEP,
+        formatter = FormatWorldTextScaleValue,
         get = function()
-            return RoundToStep(
-                ClampNumber(GetNameplatesConfig().HealthTextScale, NAMEPLATE_TEXT_SCALE_MIN, NAMEPLATE_TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE),
-                NAMEPLATE_SCALE_STEP
-            )
+            return GetConfiguredWorldTextScale()
         end,
         set = function(_, value)
-            local config = GetNameplatesConfig()
-            config.HealthTextScale = RoundToStep(
-                ClampNumber(value, NAMEPLATE_TEXT_SCALE_MIN, NAMEPLATE_TEXT_SCALE_MAX, DEFAULT_TEXT_SCALE),
-                NAMEPLATE_SCALE_STEP
+            local scale = RoundToStep(
+                ClampNumber(value, WORLD_TEXT_SCALE_MIN, WORLD_TEXT_SCALE_MAX, WORLD_TEXT_SCALE_DEFAULT),
+                WORLD_TEXT_SCALE_STEP
             )
-            RefreshPreviewFrame()
-            RefreshLiveNameplates()
-        end,
-    }
-
-    settings[#settings + 1] = {
-        kind = settingType.Slider,
-        name = "Portrait Scale",
-        default = DEFAULT_DYNAMIC_PORTRAIT_SCALE,
-        minValue = NAMEPLATE_TEXT_SCALE_MIN,
-        maxValue = NAMEPLATE_TEXT_SCALE_MAX,
-        valueStep = NAMEPLATE_SCALE_STEP,
-        formatter = FormatScaleValue,
-        get = function()
-            return RoundToStep(
-                ClampNumber(
-                    GetNameplatesConfig().DynamicPortraitScale,
-                    NAMEPLATE_TEXT_SCALE_MIN,
-                    NAMEPLATE_TEXT_SCALE_MAX,
-                    DEFAULT_DYNAMIC_PORTRAIT_SCALE
-                ),
-                NAMEPLATE_SCALE_STEP
-            )
-        end,
-        set = function(_, value)
-            local config = GetNameplatesConfig()
-            config.DynamicPortraitScale = RoundToStep(
-                ClampNumber(value, NAMEPLATE_TEXT_SCALE_MIN, NAMEPLATE_TEXT_SCALE_MAX, DEFAULT_DYNAMIC_PORTRAIT_SCALE),
-                NAMEPLATE_SCALE_STEP
-            )
-            RefreshPreviewFrame()
-            RefreshLiveNameplates()
+            SetCVar(WORLD_TEXT_SCALE_CVAR, scale)
         end,
     }
 
@@ -1110,6 +1075,98 @@ local function RegisterEditModeSettings()
             if type(RefineUI.ApplyNameplateCVarSettings) == "function" then
                 RefineUI:ApplyNameplateCVarSettings()
             end
+        end,
+    }
+
+    AddDivider("Enemy Auras")
+
+    settings[#settings + 1] = {
+        kind = settingType.Slider,
+        name = "Aura Base Y",
+        default = DEFAULT_ENEMY_AURA_LAYOUT.BaseOffsetY,
+        minValue = -20,
+        maxValue = 40,
+        valueStep = 1,
+        get = function()
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            return ClampNumber(enemyAuras.BaseOffsetY, -20, 40, DEFAULT_ENEMY_AURA_LAYOUT.BaseOffsetY)
+        end,
+        set = function(_, value)
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            enemyAuras.BaseOffsetY = RoundToStep(ClampNumber(value, -20, 40, DEFAULT_ENEMY_AURA_LAYOUT.BaseOffsetY), 1)
+            RefreshLiveNameplates()
+        end,
+    }
+
+    settings[#settings + 1] = {
+        kind = settingType.Slider,
+        name = "Debuff X",
+        default = DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetX,
+        minValue = -80,
+        maxValue = 80,
+        valueStep = 1,
+        get = function()
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            return ClampNumber(enemyAuras.DebuffOffsetX, -80, 80, DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetX)
+        end,
+        set = function(_, value)
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            enemyAuras.DebuffOffsetX = RoundToStep(ClampNumber(value, -80, 80, DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetX), 1)
+            RefreshLiveNameplates()
+        end,
+    }
+
+    settings[#settings + 1] = {
+        kind = settingType.Slider,
+        name = "Debuff Y",
+        default = DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetY,
+        minValue = -40,
+        maxValue = 80,
+        valueStep = 1,
+        get = function()
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            return ClampNumber(enemyAuras.DebuffOffsetY, -40, 80, DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetY)
+        end,
+        set = function(_, value)
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            enemyAuras.DebuffOffsetY = RoundToStep(ClampNumber(value, -40, 80, DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetY), 1)
+            RefreshLiveNameplates()
+        end,
+    }
+
+    settings[#settings + 1] = {
+        kind = settingType.Slider,
+        name = "Buff X",
+        default = DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetX,
+        minValue = -80,
+        maxValue = 80,
+        valueStep = 1,
+        get = function()
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            return ClampNumber(enemyAuras.BuffOffsetX, -80, 80, DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetX)
+        end,
+        set = function(_, value)
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            enemyAuras.BuffOffsetX = RoundToStep(ClampNumber(value, -80, 80, DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetX), 1)
+            RefreshLiveNameplates()
+        end,
+    }
+
+    settings[#settings + 1] = {
+        kind = settingType.Slider,
+        name = "Buff Y",
+        default = DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetY,
+        minValue = -40,
+        maxValue = 80,
+        valueStep = 1,
+        get = function()
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            return ClampNumber(enemyAuras.BuffOffsetY, -40, 80, DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetY)
+        end,
+        set = function(_, value)
+            local enemyAuras = GetNameplatesConfig().EnemyAuras
+            enemyAuras.BuffOffsetY = RoundToStep(ClampNumber(value, -40, 80, DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetY), 1)
+            RefreshLiveNameplates()
         end,
     }
 
@@ -1387,4 +1444,3 @@ function Nameplates:RegisterEditModeCallbacks()
 
     editModeCallbacksRegistered = true
 end
-

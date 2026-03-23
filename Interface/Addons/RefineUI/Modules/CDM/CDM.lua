@@ -109,23 +109,26 @@ function CDM:ResetPerfState()
     end
 end
 
-CDM.TRACKER_BUCKETS = { "Left", "Right", "Bottom" }
+CDM.TRACKER_BUCKETS = { "Left", "Right", "Bottom", "Radial" }
 CDM.NOT_TRACKED_KEY = "NotTracked"
 CDM.BUCKET_LABELS = {
     Left = "Left",
     Right = "Right",
     Bottom = "Bottom",
+    Radial = "Radial",
     NotTracked = "Not Tracked",
 }
 CDM.TRACKER_FRAME_NAMES = {
     Left = "RefineUI_CDM_LeftTracker",
     Right = "RefineUI_CDM_RightTracker",
     Bottom = "RefineUI_CDM_BottomTracker",
+    Radial = "RefineUI_CDM_RadialTracker",
 }
 CDM.TRACKER_DEFAULT_DIRECTION = {
     Left = "LEFT",
     Right = "RIGHT",
     Bottom = "LEFT",
+    Radial = "RIGHT",
 }
 CDM.BLIZZARD_CATEGORY = {
     TRACKED_BUFF = Enum and Enum.CooldownViewerCategory and Enum.CooldownViewerCategory.TrackedBuff,
@@ -146,4 +149,8 @@ CDM.STATE_REGISTRY = CDM:BuildKey("State")
 
 function CDM:GetCooldownViewerSettingsFrame()
     return self.settingsFrame or _G[CDM.SETTINGS_FRAME_NAME]
+end
+
+function CDM:GetBlizzardCooldownViewerSettingsFrame()
+    return _G.CooldownViewerSettings
 end

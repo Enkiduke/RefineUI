@@ -65,11 +65,8 @@ local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
 -- Constants
 ----------------------------------------------------------------------------------------
 local TOOLTIP_UNIT_POSTCALL_KEY = "Tooltip:PostCall:Unit"
-local TOOLTIP_HIDE_IN_COMBAT_HYPERLINK_HOOK_KEY = "Tooltip:HideInCombat:GameTooltip_ShowHyperlink"
-local TOOLTIP_HIDE_IN_COMBAT_AREA_POI_HOOK_KEY = "Tooltip:HideInCombat:AreaPoiUtil:TryShowTooltip"
-local TOOLTIP_HIDE_IN_COMBAT_SET_ITEM_REF_HOOK_KEY = "Tooltip:HideInCombat:SetItemRef"
-local TOOLTIP_HIDE_IN_COMBAT_ADDON_LOADED_KEY = "Tooltip:HideInCombat:TryHooks:ADDON_LOADED"
-local TOOLTIP_HIDE_IN_COMBAT_PLAYER_LOGIN_KEY = "Tooltip:HideInCombat:TryHooks:PLAYER_LOGIN"
+local TOOLTIP_HIDE_IN_COMBAT_GAME_TOOLTIP_HOOK_KEY = "Tooltip:HideInCombat:GameTooltip:OnShow"
+local TOOLTIP_HIDE_IN_COMBAT_ITEM_REF_HOOK_KEY = "Tooltip:HideInCombat:ItemRefTooltip:OnShow"
 
 local BOSS = _G.BOSS
 local ELITE = _G.ELITE
@@ -155,23 +152,15 @@ function Tooltip:MaybeHideInCombat(tooltipFrame, _data)
     return true
 end
 
-function Tooltip:TryHookHideInCombatSources()
-    if not (Config.Tooltip and Config.Tooltip.HideInCombat) then
-        return
-    end
-
-    RefineUI:HookOnce(TOOLTIP_HIDE_IN_COMBAT_HYPERLINK_HOOK_KEY, "GameTooltip_ShowHyperlink", function(tooltipFrame)
-        Tooltip:MaybeHideInCombat(tooltipFrame or GameTooltip)
+function Tooltip:InitializeHideInCombatHooks()
+    RefineUI:HookScriptOnce(TOOLTIP_HIDE_IN_COMBAT_GAME_TOOLTIP_HOOK_KEY, GameTooltip, "OnShow", function(frame)
+        Tooltip:MaybeHideInCombat(frame)
     end)
 
-    RefineUI:HookOnce(TOOLTIP_HIDE_IN_COMBAT_SET_ITEM_REF_HOOK_KEY, "SetItemRef", function()
-        Tooltip:MaybeHideInCombat(_G.ItemRefTooltip)
-    end)
-
-    local areaPoiUtil = _G.AreaPoiUtil
-    if type(areaPoiUtil) == "table" and type(areaPoiUtil.TryShowTooltip) == "function" then
-        RefineUI:HookOnce(TOOLTIP_HIDE_IN_COMBAT_AREA_POI_HOOK_KEY, areaPoiUtil, "TryShowTooltip", function()
-            Tooltip:MaybeHideInCombat(GameTooltip)
+    local itemRefTooltip = _G.ItemRefTooltip
+    if itemRefTooltip then
+        RefineUI:HookScriptOnce(TOOLTIP_HIDE_IN_COMBAT_ITEM_REF_HOOK_KEY, itemRefTooltip, "OnShow", function(frame)
+            Tooltip:MaybeHideInCombat(frame)
         end)
     end
 end
@@ -443,12 +432,6 @@ function Tooltip:InitializeTooltipUnit()
     end
 
     if Config.Tooltip and Config.Tooltip.HideInCombat then
-        Tooltip:TryHookHideInCombatSources()
-        RefineUI:RegisterEventCallback("ADDON_LOADED", function()
-            Tooltip:TryHookHideInCombatSources()
-        end, TOOLTIP_HIDE_IN_COMBAT_ADDON_LOADED_KEY)
-        RefineUI:RegisterEventCallback("PLAYER_LOGIN", function()
-            Tooltip:TryHookHideInCombatSources()
-        end, TOOLTIP_HIDE_IN_COMBAT_PLAYER_LOGIN_KEY)
+        Tooltip:InitializeHideInCombatHooks()
     end
 end

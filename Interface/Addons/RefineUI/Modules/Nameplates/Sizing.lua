@@ -25,6 +25,14 @@ local C_NamePlate = C_NamePlate
 local InCombatLockdown = InCombatLockdown
 
 ----------------------------------------------------------------------------------------
+-- Constants
+----------------------------------------------------------------------------------------
+local DEFAULT_NAMEPLATE_SCALE = 1
+local DEFAULT_NAMEPLATE_WIDTH = 150
+local DEFAULT_NAMEPLATE_HEIGHT = 20
+local NAMEPLATE_SCALE_EPSILON = 0.001
+
+----------------------------------------------------------------------------------------
 -- Private Helpers
 ----------------------------------------------------------------------------------------
 local function SafeSetFrameDimension(frame, methodName, value)
@@ -44,7 +52,7 @@ local function SafeSetFrameDimension(frame, methodName, value)
     return ok == true
 end
 
-local function ClampNameplateTextScale(value, fallback, constants)
+local function ClampNameplateScale(value, fallback, constants)
     local scale = tonumber(value)
     if not scale then
         scale = fallback
@@ -58,22 +66,72 @@ local function ClampNameplateTextScale(value, fallback, constants)
     return scale
 end
 
+local function ReadLegacyScaleCandidates(cfg)
+    local candidates = {}
+    local size = cfg and cfg.Size
+    if type(size) == "table" then
+        local width = tonumber(size[1])
+        if width and abs(width - DEFAULT_NAMEPLATE_WIDTH) > NAMEPLATE_SCALE_EPSILON then
+            candidates[#candidates + 1] = width / DEFAULT_NAMEPLATE_WIDTH
+        end
+
+        local height = tonumber(size[2])
+        if height and abs(height - DEFAULT_NAMEPLATE_HEIGHT) > NAMEPLATE_SCALE_EPSILON then
+            candidates[#candidates + 1] = height / DEFAULT_NAMEPLATE_HEIGHT
+        end
+    end
+
+    local unitNameScale = tonumber(cfg and cfg.UnitNameScale)
+    if unitNameScale and abs(unitNameScale - DEFAULT_NAMEPLATE_SCALE) > NAMEPLATE_SCALE_EPSILON then
+        candidates[#candidates + 1] = unitNameScale
+    end
+
+    local healthTextScale = tonumber(cfg and cfg.HealthTextScale)
+    if healthTextScale and abs(healthTextScale - DEFAULT_NAMEPLATE_SCALE) > NAMEPLATE_SCALE_EPSILON then
+        candidates[#candidates + 1] = healthTextScale
+    end
+
+    local portraitScale = tonumber(cfg and cfg.DynamicPortraitScale)
+    if portraitScale and abs(portraitScale - DEFAULT_NAMEPLATE_SCALE) > NAMEPLATE_SCALE_EPSILON then
+        candidates[#candidates + 1] = portraitScale
+    end
+
+    return candidates
+end
+
 ----------------------------------------------------------------------------------------
 -- Sizing API
 ----------------------------------------------------------------------------------------
-function Nameplates:GetConfiguredNameplateSize()
-    local width = 150
-    local height = 20
-
-    local nameplatesConfig = self:GetConfiguredNameplatesConfig()
-    local size = nameplatesConfig and nameplatesConfig.Size
-    if type(size) == "table" then
-        width = tonumber(size[1]) or width
-        height = tonumber(size[2]) or height
+function Nameplates:GetConfiguredNameplateScale()
+    local private = self:GetPrivate()
+    local constants = private and private.Constants
+    if not constants then
+        return DEFAULT_NAMEPLATE_SCALE
     end
 
-    width = max(120, min(320, width))
-    height = max(10, min(48, height))
+    local cfg = self:GetConfiguredNameplatesConfig()
+    local configuredScale = tonumber(cfg and cfg.Scale)
+    if configuredScale then
+        return ClampNameplateScale(configuredScale, DEFAULT_NAMEPLATE_SCALE, constants)
+    end
+
+    local candidates = ReadLegacyScaleCandidates(cfg)
+    if #candidates == 0 then
+        return DEFAULT_NAMEPLATE_SCALE
+    end
+
+    local total = 0
+    for index = 1, #candidates do
+        total = total + candidates[index]
+    end
+
+    return ClampNameplateScale(total / #candidates, DEFAULT_NAMEPLATE_SCALE, constants)
+end
+
+function Nameplates:GetConfiguredNameplateSize()
+    local scale = self:GetConfiguredNameplateScale()
+    local width = DEFAULT_NAMEPLATE_WIDTH * scale
+    local height = DEFAULT_NAMEPLATE_HEIGHT * scale
 
     return RefineUI:Scale(width), RefineUI:Scale(height)
 end
@@ -133,25 +191,11 @@ function Nameplates:IsNameplateSizeApplyPending()
 end
 
 function Nameplates:GetConfiguredUnitNameScale()
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    if not constants then
-        return 1
-    end
-
-    local cfg = self:GetConfiguredNameplatesConfig()
-    return ClampNameplateTextScale(cfg and cfg.UnitNameScale, 1, constants)
+    return self:GetConfiguredNameplateScale()
 end
 
 function Nameplates:GetConfiguredHealthTextScale()
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    if not constants then
-        return 1
-    end
-
-    local cfg = self:GetConfiguredNameplatesConfig()
-    return ClampNameplateTextScale(cfg and cfg.HealthTextScale, 1, constants)
+    return self:GetConfiguredNameplateScale()
 end
 
 function Nameplates:GetScaledNameplateNameFontSize()
@@ -198,7 +242,9 @@ function Nameplates:ApplyConfiguredNameplateSize(unitFrame, _nameplate)
     end
 
     local outerWidth = self:GetConfiguredNameplateFrameSize()
-    self:ApplyConfiguredBlizzardNameplateSize(false)
+    -- Keep the per-nameplate size pass local. The global C_NamePlate size API
+    -- re-runs Blizzard ApplyFrameOptions/SetUnit for visible nameplates, which
+    -- can drive castBar:SetUnit through hostile secret cast state.
 
     -- Parent NamePlate:SetWidth() is protected in Blizzard secure ApplyFrameOptions flow.
     SafeSetFrameDimension(unitFrame, "SetWidth", outerWidth)

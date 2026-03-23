@@ -63,6 +63,26 @@ local DIRECTION_REVERSE = "REVERSE"
 local DEFAULT_BUTTON_SIZE = 32
 local DEFAULT_BUTTON_SPACING = 3
 local GOLD_R, GOLD_G, GOLD_B, GOLD_A = 1, 0.82, 0, 1
+local BUTTON_BACKGROUND_R, BUTTON_BACKGROUND_G, BUTTON_BACKGROUND_B, BUTTON_BACKGROUND_A = 0, 0, 0, 0.5
+
+local function GetLiveMinimapSize()
+    if not Minimap or not Minimap.GetWidth then
+        return nil
+    end
+
+    local minimapSize = Minimap:GetWidth()
+    if type(minimapSize) ~= "number" or minimapSize <= 0 then
+        return nil
+    end
+
+    local minimapScale = Minimap.GetEffectiveScale and Minimap:GetEffectiveScale() or 1
+    local parentScale = UIParent and UIParent.GetEffectiveScale and UIParent:GetEffectiveScale() or 1
+    if type(minimapScale) == "number" and minimapScale > 0 and type(parentScale) == "number" and parentScale > 0 then
+        minimapSize = minimapSize * (minimapScale / parentScale)
+    end
+
+    return minimapSize
+end
 
 local function GetButtonBorder(button)
     if not button then
@@ -122,8 +142,9 @@ local function SkinButton(f, size)
 	f:SetDisabledTexture(0)
 	f:SetSize(size, size)
 
-	for i = 1, f:GetNumRegions() do
-		local region = select(i, f:GetRegions())
+	local regions = { f:GetRegions() }
+	for i = 1, #regions do
+		local region = regions[i]
 		if region:IsVisible() and region:GetObjectType() == "Texture" then
 			local tex = tostring(region:GetTexture())
 
@@ -142,7 +163,14 @@ local function SkinButton(f, size)
 		end
 	end
 
-	RefineUI.SetTemplate(f, "Default")
+	RefineUI.CreateBackdrop(f, "Transparent")
+	if f.bg then
+		if f.bg.SetColorTexture then
+			f.bg:SetColorTexture(BUTTON_BACKGROUND_R, BUTTON_BACKGROUND_G, BUTTON_BACKGROUND_B, BUTTON_BACKGROUND_A)
+		elseif f.bg.SetVertexColor then
+			f.bg:SetVertexColor(BUTTON_BACKGROUND_R, BUTTON_BACKGROUND_G, BUTTON_BACKGROUND_B, BUTTON_BACKGROUND_A)
+		end
+	end
 end
 
 ----------------------------------------------------------------------------------------
@@ -175,7 +203,7 @@ function Maps:GetButtonCollectConfig()
     if spacing < 0 then spacing = 0 end
     if spacing > 30 then spacing = 30 end
 
-    local minimapSize = tonumber(db.Size) or tonumber(config.Size) or (Minimap and Minimap:GetWidth()) or 162
+    local minimapSize = GetLiveMinimapSize() or tonumber(db.Size) or tonumber(config.Size) or 162
     if minimapSize <= 0 then
         minimapSize = 162
     end

@@ -38,19 +38,52 @@ local function SetBorderColor(border, r, g, b, a)
     end
 end
 
-local function RestoreBorderColor(state, border)
+local function ApplyButtonBorderVisual(state, border)
     if not border then
         return
     end
 
-    if state.RestoreR then
-        SetBorderColor(border, state.RestoreR, state.RestoreG, state.RestoreB, state.RestoreA)
+    local mode
+    if state.isPressed then
+        mode = "pressed"
+    elseif state.isHovered then
+        mode = "hover"
+    else
+        mode = "normal"
+    end
+
+    if state.borderVisualState == mode then
+        return
+    end
+
+    state.borderVisualState = mode
+
+    if mode == "pressed" then
+        local hoverColor = private.HOVER_BORDER_COLOR
+        SetBorderColor(border, hoverColor[1], hoverColor[2], hoverColor[3], hoverColor[4])
+        return
+    end
+
+    if mode == "hover" then
+        local hoverColor = private.HOVER_BORDER_COLOR
+        SetBorderColor(border, hoverColor[1], hoverColor[2], hoverColor[3], hoverColor[4])
         return
     end
 
     if state.OriginalR then
         SetBorderColor(border, state.OriginalR, state.OriginalG, state.OriginalB, state.OriginalA)
     end
+end
+
+function private.SetHoveredVisual(button, hovered)
+    local state = private.ButtonState[button]
+    if not state then
+        return
+    end
+
+    state.isHovered = hovered and true or false
+    local border = state.SkinOverlay and state.SkinOverlay.border
+    ApplyButtonBorderVisual(state, border)
 end
 
 function private.EnsureCooldownShade(button)
@@ -90,26 +123,104 @@ function private.SetCooldownShadeVisible(button, visible)
     end
 end
 
+function private.EnsureCooldownIconFade(button)
+    if not button or not button.icon then
+        return nil, nil
+    end
+
+    local state = private.GetButtonState(button)
+    if state.CooldownIconFade and state.CooldownIconFadeAlpha then
+        return state.CooldownIconFade, state.CooldownIconFadeAlpha
+    end
+
+    local animationGroup = button.icon:CreateAnimationGroup()
+    animationGroup:SetLooping("NONE")
+    animationGroup:SetToFinalAlpha(true)
+
+    local fade = animationGroup:CreateAnimation("Alpha")
+    fade:SetOrder(1)
+    fade:SetFromAlpha(private.COOLDOWN_VISUAL.normalAlpha)
+    fade:SetToAlpha(1)
+    fade:SetDuration(private.COOLDOWN_VISUAL.gcdDuration)
+    fade:SetSmoothing("IN_OUT")
+
+    animationGroup:SetScript("OnFinished", function()
+        local buttonState = private.ButtonState[button]
+        if not buttonState or not button.icon then
+            return
+        end
+
+        button.icon:SetAlpha(1)
+        buttonState.lastCooldownAlpha = 1
+        buttonState.cooldownFadePlaying = false
+    end)
+
+    animationGroup:SetScript("OnStop", function()
+        local buttonState = private.ButtonState[button]
+        if buttonState then
+            buttonState.cooldownFadePlaying = false
+        end
+    end)
+
+    state.CooldownIconFade = animationGroup
+    state.CooldownIconFadeAlpha = fade
+    return animationGroup, fade
+end
+
+function private.StartCooldownIconFade(button, duration)
+    local state = private.GetButtonState(button)
+    local animationGroup, fade = private.EnsureCooldownIconFade(button)
+    if not animationGroup or not fade or not button.icon then
+        return
+    end
+
+    local animationDuration = duration
+    if type(animationDuration) ~= "number" or animationDuration <= 0 then
+        animationDuration = private.COOLDOWN_VISUAL.gcdDuration
+    end
+
+    if animationDuration < 0.05 then
+        animationDuration = 0.05
+    end
+
+    animationGroup:Stop()
+    fade:SetFromAlpha(private.COOLDOWN_VISUAL.normalAlpha)
+    fade:SetToAlpha(1)
+    fade:SetDuration(animationDuration)
+    button.icon:SetAlpha(private.COOLDOWN_VISUAL.normalAlpha)
+    state.lastCooldownAlpha = private.COOLDOWN_VISUAL.normalAlpha
+    state.cooldownFadePlaying = true
+    animationGroup:Play()
+end
+
+function private.StopCooldownIconFade(button)
+    local state = button and private.GetButtonState(button)
+    if not state or not state.CooldownIconFade then
+        return
+    end
+
+    if state.CooldownIconFade:IsPlaying() then
+        state.CooldownIconFade:Stop()
+    end
+    state.cooldownFadePlaying = false
+end
+
 function private.SetPressedVisual(button, pressed)
     local state = private.ButtonState[button]
     if not state then
         return
     end
 
-    local border = state.SkinOverlay and state.SkinOverlay.border
     if pressed then
-        if state.PressAnimation then
+        if not state.isPressed and state.PressAnimation then
             state.PressAnimation:Stop()
             state.PressAnimation:Play()
         end
-        if border and border.GetBackdropBorderColor then
-            state.RestoreR, state.RestoreG, state.RestoreB, state.RestoreA = border:GetBackdropBorderColor()
-            SetBorderColor(border, 1, 1, 1, 1)
-        end
-        return
     end
 
-    RestoreBorderColor(state, border)
+    state.isPressed = pressed and true or false
+    local border = state.SkinOverlay and state.SkinOverlay.border
+    ApplyButtonBorderVisual(state, border)
 end
 
 ----------------------------------------------------------------------------------------
@@ -118,7 +229,7 @@ end
 local function Cooldown_OnStateChange(self)
     local button = private.GetActionBarState(self, "RefineButton")
     if button then
-        private.HandleButtonCooldownUpdate(button)
+        private.QueueDeferredCooldownUpdate(button)
     end
 end
 
@@ -127,24 +238,27 @@ function private.EnableDesaturation(button)
         return
     end
 
-    private.EnsureCooldownShade(button)
-    private.ForEachButtonCooldownFrame(button, function(frame)
-        private.SetActionBarState(frame, "RefineButton", button)
-    end)
-
-    private.ForEachButtonCooldownFrame(button, function(frame, key)
-        if not frame.HookScript then
-            return
-        end
-
-        RefineUI:HookScriptOnce(private.BuildHookKey(frame, "OnShow", key), frame, "OnShow", Cooldown_OnStateChange)
-        RefineUI:HookScriptOnce(private.BuildHookKey(frame, "OnHide", key), frame, "OnHide", Cooldown_OnStateChange)
-        RefineUI:HookScriptOnce(private.BuildHookKey(frame, "OnCooldownDone", key), frame, "OnCooldownDone", Cooldown_OnStateChange)
-    end)
-
     private.SkinnedButtons[button] = true
     private.RegisterButtonCollections(button)
-    private.HandleButtonCooldownUpdate(button)
+
+    if private.GetBarKeyForButton(button) ~= private.BAR_KEY.STANCE then
+        private.EnsureCooldownShade(button)
+        private.ForEachButtonCooldownFrame(button, function(frame)
+            private.SetActionBarState(frame, "RefineButton", button)
+        end)
+
+        private.ForEachButtonCooldownFrame(button, function(frame, key)
+            if not frame.HookScript then
+                return
+            end
+
+            RefineUI:HookScriptOnce(private.BuildHookKey(frame, "OnShow", key), frame, "OnShow", Cooldown_OnStateChange)
+            RefineUI:HookScriptOnce(private.BuildHookKey(frame, "OnHide", key), frame, "OnHide", Cooldown_OnStateChange)
+            RefineUI:HookScriptOnce(private.BuildHookKey(frame, "OnCooldownDone", key), frame, "OnCooldownDone", Cooldown_OnStateChange)
+        end)
+
+        private.HandleButtonCooldownUpdate(button)
+    end
 end
 
 ----------------------------------------------------------------------------------------
@@ -155,8 +269,9 @@ function ActionBars:StyleCooldownText(cooldown)
         return
     end
 
-    for i = 1, select("#", cooldown:GetRegions()) do
-        local region = select(i, cooldown:GetRegions())
+    local regions = { cooldown:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region:GetObjectType() == "FontString" then
             region:SetFont(Media.Fonts.Number, 24, "OUTLINE")
         end
@@ -235,6 +350,7 @@ function ActionBars:StyleButton(button)
     end
 
     private.EnsureCooldownShade(button)
+    private.EnsureCooldownIconFade(button)
 
     if count then
         count:SetParent(button)
@@ -301,6 +417,9 @@ function ActionBars:StyleButton(button)
         local borderColor = Config.General.BorderColor
         state.OriginalR, state.OriginalG, state.OriginalB, state.OriginalA = borderColor[1], borderColor[2], borderColor[3], borderColor[4]
     end
+    state.isHovered = false
+    state.isPressed = false
+    state.borderVisualState = nil
 
     if not state.PressAnimation then
         local animationGroup = button:CreateAnimationGroup()
@@ -325,23 +444,13 @@ function ActionBars:StyleButton(button)
     end
 
     RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnEnter", "Style"), button, "OnEnter", function(self)
-        local buttonState = private.ButtonState[self]
-        local border = buttonState and buttonState.SkinOverlay and buttonState.SkinOverlay.border
-        local hoverColor = private.HOVER_BORDER_COLOR
-        SetBorderColor(border, hoverColor[1], hoverColor[2], hoverColor[3], hoverColor[4])
+        private.SetHoveredVisual(self, true)
     end)
     RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnLeave", "Style"), button, "OnLeave", function(self)
-        local buttonState = private.ButtonState[self]
-        local border = buttonState and buttonState.SkinOverlay and buttonState.SkinOverlay.border
-        RestoreBorderColor(buttonState or {}, border)
-    end)
-    RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnMouseDown", "Style"), button, "OnMouseDown", function(self)
-        private.SetPressedVisual(self, true)
-    end)
-    RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnMouseUp", "Style"), button, "OnMouseUp", function(self)
-        private.SetPressedVisual(self, false)
+        private.SetHoveredVisual(self, false)
     end)
 
+    ApplyButtonBorderVisual(state, state.SkinOverlay.border)
     private.EnableDesaturation(button)
     state.isSkinned = true
 end

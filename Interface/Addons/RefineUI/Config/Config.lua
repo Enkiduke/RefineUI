@@ -58,7 +58,7 @@ C.General = {
 C.UnitFrames = {
     Enable = true, -- Master switch for UnitFrames module
     DisableTooltips = true, -- Disable tooltips on UnitFrames
-    Scale = 1.5, -- Default Scale for Player/Target/Focus frames
+    Scale = 1.5, -- Deprecated for persistent Blizzard unit frames; Edit Mode owns Player/Target/Focus sizing
 
     -- [ Global Params ]
     Layout = {
@@ -176,8 +176,10 @@ C.UnitFrames = {
         ExperienceBar = {
             Enable = true,
             SubMaxTrackMode = "EXPERIENCE", -- "EXPERIENCE", "REPUTATION"
-            AutoTrack = "CLOSEST", -- "NONE", "RECENT", "CLOSEST"
-            Position = { "TOP", "UIParent", "TOP", 0, -12 },
+            AutoTrack = "CLOSEST", -- "RECENT", "CLOSEST"
+            Scale = 1.0,
+            Mouseover = false,
+            Alpha = 0.5,
         },
     },
 }
@@ -187,7 +189,7 @@ C.UnitFrames = {
 ----------------------------------------------------------------------------------------
 C.ActionBars = {
     Enable = true,
-    ButtonSize = 30,
+    ButtonSize = 30, -- Deprecated for Blizzard action bar geometry; Edit Mode owns persistent bar icon size
     Spacing = 4,
     ShowHotkeys = {},  -- Per-bar hotkey visibility, keyed by bar name (Edit Mode setting)
 }
@@ -209,7 +211,7 @@ C.Automation = {
         ButtonSpacing = 6,
         ButtonLimit = 12,
         BarAlpha = 1,
-        BarVisible = "MOUSEOVER", -- ALWAYS, IN_COMBAT, OUT_OF_COMBAT, MOUSEOVER, NEVER
+        BarVisible = "ALWAYS", -- ALWAYS, IN_COMBAT, OUT_OF_COMBAT, MOUSEOVER, NEVER
         MinItemLevel = 1,
         Orientation = "HORIZONTAL", -- "HORIZONTAL" or "VERTICAL"
         ButtonDirection = "REVERSE", -- Orientation-aware label in Edit Mode
@@ -228,11 +230,11 @@ C.Automation = {
 
     AutoOpenBar = {
         Enable = true,
-        ButtonSize = 48,
+        ButtonSize = 36,
         ButtonSpacing = 8,
         ButtonLimit = 10,
-        Orientation = "HORIZONTAL", -- HORIZONTAL, VERTICAL
-        Direction = "LEFT", -- HORIZONTAL: RIGHT/LEFT, VERTICAL: DOWN/UP
+        Orientation = "VERTICAL", -- HORIZONTAL, VERTICAL
+        Direction = "DOWN", -- HORIZONTAL: RIGHT/LEFT, VERTICAL: DOWN/UP
         ShowQuestStarters = true, -- Legacy migration fallback
         CategoryOrder = {}, -- Runtime-populated from fixed Auto Open Bar categories
         CategoryEnabled = {}, -- Runtime-populated enabled state per category key
@@ -349,6 +351,15 @@ C.CDM = {
             Orientation = "HORIZONTAL",
             Direction = "LEFT",
         },
+        Radial = {
+            IconScale = 0.7,
+            Spacing = 6,
+            Orientation = "HORIZONTAL",
+            Direction = "RIGHT",
+            ShowDurationText = true,
+            TextSize = 22,
+            TextPosition = "CENTER",
+        },
     },
     AuraMode = "refineui", -- "refineui" or "blizzard"
     LayoutAssignments = {},
@@ -363,7 +374,7 @@ C.EncounterTimeline = {
     SkinEnabled = true,
     SkinTrackView = true,
     SkinTimerView = true,
-    TrackTextAnchor = "LEFT", -- LEFT, RIGHT (track view text only)
+    TrackTextAnchor = "RIGHT", -- LEFT, RIGHT (track view text only)
 
     BigIconEnable = true,
     BigIconSize = 72,
@@ -416,6 +427,13 @@ C.Skins = {
 C.Tooltip = {
     Enable = true,
     HideInCombat = true,
+    Anchor = {
+        Mode = "MOUSE",
+        Placement = "TOPRIGHT",
+        OffsetX = 0,
+        OffsetY = 4,
+        ClampToScreen = true,
+    },
 }
 
 ----------------------------------------------------------------------------------------
@@ -423,7 +441,7 @@ C.Tooltip = {
 ----------------------------------------------------------------------------------------
 C.Maps = {
     Enable = true,
-    Size = 294,
+    Size = 294, -- Baseline minimap size at Edit Mode scale 100%
     ZoomReset = true,
     ResetTime = 5,
     WorldMap = true,
@@ -445,7 +463,6 @@ C.Maps = {
         MenuWidth = 320,
         RowHeight = 24,
         MaxVisibleRows = 14,
-        CloseOnMove = true,
         CloseOnCastStart = true,
         PinnedActions = {},
     },
@@ -469,11 +486,8 @@ C.Nameplates = {
     TargetIndicator = true,
     ShowNPCTitles = true,
     ShowPetNames = false,
-    UnitNameScale = 1,
-    HealthTextScale = 1,
-    DynamicPortraitScale = 1,
+    Scale = 1.0, -- 1.0 matches the current default 150x20 plate footprint
     TargetBorderColor = { .8, .8, .8 },
-    Size = { 150, 20 }, -- Standard Nameplate Size
     
     -- Alpha
     Alpha = 0.5,         -- Alpha for non-targets when a target exists
@@ -504,6 +518,19 @@ C.Nameplates = {
         HideAuraIcons = true,      -- Hide Blizzard CC aura icons when CC bar is enabled
         Color = { 0.2, 0.6, 1.0 }, -- Fill color
         BorderColor = { 0.2, 0.6, 1.0 }, -- Portrait/CC border accent
+    },
+
+    -- Enemy Aura Layout
+    -- RefineUI owns the rendered nameplate text, so enemy buff/debuff rows need
+    -- explicit post-Blizzard anchoring to stay stable above the visible name.
+    EnemyAuras = {
+        BaseOffsetY = 20,
+        DebuffOffsetX = 0,
+        DebuffOffsetY = 0,
+        DebuffSpacing = 2,
+        BuffOffsetX = 0,
+        BuffOffsetY = 0,
+        BuffSpacing = 2,
     },
 }
 
@@ -554,6 +581,8 @@ C.Combat = {
     CursorEnable = true, -- Enable Combat Cursor (Circle under char)
     CursorSize = 50,
     CursorTexture = "Interface\\AddOns\\RefineUI\\Media\\Textures\\CursorCircle.blp", 
+    CursorUpdateInterval = (1 / 30), -- Shared-scheduler cursor update interval (30 Hz default)
+    CursorDisableInInstances = true, -- Skip combat cursor in instances unless explicitly disabled here
     
     StickyTargeting = true,      -- Prevent clicking on world to deselect target
     DisableRightClickInteraction = false, -- Disable right click interaction (Camera Only)
@@ -580,6 +609,10 @@ C.FadeIn = {
 ----------------------------------------------------------------------------------------
 C.GameTime = {
     Enable = true,
+    DisplayStyle = "LOCAL_24H", -- LOCAL_24H, LOCAL_AM_PM, REALM_24H, REALM_AM_PM
+    Scale = 1.0, -- Clock scale multiplier (Edit Mode default size)
+    CombatTimerEnable = true, -- Show combat timer while in combat
+    CombatTimerUpdateInterval = 0.1, -- Shared-scheduler update interval while combat timer is active
 }
 
 ----------------------------------------------------------------------------------------
@@ -597,6 +630,7 @@ C.TalkingHead = {
 C.Quests = {
     Enable = true,
     HeaderSkinning = false,
+    ObjectiveTrackerScale = 1.2, -- Legacy migration fallback; per-tier values live in Quests.LayoutScales
 
     AutoAccept = false,
     AutoComplete = false,

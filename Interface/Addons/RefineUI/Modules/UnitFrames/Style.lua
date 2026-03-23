@@ -53,7 +53,7 @@ local function ApplyBossBarLayout(frameContainer, hpContainer, manaBar)
     RefineUI:SetPixelSize(manaBar, C.BOSS_MANA_WIDTH, C.BOSS_MANA_HEIGHT)
 end
 
-local function ApplyRaidTargetIconAnchor(frame, contentContext)
+local function ApplyRaidTargetIconAnchor(frame, contentContext, hpContainer)
     if not UnitFrames:IsTargetFocusOrBossFrame(frame) or not contentContext then
         return
     end
@@ -63,9 +63,26 @@ local function ApplyRaidTargetIconAnchor(frame, contentContext)
         return
     end
 
+    local healthBar = hpContainer and hpContainer.HealthBar
+
     local function AnchorRaidIcon(selfIcon)
         UnitFrames:WithStateGuard(selfIcon, "RaidTargetAnchor", function()
             selfIcon:ClearAllPoints()
+
+            if frame == TargetFrame or frame == FocusFrame then
+                if not healthBar then
+                    return
+                end
+
+                if frame == TargetFrame then
+                    selfIcon:SetPoint("LEFT", healthBar, "RIGHT", RefineUI:Scale(4), 0)
+                    return
+                end
+
+                selfIcon:SetPoint("RIGHT", healthBar, "LEFT", RefineUI:Scale(-4), 0)
+                return
+            end
+
             selfIcon:SetPoint("RIGHT", frame, "LEFT", 0, 0)
         end)
     end
@@ -204,7 +221,8 @@ function UnitFrames:StyleFrame(frame)
     local unit = frame.unit or "player"
     local isBossFrame = frame.isBossFrame or self:IsBossUnit(unit)
 
-    if Config.UnitFrames.Scale and frame:GetScale() ~= Config.UnitFrames.Scale then
+    local ownsScaleViaEditMode = frame == PlayerFrame or frame == TargetFrame or frame == FocusFrame
+    if not ownsScaleViaEditMode and Config.UnitFrames.Scale and frame:GetScale() ~= Config.UnitFrames.Scale then
         frame:SetScale(Config.UnitFrames.Scale)
     end
 
@@ -297,7 +315,7 @@ function UnitFrames:StyleFrame(frame)
         end
     end
 
-    ApplyRaidTargetIconAnchor(frame, contentContext)
+    ApplyRaidTargetIconAnchor(frame, contentContext, hpContainer)
 
     if contentContext then
         self:EnforceHiddenRegion(contentContext.AttackIcon, hiddenFrame)
@@ -379,7 +397,7 @@ function UnitFrames:StyleFrame(frame)
 
         if contentContext and contentContext.PlayerRestLoop then
             contentContext.PlayerRestLoop:ClearAllPoints()
-            contentContext.PlayerRestLoop:SetPoint("BOTTOM", refineUF.Texture, "TOP", 0, 0)
+            contentContext.PlayerRestLoop:SetPoint("CENTER", hpContainer.HealthBar, "CENTER", 0, 0)
             contentContext.PlayerRestLoop:SetScale(0.5)
         end
     else
@@ -429,6 +447,10 @@ function UnitFrames:StyleFrame(frame)
     if self.CreateCustomText and not data.customTextCreated then
         self.CreateCustomText(frame)
         data.customTextCreated = true
+    end
+
+    if frame == PlayerFrame and self.UpdatePlayerRestPresentation then
+        self:UpdatePlayerRestPresentation(frame)
     end
 
     local level = contentMain.LevelText

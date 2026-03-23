@@ -17,9 +17,52 @@ local UnitPowerMax = UnitPowerMax
 local UnitStagger = UnitStagger
 local UnitHealthMax = UnitHealthMax
 local floor = math.floor
+local max = math.max
 local type = type
-local select = select
 local issecretvalue = _G.issecretvalue
+
+local function UpdateSoulFragmentsSpark(resource, minimumValue, maximumValue, isSecret)
+    if not resource or resource.Type ~= "SOUL_FRAGMENTS" then
+        return
+    end
+
+    local spark = resource.Spark or (resource.Bar and resource.Bar.Spark)
+    local bar = resource.Bar
+    if not spark or not bar then
+        return
+    end
+
+    if isSecret or type(minimumValue) ~= "number" or type(maximumValue) ~= "number" or maximumValue <= 0 then
+        spark:Hide()
+        return
+    end
+
+    if type(spark.SetVisuals) == "function" and type(spark.OnBarValuesUpdated) == "function" then
+        spark.statusBar = bar
+        spark:SetVisuals(K.SOUL_FRAGMENTS_SPARK_VISUAL)
+        spark:OnBarValuesUpdated()
+        return
+    end
+
+    local statusBarTexture = bar.GetStatusBarTexture and bar:GetStatusBarTexture()
+    if not statusBarTexture then
+        spark:Hide()
+        return
+    end
+
+    spark:ClearAllPoints()
+    spark:SetPoint("RIGHT", statusBarTexture, "RIGHT", K.SOUL_FRAGMENTS_SPARK_VISUAL.xOffset or 0, 0)
+    spark:SetAtlas(K.SOUL_FRAGMENTS_SPARK_VISUAL.atlas, true)
+
+    local scale = 1
+    local barHeight = statusBarTexture:GetHeight()
+    local sourceHeight = K.SOUL_FRAGMENTS_SPARK_VISUAL.barHeight
+    if type(barHeight) == "number" and barHeight > 0 and type(sourceHeight) == "number" and sourceHeight > 0 then
+        scale = max(barHeight / sourceHeight, 0.01)
+    end
+    spark:SetScale(scale)
+    spark:SetShown(minimumValue > 0 and (minimumValue < maximumValue or K.SOUL_FRAGMENTS_SPARK_VISUAL.showAtMax))
+end
 
 function CR.UpdateStatusBar(resource)
     local minimumValue
@@ -70,12 +113,15 @@ function CR.UpdateStatusBar(resource)
             end
         end
     elseif resource.Type == "SOUL_FRAGMENTS" then
-        local blizzardBar = _G.DemonHunterSoulFragmentsBar
-        if not blizzardBar then
-            return
+        minimumValue, maximumValue = CR.GetSoulFragmentsState()
+        r, g, b = 0.06, 0.42, 0.92
+
+        if not maximumValue or (type(maximumValue) == "number" and maximumValue <= 0) then
+            maximumValue = 1
+            if not minimumValue or (type(minimumValue) == "number" and minimumValue < 0) then
+                minimumValue = 0
+            end
         end
-        minimumValue, maximumValue = blizzardBar:GetValue(), select(2, blizzardBar:GetMinMaxValues())
-        r, g, b = 0.55, 0.25, 2.0
     end
 
     local isSecret = issecretvalue and (issecretvalue(minimumValue) or issecretvalue(maximumValue))
@@ -119,6 +165,7 @@ function CR.UpdateStatusBar(resource)
             else
                 resource.Text:SetText("")
             end
+            resource.Text:SetTextColor(1, 1, 1)
         end
         if resource.TextPer then
             resource.TextPer:SetText("")
@@ -137,5 +184,18 @@ function CR.UpdateStatusBar(resource)
     if resource.Text then
         resource.Text:Show()
         resource.Text:SetAlpha(1)
+
+        if resource.Type == "SOUL_FRAGMENTS" then
+            local curve = CR.GetSoulFragmentsTextColorCurve(maximumValue)
+            local color = curve and curve:Evaluate(minimumValue)
+            if color then
+                local textR, textG, textB, textA = color:GetRGBA()
+                resource.Text:SetTextColor(textR, textG, textB, textA)
+            else
+                resource.Text:SetTextColor(1, 1, 1)
+            end
+        end
     end
+
+    UpdateSoulFragmentsSpark(resource, minimumValue, maximumValue, isSecret)
 end

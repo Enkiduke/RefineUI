@@ -421,9 +421,10 @@ local function StripTextures(self, doKill)
     if not StyleState[self] then StyleState[self] = {} end
     local state = StyleState[self]
     if state.stripped and (not doKill or state.strippedKilled) then return end
-    
-    for i = 1, self:GetNumRegions() do
-        local region = select(i, self:GetRegions())
+
+    local regions = { self:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region:IsObjectType("Texture") then
             if doKill and region.Kill then
                 region:Kill()
@@ -1031,7 +1032,7 @@ RefineUI.SafeCall = SafeCall
 RefineUI.SkinFuncs = RefineUI.SkinFuncs or {}
 RefineUI.SkinFuncs["RefineUI"] = RefineUI.SkinFuncs["RefineUI"] or {}
 
-local function LoadBlizzardSkin(_, event, addon)
+local function LoadBlizzardSkin(event, addon)
     if event == "ADDON_LOADED" then
         local bucket = RefineUI.SkinFuncs[addon]
         if bucket then
@@ -1060,10 +1061,8 @@ local function LoadBlizzardSkin(_, event, addon)
     end
 end
 
-local BlizzardSkinLoader = CreateFrame("Frame")
-BlizzardSkinLoader:RegisterEvent("ADDON_LOADED")
-BlizzardSkinLoader:RegisterEvent("PLAYER_ENTERING_WORLD")
-BlizzardSkinLoader:SetScript("OnEvent", LoadBlizzardSkin)
+RefineUI:RegisterEventCallback("ADDON_LOADED", LoadBlizzardSkin, "Core:Style:ADDON_LOADED")
+RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", LoadBlizzardSkin, "Core:Style:PLAYER_ENTERING_WORLD")
 
 ----------------------------------------------------------------------------------------
 -- Expose Helper Functions

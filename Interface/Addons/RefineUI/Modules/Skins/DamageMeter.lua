@@ -22,7 +22,6 @@ local Locale = RefineUI.Locale
 ----------------------------------------------------------------------------------------
 local _G = _G
 local C_AddOns = C_AddOns
-local C_Timer = C_Timer
 local CreateFrame = CreateFrame
 local type = type
 
@@ -45,13 +44,24 @@ local EVENT_KEY = {
 
 local HOOK_KEY = {
     SESSION_WINDOW_ON_SHOW = COMPONENT_KEY .. ":DamageMeterSessionWindowMixin:OnShow",
+    SESSION_WINDOW_REFRESH = COMPONENT_KEY .. ":DamageMeterSessionWindowMixin:Refresh",
     SOURCE_WINDOW_ON_SHOW = COMPONENT_KEY .. ":DamageMeterSourceWindowMixin:OnShow",
+    SOURCE_WINDOW_REFRESH = COMPONENT_KEY .. ":DamageMeterSourceWindowMixin:Refresh",
 }
 
 local STATE_KEY = {
     SKIN_PASS_QUEUED = COMPONENT_KEY .. ":skinPassQueued",
     UPDATE_EVENTS_REGISTERED = COMPONENT_KEY .. ":updateEventsRegistered",
     SKINNER_STARTED = COMPONENT_KEY .. ":skinnerStarted",
+}
+
+local TIMER_KEY = {
+    SKIN_PASS = COMPONENT_KEY .. ":Timer:SkinPass",
+    START_RETRY_025 = COMPONENT_KEY .. ":Timer:StartRetry025",
+    START_RETRY_1 = COMPONENT_KEY .. ":Timer:StartRetry1",
+    START_RETRY_2 = COMPONENT_KEY .. ":Timer:StartRetry2",
+    WORLD_RETRY_01 = COMPONENT_KEY .. ":Timer:WorldRetry01",
+    WORLD_RETRY_06 = COMPONENT_KEY .. ":Timer:WorldRetry06",
 }
 
 RefineUI:CreateDataRegistry(DAMAGE_METER_SKIN_STATE_REGISTRY, "k")
@@ -247,7 +257,36 @@ local function SkinScrollTargetChildren(scrollBox)
     end
 end
 
+local function IsShownWindow(window)
+    return CanSkinObject(window) and window.IsShown and window:IsShown()
+end
+
+local function SkinDamageMeterSourceWindow(window)
+    if not IsShownWindow(window) then
+        return
+    end
+
+    if not GetState(window, "windowSkinned", false) then
+        if window.Background then
+            window.Background:SetAlpha(0)
+            window.Background:Hide()
+        end
+
+        if window.ShowBackground then
+            window.ShowBackground:Stop()
+        end
+
+        SetState(window, "windowSkinned", true)
+    end
+
+    SkinScrollTargetChildren(window.ScrollBox)
+end
+
 local function SkinDamageMeterWindow(window)
+    if not IsShownWindow(window) then
+        return
+    end
+
     if not CanSkinObject(window) then
         return
     end
@@ -277,14 +316,14 @@ local function SkinDamageMeterWindow(window)
 
     SkinScrollTargetChildren(window.ScrollBox)
     if window.SourceWindow and window.SourceWindow.ScrollBox then
-        SkinScrollTargetChildren(window.SourceWindow.ScrollBox)
+        SkinDamageMeterSourceWindow(window.SourceWindow)
     end
 end
 
 local function SkinExistingWindows()
     for i = 1, 3 do
         local window = _G["DamageMeterSessionWindow" .. i]
-        if window then
+        if IsShownWindow(window) then
             SkinDamageMeterWindow(window)
         end
     end
@@ -300,7 +339,7 @@ local function QueueSkinPass()
     end
 
     SetState(Skins, STATE_KEY.SKIN_PASS_QUEUED, true)
-    C_Timer.After(0, function()
+    RefineUI:After(TIMER_KEY.SKIN_PASS, 0, function()
         SetState(Skins, STATE_KEY.SKIN_PASS_QUEUED, false)
         ForceSkinPass()
     end)
@@ -308,13 +347,21 @@ end
 
 local function HookMixins()
     if _G.DamageMeterSessionWindowMixin then
-        RefineUI:HookOnce(HOOK_KEY.SESSION_WINDOW_ON_SHOW, _G.DamageMeterSessionWindowMixin, "OnShow", function()
+        RefineUI:HookOnce(HOOK_KEY.SESSION_WINDOW_ON_SHOW, _G.DamageMeterSessionWindowMixin, "OnShow", function(self)
+            QueueSkinPass()
+        end)
+
+        RefineUI:HookOnce(HOOK_KEY.SESSION_WINDOW_REFRESH, _G.DamageMeterSessionWindowMixin, "Refresh", function(self)
             QueueSkinPass()
         end)
     end
 
     if _G.DamageMeterSourceWindowMixin then
-        RefineUI:HookOnce(HOOK_KEY.SOURCE_WINDOW_ON_SHOW, _G.DamageMeterSourceWindowMixin, "OnShow", function()
+        RefineUI:HookOnce(HOOK_KEY.SOURCE_WINDOW_ON_SHOW, _G.DamageMeterSourceWindowMixin, "OnShow", function(self)
+            QueueSkinPass()
+        end)
+
+        RefineUI:HookOnce(HOOK_KEY.SOURCE_WINDOW_REFRESH, _G.DamageMeterSourceWindowMixin, "Refresh", function(self)
             QueueSkinPass()
         end)
     end
@@ -350,13 +397,13 @@ function Skins:StartDamageMeterSkinner()
     RegisterDamageMeterUpdateEvents()
 
     QueueSkinPass()
-    C_Timer.After(0.25, QueueSkinPass)
-    C_Timer.After(1, QueueSkinPass)
-    C_Timer.After(2, QueueSkinPass)
+    RefineUI:After(TIMER_KEY.START_RETRY_025, 0.25, QueueSkinPass)
+    RefineUI:After(TIMER_KEY.START_RETRY_1, 1, QueueSkinPass)
+    RefineUI:After(TIMER_KEY.START_RETRY_2, 2, QueueSkinPass)
 
     RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
-        C_Timer.After(0.1, QueueSkinPass)
-        C_Timer.After(0.6, QueueSkinPass)
+        RefineUI:After(TIMER_KEY.WORLD_RETRY_01, 0.1, QueueSkinPass)
+        RefineUI:After(TIMER_KEY.WORLD_RETRY_06, 0.6, QueueSkinPass)
     end, EVENT_KEY.PLAYER_ENTERING_WORLD)
 end
 

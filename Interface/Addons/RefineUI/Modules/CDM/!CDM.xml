@@ -4,6 +4,7 @@
     <Script file="State.lua"/>
     <Script file="AssignmentsData.lua"/>
     <Script file="CooldownCatalog.lua"/>
+    <Script file="BlizzardSync.lua"/>
     <Script file="AuraProbePayload.lua"/>
     <Script file="RuntimeResolver.lua"/>
     <Script file="AuraProbeRegistry.lua"/>

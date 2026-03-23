@@ -23,6 +23,32 @@ schedulerFrame:Hide()
 
 local jobs = {} -- jobs[key] = { key, fn, interval, elapsed, enabled, combatOnly, oocOnly, predicate, safe, disableOnError }
 local enabledJobCount = 0
+local enabledJobList = {}
+local enabledJobsDirty = false
+
+local function markEnabledJobsDirty()
+    enabledJobsDirty = true
+end
+
+local function rebuildEnabledJobList()
+    if not enabledJobsDirty then
+        return
+    end
+
+    local index = 0
+    for _, job in pairs(jobs) do
+        if job.enabled then
+            index = index + 1
+            enabledJobList[index] = job
+        end
+    end
+
+    for i = index + 1, #enabledJobList do
+        enabledJobList[i] = nil
+    end
+
+    enabledJobsDirty = false
+end
 
 local function setJobEnabledState(job, enabled)
     enabled = enabled and true or false
@@ -36,6 +62,7 @@ local function setJobEnabledState(job, enabled)
     elseif enabledJobCount > 0 then
         enabledJobCount = enabledJobCount - 1
     end
+    markEnabledJobsDirty()
 
     return true
 end
@@ -86,8 +113,10 @@ schedulerFrame:SetScript("OnUpdate", function(_, elapsed)
     end
 
     local inCombat = InCombatLockdown()
+    rebuildEnabledJobList()
 
-    for _, job in pairs(jobs) do
+    for i = 1, #enabledJobList do
+        local job = enabledJobList[i]
         if canRunJob(job, inCombat) then
             local interval = job.interval or 0
             if interval <= 0 then
@@ -143,6 +172,9 @@ function RefineUI:RegisterUpdateJob(key, interval, fn, opts)
     setJobEnabledState(job, desiredEnabled)
 
     jobs[key] = job
+    if existing ~= nil then
+        markEnabledJobsDirty()
+    end
     setFrameActiveIfNeeded()
     return true
 end
@@ -152,8 +184,12 @@ function RefineUI:UnregisterUpdateJob(key)
         return false, "invalid_key"
     end
     local job = jobs[key]
-    if job and job.enabled then
-        setJobEnabledState(job, false)
+    if job then
+        if job.enabled then
+            setJobEnabledState(job, false)
+        else
+            markEnabledJobsDirty()
+        end
     end
     jobs[key] = nil
     setFrameActiveIfNeeded()

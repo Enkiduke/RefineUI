@@ -68,9 +68,6 @@ local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
 local TOOLTIP_SKIN_STATE_REGISTRY = "Tooltip:SkinState"
 local TOOLTIP_BORDER_INSET = 6
 local TOOLTIP_BORDER_EDGE_SIZE = 12
-local TOOLTIP_COMPARISON_GAP = 8
-local TOOLTIP_COMPARISON_HOOK_KEY = "Tooltip:TooltipComparisonManager:AnchorShoppingTooltips"
-local TOOLTIP_COMPARE_ITEM_HOOK_KEY = "Tooltip:GameTooltip_ShowCompareItem:ComparisonGap"
 local UNIT_TOOLTIP_FALLBACK_TOKENS = { "mouseover", "softenemy", "softfriend", "softinteract" }
 
 local KNOWN_TOOLTIP_FRAME_NAMES = {
@@ -146,38 +143,25 @@ local function ReadSafeString(value)
     return nil
 end
 
-local function CanAccessObject(value)
+local function ValidateAccessibleObject(value)
     local valueType = type(value)
     if valueType ~= "table" and valueType ~= "userdata" then
-        return false
+        return nil, false
     end
     if IsSecret(value) then
-        return false
+        return nil, false
     end
     if canaccessvalue then
         local ok, accessible = pcall(canaccessvalue, value)
         if not ok or accessible ~= true then
-            return false
-        end
-    end
-    return true
-end
-
-local function SafeGetField(tbl, key)
-    local valueType = type(tbl)
-    if valueType ~= "table" and valueType ~= "userdata" then
-        return nil, false
-    end
-    if IsSecret(tbl) then
-        return nil, false
-    end
-    if canaccessvalue then
-        local okAccess, canAccess = pcall(canaccessvalue, tbl)
-        if not okAccess or canAccess ~= true then
             return nil, false
         end
     end
 
+    return value, true
+end
+
+local function SafeGetFieldUnchecked(tbl, key)
     local ok, value = pcall(function()
         return tbl[key]
     end)
@@ -188,16 +172,8 @@ local function SafeGetField(tbl, key)
     return value, true
 end
 
-local function IsForbiddenFrame(value)
-    local valueType = type(value)
-    if valueType ~= "table" and valueType ~= "userdata" then
-        return false
-    end
-    if not CanAccessObject(value) then
-        return true
-    end
-
-    local isForbidden, okField = SafeGetField(value, "IsForbidden")
+local function IsForbiddenFrameUnchecked(value)
+    local isForbidden, okField = SafeGetFieldUnchecked(value, "IsForbidden")
     if not okField then
         return true
     end
@@ -209,34 +185,54 @@ local function IsForbiddenFrame(value)
     return ok and forbidden == true
 end
 
-local function SafeObjectMethodCall(object, methodName, ...)
-    local objectType = type(object)
-    if (objectType ~= "table" and objectType ~= "userdata") or not CanAccessObject(object) then
-        return false
+local function CanAccessObject(value)
+    return ValidateAccessibleObject(value) ~= nil
+end
+
+local function SafeGetField(tbl, key)
+    local object, okObject = ValidateAccessibleObject(tbl)
+    if not okObject then
+        return nil, false
     end
-    if IsForbiddenFrame(object) then
+
+    return SafeGetFieldUnchecked(object, key)
+end
+
+local function IsForbiddenFrame(value)
+    local object, okObject = ValidateAccessibleObject(value)
+    if not okObject then
+        return true
+    end
+
+    return IsForbiddenFrameUnchecked(object)
+end
+
+local function SafeObjectMethodCall(object, methodName, ...)
+    local safeObject, okObject = ValidateAccessibleObject(object)
+    if not okObject or IsForbiddenFrameUnchecked(safeObject) then
         return false
     end
 
-    local method, okField = SafeGetField(object, methodName)
+    local method, okField = SafeGetFieldUnchecked(safeObject, methodName)
     if not okField or type(method) ~= "function" then
         return false
     end
 
-    return pcall(method, object, ...)
+    return pcall(method, safeObject, ...)
 end
 
 local function GetTooltipIdentifier(tooltip)
-    if not CanAccessObject(tooltip) then
+    local safeTooltip, okTooltip = ValidateAccessibleObject(tooltip)
+    if not okTooltip then
         return "InaccessibleTooltip"
     end
-    if IsForbiddenFrame(tooltip) then
+    if IsForbiddenFrameUnchecked(safeTooltip) then
         return "ForbiddenTooltip"
     end
 
-    local getName, okField = SafeGetField(tooltip, "GetName")
+    local getName, okField = SafeGetFieldUnchecked(safeTooltip, "GetName")
     if okField and type(getName) == "function" then
-        local ok, tooltipName = pcall(getName, tooltip)
+        local ok, tooltipName = pcall(getName, safeTooltip)
         local hasAccessibleName = true
         if canaccessvalue then
             local okAccess, canAccess = pcall(canaccessvalue, tooltipName)
@@ -256,19 +252,20 @@ local function GetTooltipIdentifier(tooltip)
 end
 
 local function IsGameTooltipFrame(frame)
-    if not CanAccessObject(frame) then
+    local safeFrame, okFrame = ValidateAccessibleObject(frame)
+    if not okFrame then
         return false
     end
-    if IsForbiddenFrame(frame) then
+    if IsForbiddenFrameUnchecked(safeFrame) then
         return false
     end
 
-    local isObjectType, okField = SafeGetField(frame, "IsObjectType")
+    local isObjectType, okField = SafeGetFieldUnchecked(safeFrame, "IsObjectType")
     if not okField or type(isObjectType) ~= "function" then
         return false
     end
 
-    local ok, isTooltipFrame = pcall(isObjectType, frame, "GameTooltip")
+    local ok, isTooltipFrame = pcall(isObjectType, safeFrame, "GameTooltip")
     return ok and isTooltipFrame == true
 end
 
@@ -477,6 +474,7 @@ function Tooltip:InitializeTooltipCore()
     RefineUI:CreateDataRegistry(TOOLTIP_SKIN_STATE_REGISTRY, "k")
 
     Private.lineCache = Private.lineCache or {}
+    Private.moneyRegionCache = Private.moneyRegionCache or {}
     Private.styledFontStrings = Private.styledFontStrings or setmetatable({}, { __mode = "k" })
     Private.postCallRegistry = Private.postCallRegistry or {}
     Private.itemHandlers = Private.itemHandlers or {}
@@ -667,6 +665,39 @@ function Tooltip:GetCachedLine(tooltip, index)
     return cache[key]
 end
 
+function Tooltip:GetCachedRightLine(tooltip, index)
+    local cache = Private.lineCache or {}
+    Private.lineCache = cache
+
+    local tooltipName = self:GetTooltipNameSafe(tooltip)
+    if not tooltipName then
+        return nil
+    end
+
+    local key = tooltipName .. ":Right:" .. index
+    if cache[key] == nil then
+        cache[key] = _G[tooltipName .. "TextRight" .. index]
+    end
+    return cache[key]
+end
+
+function Tooltip:GetCachedMoneyRegion(tooltip, moneyFrameIndex, regionName)
+    local tooltipName = self:GetTooltipNameSafe(tooltip)
+    regionName = ReadSafeString(regionName)
+    if not tooltipName or not regionName then
+        return nil
+    end
+
+    local cache = Private.moneyRegionCache or {}
+    Private.moneyRegionCache = cache
+
+    local key = tooltipName .. ":Money:" .. tostring(moneyFrameIndex) .. ":" .. regionName
+    if cache[key] == nil then
+        cache[key] = _G[tooltipName .. "MoneyFrame" .. tostring(moneyFrameIndex) .. regionName]
+    end
+    return cache[key]
+end
+
 function Tooltip:GetStyledFontStringRegistry()
     return Private.styledFontStrings
 end
@@ -712,18 +743,6 @@ end
 
 function Tooltip:GetTooltipBorderParams()
     return TOOLTIP_BORDER_INSET, TOOLTIP_BORDER_EDGE_SIZE
-end
-
-function Tooltip:GetTooltipComparisonGap()
-    return TOOLTIP_COMPARISON_GAP
-end
-
-function Tooltip:GetTooltipComparisonHookKey()
-    return TOOLTIP_COMPARISON_HOOK_KEY
-end
-
-function Tooltip:GetTooltipCompareItemHookKey()
-    return TOOLTIP_COMPARE_ITEM_HOOK_KEY
 end
 
 function Tooltip:GetTooltipDataType(data)

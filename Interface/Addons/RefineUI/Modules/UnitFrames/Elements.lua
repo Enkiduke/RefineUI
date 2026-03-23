@@ -20,6 +20,7 @@ local Media = RefineUI.Media
 ----------------------------------------------------------------------------------------
 local _G = _G
 local CreateFrame = CreateFrame
+local IsResting = IsResting
 local UnitIsConnected = UnitIsConnected
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
 local UnitHealth = UnitHealth
@@ -28,6 +29,7 @@ local UnitClass = UnitClass
 local UnitIsPlayer = UnitIsPlayer
 local UnitReaction = UnitReaction
 local UnitIsUnit = UnitIsUnit
+local UnitIsOwnerOrControllerOfUnit = UnitIsOwnerOrControllerOfUnit
 local UnitCanAttack = UnitCanAttack
 local UnitHealthPercent = UnitHealthPercent
 local UnitPowerPercent = UnitPowerPercent
@@ -38,11 +40,75 @@ local pairs = pairs
 local type = type
 local tonumber = tonumber
 local issecretvalue = issecretvalue
+local setmetatable = setmetatable
+local tostring = tostring
+local tconcat = table.concat
+local wipe = wipe or table.wipe
 
 ----------------------------------------------------------------------------------------
 -- Colors
 ----------------------------------------------------------------------------------------
 local MyClassColor = RefineUI.MyClassColor
+local TARGET_FOCUS_AURA_BUTTON_STATE_META = { __mode = "k" }
+
+local function WipeTable(tbl)
+    if wipe then
+        wipe(tbl)
+        return tbl
+    end
+
+    for key in pairs(tbl) do
+        tbl[key] = nil
+    end
+    return tbl
+end
+
+local function WipeArray(tbl, usedCount)
+    if type(tbl) ~= "table" then
+        return
+    end
+
+    local count = #tbl
+    for index = (usedCount or 0) + 1, count do
+        tbl[index] = nil
+    end
+end
+
+local function GetTargetFocusAuraScratch(frame)
+    local data = UnitFrames:GetFrameData(frame)
+    data.TargetFocusAuraScratch = data.TargetFocusAuraScratch or {
+        buttonByAuraInstanceID = {},
+        buffs = {},
+        debuffs = {},
+        playerDebuffAuraSet = {},
+        entryPool = {},
+        signatureParts = {},
+    }
+    return data.TargetFocusAuraScratch
+end
+
+local function GetTargetFocusAuraButtonState(frame)
+    local data = UnitFrames:GetFrameData(frame)
+    local buttonState = data.TargetFocusAuraButtonState
+    if not buttonState then
+        buttonState = setmetatable({}, TARGET_FOCUS_AURA_BUTTON_STATE_META)
+        data.TargetFocusAuraButtonState = buttonState
+    end
+    return buttonState
+end
+
+local function GetTargetFocusAuraHolderState(frame)
+    local data = UnitFrames:GetFrameData(frame)
+    local holderState = data.TargetFocusAuraHolderState
+    if not holderState then
+        holderState = {
+            near = {},
+            far = {},
+        }
+        data.TargetFocusAuraHolderState = holderState
+    end
+    return holderState
+end
 
 function UnitFrames.GetUnitHealthColor(unit)
     if not unit or not UnitExists(unit) then
@@ -99,6 +165,54 @@ local function GetCustomTextData(frame)
     local data = UnitFrames:GetFrameData(frame)
     data.CustomText = data.CustomText or {}
     return data.CustomText
+end
+
+local function ShouldHidePlayerHealthText()
+    return IsResting() and not (PlayerFrame and PlayerFrame.inCombat)
+end
+
+function UnitFrames:UpdatePlayerRestPresentation(frame)
+    if frame ~= PlayerFrame then
+        return
+    end
+
+    local textData = GetCustomTextData(frame)
+    local percentText = textData.HealthPercentText
+    local currentText = textData.HealthCurrentText
+    local hideHealthText = ShouldHidePlayerHealthText()
+    local isHovered = self:GetState(frame, "HealthTextHovered", false)
+
+    if percentText and currentText then
+        if hideHealthText then
+            percentText:SetAlpha(0)
+            currentText:SetAlpha(0)
+        elseif isHovered then
+            percentText:SetAlpha(0)
+            currentText:SetAlpha(1)
+        else
+            percentText:SetAlpha(1)
+            currentText:SetAlpha(0)
+        end
+    end
+
+    local content = frame.PlayerFrameContent
+    local contentContext = content and content.PlayerFrameContentContextual
+    local playerRestLoop = contentContext and contentContext.PlayerRestLoop
+    if not playerRestLoop then
+        return
+    end
+
+    if hideHealthText then
+        playerRestLoop:Show()
+        if playerRestLoop.PlayerRestLoopAnim then
+            playerRestLoop.PlayerRestLoopAnim:Play()
+        end
+    else
+        playerRestLoop:Hide()
+        if playerRestLoop.PlayerRestLoopAnim then
+            playerRestLoop.PlayerRestLoopAnim:Stop()
+        end
+    end
 end
 
 local function UpdateCustomHPText(frame, unit)
@@ -242,14 +356,15 @@ function UnitFrames.CreateCustomText(frame)
     end
 
     if not UnitFrames:GetState(hpContainer, "CustomTextEventsRegistered", false) then
-        local function OnHealthEvent(_, eventUnit)
-            if eventUnit == unit then
-                UpdateCustomHPText(frame, unit)
+        local function OnHealthEvent()
+            UpdateCustomHPText(frame, unit)
+            if frame == PlayerFrame then
+                UnitFrames:UpdatePlayerRestPresentation(frame)
             end
         end
 
         UpdateCustomHPText(frame, unit)
-        RefineUI:OnEvents({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, OnHealthEvent, "RefineUF_HP_" .. unit)
+        RefineUI:OnUnitEvents(unit, { "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, OnHealthEvent, "RefineUF_HP_" .. unit)
 
         if frame == TargetFrame then
             RefineUI:RegisterEventCallback("PLAYER_TARGET_CHANGED", function()
@@ -265,14 +380,12 @@ function UnitFrames.CreateCustomText(frame)
     end
 
     if manaBar and not UnitFrames:GetState(manaBar, "CustomTextEventsRegistered", false) then
-        local function OnPowerEvent(_, eventUnit)
-            if eventUnit == unit then
-                UpdateCustomManaText(frame, manaBar, unit)
-            end
+        local function OnPowerEvent()
+            UpdateCustomManaText(frame, manaBar, unit)
         end
 
         UpdateCustomManaText(frame, manaBar, unit)
-        RefineUI:OnEvents({ "UNIT_POWER_UPDATE", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }, OnPowerEvent, "RefineUF_PP_" .. unit)
+        RefineUI:OnUnitEvents(unit, { "UNIT_POWER_UPDATE", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }, OnPowerEvent, "RefineUF_PP_" .. unit)
 
         if frame == TargetFrame then
             RefineUI:RegisterEventCallback("PLAYER_TARGET_CHANGED", function()
@@ -289,16 +402,26 @@ function UnitFrames.CreateCustomText(frame)
 
     if not UnitFrames:GetState(frame, "RefineHoverHooked", false) then
         local function OnEnter()
-            textData.HealthPercentText:SetAlpha(0)
-            textData.HealthCurrentText:SetAlpha(1)
+            UnitFrames:SetState(frame, "HealthTextHovered", true)
+            if frame == PlayerFrame then
+                UnitFrames:UpdatePlayerRestPresentation(frame)
+            else
+                textData.HealthPercentText:SetAlpha(0)
+                textData.HealthCurrentText:SetAlpha(1)
+            end
             if textData.ManaPercentText then
                 textData.ManaPercentText:SetAlpha(1)
             end
         end
 
         local function OnLeave()
-            textData.HealthPercentText:SetAlpha(1)
-            textData.HealthCurrentText:SetAlpha(0)
+            UnitFrames:SetState(frame, "HealthTextHovered", false)
+            if frame == PlayerFrame then
+                UnitFrames:UpdatePlayerRestPresentation(frame)
+            else
+                textData.HealthPercentText:SetAlpha(1)
+                textData.HealthCurrentText:SetAlpha(0)
+            end
             if textData.ManaPercentText then
                 textData.ManaPercentText:SetAlpha(0)
             end
@@ -317,6 +440,10 @@ function UnitFrames.CreateCustomText(frame)
 
         UnitFrames:SetState(frame, "RefineHoverHooked", true)
     end
+
+    if frame == PlayerFrame then
+        UnitFrames:UpdatePlayerRestPresentation(frame)
+    end
 end
 
 ----------------------------------------------------------------------------------------
@@ -324,7 +451,7 @@ end
 ----------------------------------------------------------------------------------------
 local TARGET_FOCUS_AURA_BORDER_INSET = 4
 local TARGET_FOCUS_AURA_BORDER_EDGE = 8
-local TARGET_FOCUS_AURA_COOLDOWN_OFFSET_X = 1.5
+local TARGET_FOCUS_AURA_COOLDOWN_OFFSET_X = 1.0
 local TARGET_FOCUS_AURA_COOLDOWN_OFFSET_Y = 1.5
 local TARGET_FOCUS_DEBUFF_DISPLAY_INFO = AuraUtil and AuraUtil.GetDebuffDisplayInfoTable and AuraUtil.GetDebuffDisplayInfoTable() or nil
 
@@ -346,11 +473,18 @@ local function GetTargetFocusCooldownSwipeTexture()
 end
 
 local function IsPlayerOrPetAuraSource(sourceUnit)
+    if not sourceUnit then
+        return false
+    end
+
     if issecretvalue and issecretvalue(sourceUnit) then
         return false
     end
 
-    return sourceUnit == "player" or sourceUnit == "pet"
+    return UnitIsUnit(sourceUnit, "player")
+        or UnitIsOwnerOrControllerOfUnit("player", sourceUnit)
+        or UnitIsUnit(sourceUnit, "pet")
+        or UnitIsOwnerOrControllerOfUnit("pet", sourceUnit)
 end
 
 local function GetTargetFocusAuraBorderColor(button, auraData)
@@ -602,6 +736,12 @@ local function HideTargetFocusAuraHolders(frame)
 
     holders.near:Hide()
     holders.far:Hide()
+
+    local holderState = data.TargetFocusAuraHolderState
+    if holderState then
+        holderState.near.visible = false
+        holderState.far.visible = false
+    end
 end
 
 local function NormalizeAuraMetric(value, fallback, minimum)
@@ -633,7 +773,7 @@ local function GetTargetFocusAuraMetrics(frame)
     }
 end
 
-local function GetTargetFocusPlayerDebuffAuraSet(frame)
+local function GetTargetFocusPlayerDebuffAuraSet(frame, scratch)
     if not frame or not frame.unit or not C_UnitAuras or type(C_UnitAuras.GetUnitAuras) ~= "function" then
         return nil
     end
@@ -647,12 +787,13 @@ local function GetTargetFocusPlayerDebuffAuraSet(frame)
         return nil
     end
 
+    scratch = scratch or GetTargetFocusAuraScratch(frame)
+    local allowedAuraInstanceIDs = WipeTable(scratch.playerDebuffAuraSet)
     local auraDataList = C_UnitAuras.GetUnitAuras(frame.unit, "HARMFUL|PLAYER")
     if type(auraDataList) ~= "table" or #auraDataList == 0 then
-        return {}
+        return allowedAuraInstanceIDs
     end
 
-    local allowedAuraInstanceIDs = {}
     for index = 1, #auraDataList do
         local auraData = auraDataList[index]
         local auraInstanceID = auraData and auraData.auraInstanceID
@@ -664,11 +805,28 @@ local function GetTargetFocusPlayerDebuffAuraSet(frame)
     return allowedAuraInstanceIDs
 end
 
+local function AcquireTargetFocusAuraEntry(entryPool, poolIndex, button, auraData)
+    local entry = entryPool[poolIndex]
+    if not entry then
+        entry = {}
+        entryPool[poolIndex] = entry
+    end
+
+    entry.button = button
+    entry.auraData = auraData
+    return entry
+end
+
 local function BuildOrderedTargetFocusAuraLists(frame)
-    local buttonByAuraInstanceID = {}
-    local buffs = {}
-    local debuffs = {}
-    local playerDebuffAuraSet = GetTargetFocusPlayerDebuffAuraSet(frame)
+    local scratch = GetTargetFocusAuraScratch(frame)
+    local buttonByAuraInstanceID = WipeTable(scratch.buttonByAuraInstanceID)
+    local buffs = scratch.buffs
+    local debuffs = scratch.debuffs
+    local playerDebuffAuraSet = GetTargetFocusPlayerDebuffAuraSet(frame, scratch)
+    local entryPool = scratch.entryPool
+    local poolIndex = 0
+    local buffCount = 0
+    local debuffCount = 0
 
     for button in frame.auraPools:EnumerateActive() do
         if button and button.auraInstanceID then
@@ -680,7 +838,9 @@ local function BuildOrderedTargetFocusAuraLists(frame)
         frame.activeBuffs:Iterate(function(auraInstanceID, auraData)
             local button = buttonByAuraInstanceID[auraInstanceID]
             if button and auraData then
-                buffs[#buffs + 1] = { button = button, auraData = auraData }
+                poolIndex = poolIndex + 1
+                buffCount = buffCount + 1
+                buffs[buffCount] = AcquireTargetFocusAuraEntry(entryPool, poolIndex, button, auraData)
             end
         end)
     end
@@ -690,7 +850,9 @@ local function BuildOrderedTargetFocusAuraLists(frame)
             local button = buttonByAuraInstanceID[auraInstanceID]
             if button and auraData then
                 if not playerDebuffAuraSet or playerDebuffAuraSet[auraInstanceID] then
-                    debuffs[#debuffs + 1] = { button = button, auraData = auraData }
+                    poolIndex = poolIndex + 1
+                    debuffCount = debuffCount + 1
+                    debuffs[debuffCount] = AcquireTargetFocusAuraEntry(entryPool, poolIndex, button, auraData)
                 else
                     button:Hide()
                 end
@@ -698,27 +860,183 @@ local function BuildOrderedTargetFocusAuraLists(frame)
         end)
     end
 
-    return buffs, debuffs
+    WipeArray(buffs, buffCount)
+    WipeArray(debuffs, debuffCount)
+
+    local previousPoolSize = scratch.entryPoolSize or 0
+    for index = poolIndex + 1, previousPoolSize do
+        local entry = entryPool[index]
+        if entry then
+            entry.button = nil
+            entry.auraData = nil
+        end
+    end
+
+    scratch.entryPoolSize = poolIndex
+    scratch.buffCount = buffCount
+    scratch.debuffCount = debuffCount
+    return buffs, debuffs, scratch
 end
 
-local function ApplyTargetFocusAuraButtonLayout(button, holder, growUp, xOffset, yOffset, size)
+local function GetTargetFocusComparableAuraToken(auraData)
+    local auraInstanceID = auraData and auraData.auraInstanceID
+    if type(auraInstanceID) == "number" and not issecretvalue(auraInstanceID) then
+        return "I:" .. tostring(auraInstanceID)
+    end
+
+    local spellID = auraData and (auraData.spellId or auraData.spellID)
+    if type(spellID) == "number" and not issecretvalue(spellID) then
+        return "S:" .. tostring(spellID)
+    end
+
+    return nil
+end
+
+local function BuildTargetFocusAuraLayoutSignature(frame, metrics, nearAuras, farAuras, isFriend, growUp, scratch)
+    local parts = scratch.signatureParts
+    WipeArray(parts, 0)
+
+    local nextIndex = 1
+    local function Push(value)
+        parts[nextIndex] = tostring(value)
+        nextIndex = nextIndex + 1
+    end
+
+    Push(metrics.enabled and 1 or 0)
+    Push(isFriend and 1 or 0)
+    Push(growUp and 1 or 0)
+    Push(metrics.size)
+    Push(metrics.largeSize)
+    Push(metrics.spacingX)
+    Push(metrics.spacingY)
+    Push(metrics.groupGap)
+    Push(metrics.offsetX)
+    Push(metrics.offsetY)
+    Push(metrics.wrapWidth)
+    Push(frame.totFrame and frame.totFrame:IsShown() and 1 or 0)
+    Push("N")
+
+    for index = 1, #nearAuras do
+        local auraData = nearAuras[index] and nearAuras[index].auraData
+        local token = GetTargetFocusComparableAuraToken(auraData)
+        if not token then
+            WipeArray(parts, 0)
+            return nil
+        end
+
+        Push(token)
+        Push((auraData and IsPlayerOrPetAuraSource(auraData.sourceUnit)) and "L" or "N")
+    end
+
+    Push("F")
+    for index = 1, #farAuras do
+        local auraData = farAuras[index] and farAuras[index].auraData
+        local token = GetTargetFocusComparableAuraToken(auraData)
+        if not token then
+            WipeArray(parts, 0)
+            return nil
+        end
+
+        Push(token)
+        Push((auraData and IsPlayerOrPetAuraSource(auraData.sourceUnit)) and "L" or "N")
+    end
+
+    local signature = tconcat(parts, "|", 1, nextIndex - 1)
+    WipeArray(parts, 0)
+    return signature
+end
+
+local function ApplyTargetFocusAuraButtonLayout(button, holder, holderKey, growUp, xOffset, yOffset, size, buttonStateMap, forceLayout)
     local point = growUp and "BOTTOMLEFT" or "TOPLEFT"
     local relativePoint = point
     local relativeY = growUp and yOffset or -yOffset
+    local layoutToken = point .. ":" .. tostring(xOffset) .. ":" .. tostring(relativeY) .. ":" .. tostring(size)
+    local state = buttonStateMap and buttonStateMap[button]
+    if not state then
+        state = {}
+        if buttonStateMap then
+            buttonStateMap[button] = state
+        end
+    end
 
-    button:Show()
+    if not button:IsShown() then
+        button:Show()
+    end
+
+    if not forceLayout and state.layoutToken == layoutToken and state.holder == holder and state.holderKey == holderKey then
+        return
+    end
+
     button:ClearAllPoints()
     button:SetPoint(point, holder, relativePoint, xOffset, relativeY)
     button:SetSize(size, size)
+
+    state.layoutToken = layoutToken
+    state.holder = holder
+    state.holderKey = holderKey
 end
 
-local function LayoutTargetFocusAuraGroup(holder, orderedAuras, metrics, growUp)
+local function ApplyTargetFocusAuraHolderState(holder, holderState, anchorTo, point, relativePoint, xOffset, yOffset, width, height, visible, forceLayout)
+    if not holder or not holderState then
+        return
+    end
+
+    if not visible then
+        if forceLayout or holderState.visible ~= false then
+            holder:Hide()
+        end
+        holderState.visible = false
+        holderState.anchorTo = anchorTo
+        holderState.point = point
+        holderState.relativePoint = relativePoint
+        holderState.xOffset = xOffset
+        holderState.yOffset = yOffset
+        holderState.width = width
+        holderState.height = height
+        return
+    end
+
+    local needsAnchorUpdate = forceLayout
+        or holderState.visible ~= true
+        or holderState.anchorTo ~= anchorTo
+        or holderState.point ~= point
+        or holderState.relativePoint ~= relativePoint
+        or holderState.xOffset ~= xOffset
+        or holderState.yOffset ~= yOffset
+    local needsSizeUpdate = forceLayout
+        or holderState.width ~= width
+        or holderState.height ~= height
+
+    if needsAnchorUpdate then
+        holder:ClearAllPoints()
+        holder:SetPoint(point, anchorTo, relativePoint, xOffset, yOffset)
+    end
+
+    if needsSizeUpdate then
+        holder:SetSize(width, height)
+    end
+
+    if forceLayout or not holder:IsShown() then
+        holder:Show()
+    end
+
+    holderState.visible = true
+    holderState.anchorTo = anchorTo
+    holderState.point = point
+    holderState.relativePoint = relativePoint
+    holderState.xOffset = xOffset
+    holderState.yOffset = yOffset
+    holderState.width = width
+    holderState.height = height
+end
+
+local function LayoutTargetFocusAuraGroup(holder, holderKey, orderedAuras, metrics, growUp, buttonStateMap, holderState, anchorTo, anchorPoint, anchorRelativePoint, anchorX, anchorY, forceLayout)
     if not holder then
         return 0, false
     end
 
     if #orderedAuras == 0 then
-        holder:Hide()
+        ApplyTargetFocusAuraHolderState(holder, holderState, anchorTo, anchorPoint, anchorRelativePoint, anchorX, anchorY, 1, 1, false, forceLayout)
         return 0, false
     end
 
@@ -755,7 +1073,7 @@ local function LayoutTargetFocusAuraGroup(holder, orderedAuras, metrics, growUp)
             xOffset = 0
         end
 
-        ApplyTargetFocusAuraButtonLayout(button, holder, growUp, xOffset, yOffset, size)
+        ApplyTargetFocusAuraButtonLayout(button, holder, holderKey, growUp, xOffset, yOffset, size, buttonStateMap, forceLayout)
 
         currentRowWidth = projectedWidth
         currentRowHeight = max(currentRowHeight, size)
@@ -763,33 +1081,8 @@ local function LayoutTargetFocusAuraGroup(holder, orderedAuras, metrics, growUp)
     end
 
     totalHeight = totalHeight + currentRowHeight
-    holder:SetSize(max(usedWidth, 1), max(totalHeight, 1))
-    holder:Show()
+    ApplyTargetFocusAuraHolderState(holder, holderState, anchorTo, anchorPoint, anchorRelativePoint, anchorX, anchorY, max(usedWidth, 1), max(totalHeight, 1), true, forceLayout)
     return totalHeight, true
-end
-
-local function AnchorTargetFocusAuraHolder(holder, anchorFrame, growUp, offsetX, offsetY)
-    if growUp then
-        holder:ClearAllPoints()
-        holder:SetPoint("BOTTOMLEFT", anchorFrame, "TOPLEFT", offsetX, offsetY)
-    else
-        holder:ClearAllPoints()
-        holder:SetPoint("TOPLEFT", anchorFrame, "BOTTOMLEFT", offsetX, -offsetY)
-    end
-end
-
-local function AnchorSecondaryTargetFocusAuraHolder(holder, nearHolder, anchorFrame, growUp, offsetX, offsetY, groupGap, hasNearGroup)
-    holder:ClearAllPoints()
-
-    if hasNearGroup then
-        if growUp then
-            holder:SetPoint("BOTTOMLEFT", nearHolder, "TOPLEFT", 0, groupGap)
-        else
-            holder:SetPoint("TOPLEFT", nearHolder, "BOTTOMLEFT", 0, -groupGap)
-        end
-    else
-        AnchorTargetFocusAuraHolder(holder, anchorFrame, growUp, offsetX, offsetY)
-    end
 end
 
 local function ApplyTargetFocusAuraLayout(frame)
@@ -811,6 +1104,7 @@ local function ApplyTargetFocusAuraLayout(frame)
 
     if not metrics.enabled then
         HideTargetFocusAuraHolders(frame)
+        UnitFrames:GetFrameData(frame).TargetFocusAuraLayoutSignature = "disabled"
         return
     end
 
@@ -818,15 +1112,73 @@ local function ApplyTargetFocusAuraLayout(frame)
     local growUp = frame.buffsOnTop == true
     local nearAuras = isFriend and buffs or debuffs
     local farAuras = isFriend and debuffs or buffs
+    local frameData = UnitFrames:GetFrameData(frame)
+    local scratch = GetTargetFocusAuraScratch(frame)
+    local buttonStateMap = GetTargetFocusAuraButtonState(frame)
+    local holderState = GetTargetFocusAuraHolderState(frame)
+    local layoutSignature = BuildTargetFocusAuraLayoutSignature(frame, metrics, nearAuras, farAuras, isFriend, growUp, scratch)
+    local forceLayout = not layoutSignature or frameData.TargetFocusAuraLayoutSignature ~= layoutSignature
 
-    AnchorTargetFocusAuraHolder(holders.near, hpContainer, growUp, metrics.offsetX, metrics.offsetY)
-    local nearHeight, hasNearGroup = LayoutTargetFocusAuraGroup(holders.near, nearAuras, metrics, growUp)
+    -- Blizzard rewrites target/focus aura button anchors and sizes on every UpdateAuras call.
+    -- Invalidate the per-button cache so our custom layout is restored after each native refresh.
+    WipeTable(buttonStateMap)
+
+    local nearPoint = growUp and "BOTTOMLEFT" or "TOPLEFT"
+    local nearRelativePoint = growUp and "TOPLEFT" or "BOTTOMLEFT"
+    local nearY = growUp and metrics.offsetY or -metrics.offsetY
+    local nearHeight, hasNearGroup = LayoutTargetFocusAuraGroup(
+        holders.near,
+        "near",
+        nearAuras,
+        metrics,
+        growUp,
+        buttonStateMap,
+        holderState.near,
+        hpContainer,
+        nearPoint,
+        nearRelativePoint,
+        metrics.offsetX,
+        nearY,
+        forceLayout
+    )
     if not hasNearGroup then
         nearHeight = 0
     end
 
-    AnchorSecondaryTargetFocusAuraHolder(holders.far, holders.near, hpContainer, growUp, metrics.offsetX, metrics.offsetY, metrics.groupGap, hasNearGroup and nearHeight > 0)
-    LayoutTargetFocusAuraGroup(holders.far, farAuras, metrics, growUp)
+    local farAnchorTo = (hasNearGroup and nearHeight > 0) and holders.near or hpContainer
+    local farPoint
+    local farRelativePoint
+    local farX
+    local farY
+    if farAnchorTo == holders.near then
+        farPoint = growUp and "BOTTOMLEFT" or "TOPLEFT"
+        farRelativePoint = growUp and "TOPLEFT" or "BOTTOMLEFT"
+        farX = 0
+        farY = growUp and metrics.groupGap or -metrics.groupGap
+    else
+        farPoint = nearPoint
+        farRelativePoint = nearRelativePoint
+        farX = metrics.offsetX
+        farY = nearY
+    end
+
+    LayoutTargetFocusAuraGroup(
+        holders.far,
+        "far",
+        farAuras,
+        metrics,
+        growUp,
+        buttonStateMap,
+        holderState.far,
+        farAnchorTo,
+        farPoint,
+        farRelativePoint,
+        farX,
+        farY,
+        forceLayout
+    )
+
+    frameData.TargetFocusAuraLayoutSignature = layoutSignature or nil
 end
 
 function UnitFrames.RefreshTargetFocusAuraLayout(frame)

@@ -3,4 +3,5 @@
     <Script file="AutoCollapse.lua"/>
     <Script file="AutoZoneTrack.lua"/>
     <Script file="Quests.lua"/>
+    <Script file="EditMode.lua"/>
 </Ui>

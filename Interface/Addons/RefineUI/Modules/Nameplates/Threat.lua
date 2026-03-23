@@ -457,6 +457,8 @@ function Nameplates:UpdateThreatColor(nameplate, unit, _forced)
     if not data or not data.RefineName then
         return
     end
+    local suppressHealthBarWork = RefineUI.IsRuntimeSuppressedNameplate
+        and RefineUI:IsRuntimeSuppressedNameplate(unitFrame, data)
 
     local threatColor = self:ResolveThreatHealthColor(unit, data)
     if threatColor then
@@ -464,7 +466,7 @@ function Nameplates:UpdateThreatColor(nameplate, unit, _forced)
         local g = threatColor[2] or 1
         local b = threatColor[3] or 1
 
-        if health then
+        if health and not suppressHealthBarWork then
             self:SetBarColorIfChanged(health, r, g, b)
         end
         self:SetNameColorIfChanged(data, r, g, b)
@@ -472,7 +474,7 @@ function Nameplates:UpdateThreatColor(nameplate, unit, _forced)
         return
     end
 
-    if health then
+    if health and not suppressHealthBarWork then
         local hr, hg, hb = GetDefaultHealthColor(unit)
         self:SetBarColorIfChanged(health, hr, hg, hb)
     end

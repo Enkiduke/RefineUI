@@ -11,6 +11,7 @@ local ActionBars = RefineUI:RegisterModule("ActionBars")
 ----------------------------------------------------------------------------------------
 local InCombatLockdown = InCombatLockdown
 local ipairs = ipairs
+local type = type
 
 ----------------------------------------------------------------------------------------
 -- Public Methods
@@ -58,18 +59,18 @@ function ActionBars:OnEnable()
     self:SetupHooks()
 
     RefineUI:RegisterEventCallback("PLAYER_REGEN_DISABLED", function()
-        self:RefreshAllButtonStates(true)
+        self:RefreshCombatButtonStates(true)
     end, "ActionBars:RefreshEnterCombat")
 
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
         if not self.Private.actionbarsSetup then
             self:SetupActionBars()
         end
-        self:RefreshAllButtonStates(true)
+        self:RefreshCombatButtonStates(true)
     end, "ActionBars:RefreshLeaveCombat")
 
     RefineUI:RegisterEventCallback("PLAYER_TARGET_CHANGED", function()
-        self:RefreshAllButtonStates(true)
+        self:RefreshTargetButtonRanges(true)
     end, "ActionBars:RefreshTargetChanged")
 
     RefineUI:RegisterEventCallback("ACTIONBAR_SLOT_CHANGED", function(event, slot)
@@ -79,6 +80,26 @@ function ActionBars:OnEnable()
     RefineUI:RegisterEventCallback("ACTIONBAR_PAGE_CHANGED", function(event)
         self:QueueActionButtonRefresh(event)
     end, "ActionBars:ActionPageRefresh")
+
+    RefineUI:RegisterEventCallback("ACTION_USABLE_CHANGED", function(event, changes)
+        if type(changes) ~= "table" then
+            self:RefreshCombatButtonStates(true)
+            return
+        end
+
+        local queuedAny = false
+        for _, change in ipairs(changes) do
+            local slot = change and change.slot
+            if type(slot) == "number" and slot > 0 then
+                self:QueueActionButtonRefresh(event, slot)
+                queuedAny = true
+            end
+        end
+
+        if not queuedAny then
+            self:RefreshCombatButtonStates(true)
+        end
+    end, "ActionBars:ActionUsableRefresh")
 
     RefineUI:RegisterEventCallback("PET_BAR_UPDATE", function()
         self.Private.RefreshButtonCollection(self.Private.PetButtons, true, true, true)

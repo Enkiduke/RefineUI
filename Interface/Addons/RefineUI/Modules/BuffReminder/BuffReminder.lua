@@ -84,25 +84,8 @@ function BuffReminder:OnEnable()
         self:RequestRefresh()
     end
 
-    local function OnUnitAura(_frame, _event, unit)
-        if (issecretvalue and issecretvalue(unit)) or type(unit) ~= "string" or not self:IsTrackedUnitToken(unit) then
-            return
-        end
-        if InCombatLockdown() then
-            return
-        end
-        self:RequestRefresh()
-    end
-
-    if not self.unitAuraEventFrame then
-        self.unitAuraEventFrame = CreateFrame("Frame")
-        self.unitAuraEventFrame:RegisterEvent("UNIT_AURA")
-        self.unitAuraEventFrame:SetScript("OnEvent", OnUnitAura)
-    else
-        self.unitAuraEventFrame:SetScript("OnEvent", OnUnitAura)
-    end
-
     RefineUI:OnEvents({
+        "UNIT_AURA",
         "PLAYER_ENTERING_WORLD",
         "ZONE_CHANGED_NEW_AREA",
         "GROUP_ROSTER_UPDATE",

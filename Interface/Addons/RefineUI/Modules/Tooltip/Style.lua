@@ -40,17 +40,29 @@ local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
 local TOOLTIP_POSTCALL_ALL_TYPES_KEY = "Tooltip:PostCall:AllTypes"
 local TOOLTIP_POSTCALL_ITEM_KEY = "Tooltip:PostCall:Item"
 local TOOLTIP_DISCOVER_ON_ADDON_LOADED_KEY = "Tooltip:DiscoverTooltipsOnAddonLoaded"
-local EMBEDDED_ICON_BORDER_STYLE = {
-    inset = 4,
-    edgeSize = 12,
-    forceRefresh = true,
-}
 local TOOLTIP_SHARED_BACKDROP_STYLE_HOOK_KEY = "Tooltip:SharedTooltip_SetBackdropStyle"
 local TOOLTIP_SET_TOOLTIP_MONEY_HOOK_KEY = "Tooltip:SetTooltipMoney"
+local TOOLTIP_BORDER_HOST_FRAME_LEVEL = 0
+local TOOLTIP_BORDER_HOST_FRAME_STRATA = "TOOLTIP"
 
 ----------------------------------------------------------------------------------------
 -- Styling
 ----------------------------------------------------------------------------------------
+local function StyleMoneyFontString(fontString, styledFontStrings, size)
+    if not Tooltip:CanAccessObjectSafe(fontString) or Tooltip:IsForbiddenFrameSafe(fontString) then
+        return
+    end
+    if type(fontString.SetFont) ~= "function" then
+        return
+    end
+    if styledFontStrings[fontString] then
+        return
+    end
+
+    RefineUI.Font(fontString, size or 12, nil, "OUTLINE")
+    styledFontStrings[fontString] = true
+end
+
 local function StyleTooltipLines(tt, includeEmbedded)
     if not Tooltip:IsGameTooltipFrameSafe(tt) then
         return
@@ -79,7 +91,6 @@ local function StyleTooltipLines(tt, includeEmbedded)
     end
 
     local styledFontStrings = Tooltip:GetStyledFontStringRegistry()
-    local lineCache = Tooltip:GetLineCache()
     for lineIndex = maxStyledLineIndex + 1, numLines do
         local leftLine = Tooltip:GetCachedLine(tt, lineIndex)
         if leftLine and not styledFontStrings[leftLine] then
@@ -87,10 +98,8 @@ local function StyleTooltipLines(tt, includeEmbedded)
             styledFontStrings[leftLine] = true
         end
 
-        local rightLineKey = tooltipName .. "TextRight" .. lineIndex
-        local rightLine = lineCache[rightLineKey] or _G[rightLineKey]
+        local rightLine = Tooltip:GetCachedRightLine(tt, lineIndex)
         if rightLine then
-            lineCache[rightLineKey] = rightLine
             if not styledFontStrings[rightLine] then
                 RefineUI.Font(rightLine, 12, nil, "OUTLINE")
                 styledFontStrings[rightLine] = true
@@ -121,22 +130,6 @@ function Tooltip:StyleTooltipMoneyFrames(tt, includeEmbedded)
     end
 
     local styledFontStrings = Tooltip:GetStyledFontStringRegistry()
-    local function StyleMoneyFontString(fontString, size)
-        if not Tooltip:CanAccessObjectSafe(fontString) or Tooltip:IsForbiddenFrameSafe(fontString) then
-            return
-        end
-        if type(fontString.SetFont) ~= "function" then
-            return
-        end
-
-        if styledFontStrings[fontString] then
-            return
-        end
-
-        RefineUI.Font(fontString, size or 12, nil, "OUTLINE")
-        styledFontStrings[fontString] = true
-    end
-
     local shownMoneyFrames = Tooltip:ReadSafeNumber(select(1, Tooltip:SafeGetField(tt, "shownMoneyFrames")))
     local numMoneyFrames = Tooltip:ReadSafeNumber(select(1, Tooltip:SafeGetField(tt, "numMoneyFrames")))
     local moneyFrameCount = shownMoneyFrames or numMoneyFrames or 0
@@ -145,46 +138,14 @@ function Tooltip:StyleTooltipMoneyFrames(tt, includeEmbedded)
     end
 
     for moneyFrameIndex = 1, moneyFrameCount do
-        local moneyFrame = _G[tooltipName .. "MoneyFrame" .. moneyFrameIndex]
+        local moneyFrame = Tooltip:GetCachedMoneyRegion(tt, moneyFrameIndex, "")
         if Tooltip:CanAccessObjectSafe(moneyFrame) and not Tooltip:IsForbiddenFrameSafe(moneyFrame) then
-            local prefixText = select(1, Tooltip:SafeGetField(moneyFrame, "PrefixText"))
-            local suffixText = select(1, Tooltip:SafeGetField(moneyFrame, "SuffixText"))
-            StyleMoneyFontString(prefixText, 12)
-            StyleMoneyFontString(suffixText, 12)
+            local prefixText = Tooltip:GetCachedMoneyRegion(tt, moneyFrameIndex, "PrefixText")
+            local suffixText = Tooltip:GetCachedMoneyRegion(tt, moneyFrameIndex, "SuffixText")
+            StyleMoneyFontString(prefixText, styledFontStrings, 12)
+            StyleMoneyFontString(suffixText, styledFontStrings, 12)
         end
     end
-end
-
-local function GetEmbeddedIconBorderHost(tt, ownerFrame, iconRegion)
-    local state = Tooltip:GetTooltipSkinState(tt)
-    if not state then
-        return nil
-    end
-
-    local host = state.embeddedIconBorderHost
-    if not host or type(host.SetPoint) ~= "function" then
-        host = CreateFrame("Frame", nil, ownerFrame)
-        host._disableBagStatusIcon = true
-        if host.EnableMouse then
-            host:EnableMouse(false)
-        end
-        state.embeddedIconBorderHost = host
-    end
-
-    if type(host.GetParent) == "function" and host:GetParent() ~= ownerFrame then
-        host:SetParent(ownerFrame)
-    end
-
-    if type(ownerFrame.GetFrameLevel) == "function" then
-        host:SetFrameLevel(ownerFrame:GetFrameLevel() + 1)
-    end
-    if type(ownerFrame.GetFrameStrata) == "function" then
-        host:SetFrameStrata(ownerFrame:GetFrameStrata())
-    end
-
-    host:ClearAllPoints()
-    host:SetAllPoints(iconRegion)
-    return host
 end
 
 local function ClearEmbeddedItemIconBorder(tt)
@@ -200,75 +161,36 @@ local function ClearEmbeddedItemIconBorder(tt)
     host:Hide()
 end
 
-local function ApplyEmbeddedItemIconBorder(tt, data)
-    if not Tooltip:IsEmbeddedTooltipFrame(tt) then
-        return
+local function ResolveBorderHostFrameLevel(tt, borderHost)
+    local okLevel, frameLevel = Tooltip:SafeObjectMethodCall(tt, "GetFrameLevel")
+    local safeFrameLevel = okLevel and Tooltip:ReadSafeNumber(frameLevel) or nil
+    if safeFrameLevel then
+        return max(0, safeFrameLevel - 1)
     end
 
-    local borders = RefineUI:GetModule("Borders")
-    if not borders or type(borders.ApplyItemBorder) ~= "function" then
-        return
+    local okCurrent, currentFrameLevel = Tooltip:SafeObjectMethodCall(borderHost, "GetFrameLevel")
+    local safeCurrentFrameLevel = okCurrent and Tooltip:ReadSafeNumber(currentFrameLevel) or nil
+    if safeCurrentFrameLevel then
+        return safeCurrentFrameLevel
     end
 
-    local okOwner, ownerFrame = Tooltip:SafeObjectMethodCall(tt, "GetOwner")
-    if not okOwner or not Tooltip:CanAccessObjectSafe(ownerFrame) or Tooltip:IsForbiddenFrameSafe(ownerFrame) then
-        ClearEmbeddedItemIconBorder(tt)
-        return
+    return TOOLTIP_BORDER_HOST_FRAME_LEVEL
+end
+
+local function ResolveBorderHostFrameStrata(tt, borderHost)
+    local okStrata, frameStrata = Tooltip:SafeObjectMethodCall(tt, "GetFrameStrata")
+    local safeFrameStrata = okStrata and Tooltip:ReadSafeString(frameStrata) or nil
+    if safeFrameStrata then
+        return safeFrameStrata
     end
 
-    local iconRegion, okIcon = Tooltip:SafeGetField(ownerFrame, "Icon")
-    if not okIcon or not Tooltip:CanAccessObjectSafe(iconRegion) then
-        ClearEmbeddedItemIconBorder(tt)
-        return
+    local okCurrent, currentFrameStrata = Tooltip:SafeObjectMethodCall(borderHost, "GetFrameStrata")
+    local safeCurrentFrameStrata = okCurrent and Tooltip:ReadSafeString(currentFrameStrata) or nil
+    if safeCurrentFrameStrata then
+        return safeCurrentFrameStrata
     end
 
-    local itemLink = nil
-    local itemID = nil
-
-    if Tooltip:CanAccessObjectSafe(data) and type(data) == "table" then
-        local dataLink, okDataLink = Tooltip:SafeGetField(data, "hyperlink")
-        local dataID, okDataID = Tooltip:SafeGetField(data, "id")
-        itemLink = okDataLink and Tooltip:ReadSafeString(dataLink) or nil
-        itemID = okDataID and Tooltip:ReadSafeNumber(dataID) or nil
-    end
-
-    if not itemLink or not itemID then
-        local okItem, _, tooltipItemLink, tooltipItemID = Tooltip:SafeObjectMethodCall(tt, "GetItem")
-        if okItem then
-            itemLink = itemLink or Tooltip:ReadSafeString(tooltipItemLink)
-            itemID = itemID or Tooltip:ReadSafeNumber(tooltipItemID)
-        end
-    end
-
-    if not itemID then
-        local ownerItemID, okOwnerItemID = Tooltip:SafeGetField(ownerFrame, "itemID")
-        if okOwnerItemID then
-            itemID = Tooltip:ReadSafeNumber(ownerItemID)
-        end
-    end
-    if not itemLink then
-        local ownerItemLink, okOwnerItemLink = Tooltip:SafeGetField(ownerFrame, "itemLink")
-        if okOwnerItemLink then
-            itemLink = Tooltip:ReadSafeString(ownerItemLink)
-        end
-    end
-
-    if not itemLink and not itemID then
-        ClearEmbeddedItemIconBorder(tt)
-        return
-    end
-
-    local host = GetEmbeddedIconBorderHost(tt, ownerFrame, iconRegion)
-    if not host then
-        ClearEmbeddedItemIconBorder(tt)
-        return
-    end
-
-    borders:ApplyItemBorder(host, itemLink, itemID, EMBEDDED_ICON_BORDER_STYLE)
-    if host.RefineUIBorderItemLevel then
-        host.RefineUIBorderItemLevel:Hide()
-    end
-    host:Show()
+    return TOOLTIP_BORDER_HOST_FRAME_STRATA
 end
 
 local function TryApplyItemQualityBorderOnShow(tt)
@@ -342,12 +264,12 @@ function Tooltip:SetBackdropStyle(tt)
         needsHostInitialization = true
     end
 
-    local desiredFrameLevel = max(0, tt:GetFrameLevel() - 1)
+    local desiredFrameLevel = ResolveBorderHostFrameLevel(tt, borderHost)
     if borderHost:GetFrameLevel() ~= desiredFrameLevel then
         borderHost:SetFrameLevel(desiredFrameLevel)
     end
 
-    local desiredFrameStrata = tt:GetFrameStrata()
+    local desiredFrameStrata = ResolveBorderHostFrameStrata(tt, borderHost)
     if borderHost:GetFrameStrata() ~= desiredFrameStrata then
         borderHost:SetFrameStrata(desiredFrameStrata)
     end
@@ -619,13 +541,7 @@ function Tooltip:InitializeTooltipStyle()
             end
             if Tooltip:IsEmbeddedTooltipFrame(tt) then
                 StyleTooltipLines(tt, true)
-
-                local tooltipType = Tooltip:GetTooltipDataType(data)
-                if TOOLTIP_DATA_TYPE and tooltipType == TOOLTIP_DATA_TYPE.Item then
-                    ApplyEmbeddedItemIconBorder(tt, data)
-                else
-                    ClearEmbeddedItemIconBorder(tt)
-                end
+                ClearEmbeddedItemIconBorder(tt)
                 return
             end
 

@@ -25,6 +25,7 @@ local GetAchievementInfo = GetAchievementInfo
 ----------------------------------------------------------------------------------------
 local ICON_SIZE = 16
 local ICON_LINK_PATTERN = "(\124H.-\124h.-\124h)"
+local GENERATED_ICON_LINK_PATTERN = format("\124T[^|]-:%d:%d:0:0:64:64:5:59:5:59\124t(\124H.-\124h.-\124h)", ICON_SIZE, ICON_SIZE)
 local HYPERLINK_MARKER = "\124H"
 
 local function IconizeLink(fullLink)
@@ -74,7 +75,9 @@ function Chat:TransformMessageIcons(message)
         return message
     end
 
-    return message:gsub(ICON_LINK_PATTERN, IconizeLink)
+    -- Normalize previously iconized links so repeated AddMessage passes stay idempotent.
+    local normalized = message:gsub(GENERATED_ICON_LINK_PATTERN, "%1")
+    return normalized:gsub(ICON_LINK_PATTERN, IconizeLink)
 end
 
 function Chat:SetupIcons()

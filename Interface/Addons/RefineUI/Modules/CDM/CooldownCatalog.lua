@@ -26,7 +26,6 @@ local pcall = pcall
 local wipe = _G.wipe or table.wipe
 local bitband = bit and bit.band
 
-local C_CooldownViewer = C_CooldownViewer
 local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
@@ -46,6 +45,14 @@ local categorySetCache = {}
 ----------------------------------------------------------------------------------------
 local function IsSecret(value)
     return issecretvalue and issecretvalue(value)
+end
+
+local function GetCooldownViewerAPI()
+    local api = _G.C_CooldownViewer
+    if type(api) == "table" then
+        return api
+    end
+    return nil
 end
 
 local function CopyArray(source)
@@ -153,11 +160,12 @@ local function CopyCooldownInfo(info, fallbackCooldownID)
 end
 
 local function GetCooldownInfoFromAPI(cooldownID)
-    if not C_CooldownViewer or type(C_CooldownViewer.GetCooldownViewerCooldownInfo) ~= "function" then
+    local cooldownViewerAPI = GetCooldownViewerAPI()
+    if not cooldownViewerAPI or type(cooldownViewerAPI.GetCooldownViewerCooldownInfo) ~= "function" then
         return nil
     end
 
-    local ok, info = pcall(C_CooldownViewer.GetCooldownViewerCooldownInfo, cooldownID)
+    local ok, info = pcall(cooldownViewerAPI.GetCooldownViewerCooldownInfo, cooldownID)
     if ok and type(info) == "table" then
         return info
     end
@@ -260,12 +268,13 @@ function CDM:GetCooldownCategorySet(category, includeUnlearned)
         return cached
     end
 
-    if not C_CooldownViewer or type(C_CooldownViewer.GetCooldownViewerCategorySet) ~= "function" then
+    local cooldownViewerAPI = GetCooldownViewerAPI()
+    if not cooldownViewerAPI or type(cooldownViewerAPI.GetCooldownViewerCategorySet) ~= "function" then
         categorySetCache[cacheKey] = categorySetCache[cacheKey] or {}
         return categorySetCache[cacheKey]
     end
 
-    local ok, cooldownIDs = pcall(C_CooldownViewer.GetCooldownViewerCategorySet, category, includeUnlearned and true or false)
+    local ok, cooldownIDs = pcall(cooldownViewerAPI.GetCooldownViewerCategorySet, category, includeUnlearned and true or false)
     if ok and type(cooldownIDs) == "table" then
         local copied = CopyNumericArray(cooldownIDs)
         if #copied > 0 then

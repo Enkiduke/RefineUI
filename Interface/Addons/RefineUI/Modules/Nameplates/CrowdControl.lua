@@ -273,6 +273,23 @@ local function EnsureNameplateData(unitFrame)
     return data
 end
 
+local function BuildCrowdControlVisualSignature(data)
+    if not data or data.CrowdControlActive ~= true then
+        return "inactive"
+    end
+
+    local auraDiscriminator = ReadAccessibleValue(data.CrowdControlAuraInstanceID, nil)
+    if auraDiscriminator == nil then
+        auraDiscriminator = ReadAccessibleValue(data.CrowdControlSpellID, nil)
+    end
+    if auraDiscriminator == nil then
+        return nil
+    end
+
+    local suppressed = data.CrowdControlSuppressed == true and "1" or "0"
+    return "cc:" .. suppressed .. ":" .. tostring(auraDiscriminator)
+end
+
 local function GetState(unitFrame)
     if not unitFrame then return nil end
     local state = CrowdControlState[unitFrame]
@@ -290,10 +307,23 @@ local function ApplyBarColors(state, cfg)
     local r = color[1] or 0.2
     local g = color[2] or 0.6
     local b = color[3] or 1.0
-    state.bar:SetStatusBarColor(r, g, b)
+    if state.colorR ~= r or state.colorG ~= g or state.colorB ~= b then
+        state.bar:SetStatusBarColor(r, g, b)
+        state.colorR = r
+        state.colorG = g
+        state.colorB = b
+    end
 
     if state.bg then
-        state.bg:SetVertexColor(r * 0.25, g * 0.25, b * 0.25, 1)
+        local bgR = r * 0.25
+        local bgG = g * 0.25
+        local bgB = b * 0.25
+        if state.bgColorR ~= bgR or state.bgColorG ~= bgG or state.bgColorB ~= bgB then
+            state.bg:SetVertexColor(bgR, bgG, bgB, 1)
+            state.bgColorR = bgR
+            state.bgColorG = bgG
+            state.bgColorB = bgB
+        end
     end
 
     if state.bar.border and state.bar.border.SetBackdropBorderColor then
@@ -302,7 +332,16 @@ local function ApplyBarColors(state, cfg)
         local bg = borderColor[2] or g
         local bb = borderColor[3] or b
         local ba = borderColor[4] or 1
-        state.bar.border:SetBackdropBorderColor(br, bg, bb, ba)
+        if state.borderColorR ~= br
+            or state.borderColorG ~= bg
+            or state.borderColorB ~= bb
+            or state.borderColorA ~= ba then
+            state.bar.border:SetBackdropBorderColor(br, bg, bb, ba)
+            state.borderColorR = br
+            state.borderColorG = bg
+            state.borderColorB = bb
+            state.borderColorA = ba
+        end
     end
 end
 
@@ -319,37 +358,61 @@ local function LayoutBar(unitFrame, state)
         safeHeight = hpHeight
     end
 
-    state.bar:ClearAllPoints()
-    RefineUI.Point(state.bar, "TOPLEFT", unitFrame, "TOPLEFT", 12, -(safeHeight - 4))
-    RefineUI.Point(state.bar, "TOPRIGHT", unitFrame, "TOPRIGHT", -12, -(safeHeight - 4))
-    state.bar:SetHeight(RefineUI:Scale(castHeight))
+    local anchorY = -(safeHeight - 4)
+    local barHeight = RefineUI:Scale(castHeight)
+
+    if state.anchorTarget ~= unitFrame or state.anchorY ~= anchorY then
+        state.bar:ClearAllPoints()
+        RefineUI.Point(state.bar, "TOPLEFT", unitFrame, "TOPLEFT", 12, anchorY)
+        RefineUI.Point(state.bar, "TOPRIGHT", unitFrame, "TOPRIGHT", -12, anchorY)
+        state.anchorTarget = unitFrame
+        state.anchorY = anchorY
+    end
+
+    if state.barHeight ~= barHeight then
+        state.bar:SetHeight(barHeight)
+        state.barHeight = barHeight
+    end
 
     if state.timer then
-        state.timer:ClearAllPoints()
-        RefineUI.Point(state.timer, "BOTTOMRIGHT", state.bar, "BOTTOMRIGHT", -2, 0)
+        if state.timerAnchor ~= state.bar then
+            state.timer:ClearAllPoints()
+            RefineUI.Point(state.timer, "BOTTOMRIGHT", state.bar, "BOTTOMRIGHT", -2, 0)
+            state.timerAnchor = state.bar
+        end
     end
 
     local castBar = unitFrame.castBar or unitFrame.CastBar
     local castLevel = castBar and castBar:GetFrameLevel()
     if castLevel and castLevel > 0 then
-        state.bar:SetFrameLevel(castLevel)
-        if state.bar.border then
-            state.bar.border:SetFrameLevel(castLevel + 1)
+        if state.barLevel ~= castLevel then
+            state.bar:SetFrameLevel(castLevel)
+            state.barLevel = castLevel
         end
-        if state.timer then
+        if state.bar.border and state.borderLevel ~= (castLevel + 1) then
+            state.bar.border:SetFrameLevel(castLevel + 1)
+            state.borderLevel = castLevel + 1
+        end
+        if state.timer and state.timerDrawLayer ~= 7 then
             state.timer:SetDrawLayer("OVERLAY", 7)
+            state.timerDrawLayer = 7
         end
         return
     end
 
     local unitFrameLevel = unitFrame:GetFrameLevel() or 1
     local barLevel = math_max(0, unitFrameLevel - 2)
-    state.bar:SetFrameLevel(barLevel)
-    if state.bar.border then
-        state.bar.border:SetFrameLevel(barLevel + 1)
+    if state.barLevel ~= barLevel then
+        state.bar:SetFrameLevel(barLevel)
+        state.barLevel = barLevel
     end
-    if state.timer then
+    if state.bar.border and state.borderLevel ~= (barLevel + 1) then
+        state.bar.border:SetFrameLevel(barLevel + 1)
+        state.borderLevel = barLevel + 1
+    end
+    if state.timer and state.timerDrawLayer ~= 7 then
         state.timer:SetDrawLayer("OVERLAY", 7)
+        state.timerDrawLayer = 7
     end
 end
 
@@ -415,6 +478,49 @@ end
 
 local function GetActiveCrowdControlAura(unitFrame)
     return GetAuraFromCrowdControlList(unitFrame)
+end
+
+local function ReadComparableAuraNumber(value)
+    if not IsAccessibleValue(value) or type(value) ~= "number" then
+        return nil
+    end
+
+    return value
+end
+
+local function CanSkipCrowdControlAuraRefresh(state, data, event, auraInstanceID, spellID, suppressForCast, aura)
+    if event ~= "UNIT_AURA" or not state or not state.bar or not data then
+        return false
+    end
+    if data.CrowdControlActive ~= true then
+        return false
+    end
+    if data.CrowdControlAuraInstanceID ~= auraInstanceID then
+        return false
+    end
+    if data.CrowdControlSuppressed ~= (suppressForCast and true or false) then
+        return false
+    end
+    if data.CrowdControlSpellID ~= spellID then
+        return false
+    end
+
+    if suppressForCast then
+        return state.bar:IsShown() == false
+    end
+
+    if state.bar:IsShown() ~= true then
+        return false
+    end
+
+    local auraDurationSeconds = ReadComparableAuraNumber(aura and aura.duration)
+    local auraExpirationTime = ReadComparableAuraNumber(aura and aura.expirationTime)
+    if auraDurationSeconds == nil or auraExpirationTime == nil then
+        return false
+    end
+
+    return data.CrowdControlAuraDurationSeconds == auraDurationSeconds
+        and data.CrowdControlExpirationTime == auraExpirationTime
 end
 
 local function GetAuraDurationObject(unit, auraInstanceID)
@@ -711,6 +817,9 @@ function RefineUI:ClearNameplateCrowdControl(unitFrame, suppressVisualRefresh)
     data.CrowdControlName = nil
     data.CrowdControlDuration = nil
     data.CrowdControlSource = nil
+    data.CrowdControlAuraDurationSeconds = nil
+    data.CrowdControlExpirationTime = nil
+    data.CrowdControlVisualSignature = BuildCrowdControlVisualSignature(data)
 
     if (wasActive or hadAura or wasSuppressed) and not suppressVisualRefresh then
         RefreshPortraitAndBorders(unitFrame, unitFrame.unit, "UNIT_AURA")
@@ -750,13 +859,18 @@ function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVi
     local hideWhileCasting = cfg.HideWhileCasting ~= false
     local suppressForCast = hideWhileCasting and IsCastActive(unitFrame, unit)
     local auraInstanceID = ReadAccessibleValue(aura.auraInstanceID, nil)
-
-    local duration = GetAuraDurationObject(unit, aura.auraInstanceID)
+    local spellID = ReadAccessibleValue(aura.spellId, nil)
 
     local state = EnsureBar(unitFrame)
     if not state then
         return
     end
+
+    if CanSkipCrowdControlAuraRefresh(state, data, event, auraInstanceID, spellID, suppressForCast, aura) then
+        return
+    end
+
+    local duration = GetAuraDurationObject(unit, aura.auraInstanceID)
 
     LayoutBar(unitFrame, state)
     ApplyBarColors(state, cfg)
@@ -800,15 +914,17 @@ function RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event, suppressVi
     data.CrowdControlActive = true
     data.CrowdControlSuppressed = suppressForCast and true or false
     data.CrowdControlAuraInstanceID = auraInstanceID
-    data.CrowdControlSpellID = aura.spellId
+    data.CrowdControlSpellID = spellID
     data.CrowdControlIcon = aura.icon
     data.CrowdControlName = aura.name
     data.CrowdControlDuration = duration
     data.CrowdControlSource = source
+    data.CrowdControlAuraDurationSeconds = ReadComparableAuraNumber(aura.duration)
+    data.CrowdControlExpirationTime = ReadComparableAuraNumber(aura.expirationTime)
+    data.CrowdControlVisualSignature = BuildCrowdControlVisualSignature(data)
 
     local changed = (not wasActive) or (previousAuraID ~= auraInstanceID) or (wasSuppressed ~= data.CrowdControlSuppressed)
     if changed and not suppressVisualRefresh then
         RefreshPortraitAndBorders(unitFrame, unit, event or "UNIT_AURA")
     end
 end
-

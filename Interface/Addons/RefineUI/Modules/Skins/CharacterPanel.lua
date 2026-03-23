@@ -29,7 +29,6 @@ local max = math.max
 local format = string.format
 local tinsert = table.insert
 local tremove = table.remove
-local C_Timer = C_Timer
 local C_Item = C_Item
 local C_PaperDollInfo = C_PaperDollInfo
 local C_TooltipInfo = C_TooltipInfo
@@ -62,6 +61,10 @@ local EVENT_KEY = {
     SOCKET_INFO_UPDATE = COMPONENT_KEY .. ":Event:SOCKET_INFO_UPDATE",
     SPELL_POWER_CHANGED = COMPONENT_KEY .. ":Event:SPELL_POWER_CHANGED",
     UNIT_MAXHEALTH = COMPONENT_KEY .. ":Event:UNIT_MAXHEALTH",
+}
+
+local TIMER_KEY = {
+    REFRESH = COMPONENT_KEY .. ":Timer:Refresh",
 }
 
 local SLOT_IDS = {
@@ -1085,7 +1088,7 @@ local function QueueCharacterRefresh()
     end
 
     refreshQueued = true
-    C_Timer.After(0, function()
+    RefineUI:After(TIMER_KEY.REFRESH, 0, function()
         refreshQueued = false
         if Skins.RefreshCharacterPanel then
             Skins:RefreshCharacterPanel()

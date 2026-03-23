@@ -13,14 +13,17 @@ end
 function Chat:OnInitialize()
     self.db = RefineUI.DB and RefineUI.DB.Chat or RefineUI.Config.Chat
     self.positions = RefineUI.DB and RefineUI.DB.Positions or RefineUI.Positions
+    if self.SyncTimestampConfigFromCVar then
+        self:SyncTimestampConfigFromCVar()
+    end
 end
 
 ----------------------------------------------------------------------------------------
 -- Lib Globals (Upvalues)
 ----------------------------------------------------------------------------------------
 local _G = _G
-local pairs, ipairs, unpack, select = pairs, ipairs, unpack, select
-local format, gsub, strsub, strfind = string.format, string.gsub, string.sub, string.find
+local ipairs, unpack, select = ipairs, unpack, select
+local format, strfind = string.format, string.find
 local type, tostring = type, tostring
 local math = math
 local tonumber = tonumber
@@ -28,20 +31,17 @@ local tonumber = tonumber
 ----------------------------------------------------------------------------------------
 -- WoW Globals (Upvalues)
 ----------------------------------------------------------------------------------------
+local CreateFrame = CreateFrame
 local FCF_GetChatWindowInfo = FCF_GetChatWindowInfo
 local FCF_SetChatWindowFontSize = FCF_SetChatWindowFontSize
 local FCF_SavePositionAndDimensions = FCF_SavePositionAndDimensions
 local FCF_DockFrame = FCF_DockFrame
 local FCF_DockUpdate = FCF_DockUpdate
 local FCF_GetCurrentChatFrame = FCF_GetCurrentChatFrame
-local ChatEdit_UpdateHeader = ChatEdit_UpdateHeader
+local ChatFrameUtil = ChatFrameUtil
+local ChatFrameEditBoxBaseMixin = ChatFrameEditBoxBaseMixin
+local ChatFrameEditBoxMixin = ChatFrameEditBoxMixin
 local hooksecurefunc = hooksecurefunc
-local C_Timer = C_Timer
-local IsInRaid = IsInRaid
-local IsInGroup = IsInGroup
-local IsPartyLFG = IsPartyLFG
-local IsInGuild = IsInGuild
-local IsShiftKeyDown = IsShiftKeyDown
 local InCombatLockdown = InCombatLockdown
 local UnitAffectingCombat = UnitAffectingCombat
 local NUM_CHAT_WINDOWS = NUM_CHAT_WINDOWS
@@ -57,34 +57,37 @@ local ChatTypeInfo = ChatTypeInfo
 ----------------------------------------------------------------------------------------
 -- Locals
 ----------------------------------------------------------------------------------------
-local _didInstallGlobals = false
 local _didInstallRuntime = false
 local _didInitialChatSetup = false
 local _didCombatSafeChatVisualSetup = false
 local _styledFrames = {}
 local _visuallyStyledFrames = {}
 local _hiddenRegionLocks = setmetatable({}, { __mode = "k" })
-local _editBoxAlphaHooks = setmetatable({}, { __mode = "k" })
-local _editBoxBlizzArtHiddenHooks = setmetatable({}, { __mode = "k" })
-local _editBoxBlizzArtElapsed = setmetatable({}, { __mode = "k" })
 local _editBoxBorderColorHooks = setmetatable({}, { __mode = "k" })
-local _editBoxBorderRefreshHooks = setmetatable({}, { __mode = "k" })
+local _editBoxBorderOverlays = setmetatable({}, { __mode = "k" })
+local _editBoxBackgrounds = setmetatable({}, { __mode = "k" })
+local _editBoxBackgroundMasks = setmetatable({}, { __mode = "k" })
+local _editBoxHeaderHookInstalled = false
 local _quickJoinToastRepositioning = setmetatable({}, { __mode = "k" })
-local _chatDeferredWidthFixQueued = setmetatable({}, { __mode = "k" })
-local _chatDeferredPointFixQueued = setmetatable({}, { __mode = "k" })
 local CHAT_REGEN_SETUP_KEY = "ChatFrames:DeferredSetup"
 local CHAT_WORLD_SETUP_KEY = "ChatFrames:PlayerEnteringWorld"
 local CHAT_ENABLE_REGEN_SETUP_KEY = "ChatFrames:DeferredOnEnableSetup"
 local CHAT_DOCK_UPDATE_REGEN_KEY = "ChatFrames:DeferredDockUpdate"
-local USE_CUSTOM_EDITBOX_SKIN = false -- Safe baseline while isolating caret regression
-local USE_EDITBOX_BORDER_ONLY = true  -- Step 1: border-only reintroduction
-local USE_EDITBOX_HEADER_INSETS = false -- Keep Blizzard header labels (Say:/Guild:/etc.)
+local CHAT_ENCOUNTER_STATE_KEY = "ChatFrames:EncounterStateChanged"
+local CHAT_DOCK_UPDATE_TIMER_KEY = "ChatFrames:DeferredDockUpdate:Timer"
+local USE_EDITBOX_BORDER_ONLY = true
 local HIDE_BLIZZ_EDITBOX_BORDER_TEXTURE = true -- Hide native border/focus textures
 local EDITBOX_MIN_HEIGHT = 22
 local EDITBOX_HEIGHT_PADDING = 10
 local EDITBOX_BORDER_EDGE_SIZE = 12
+local EDITBOX_BACKGROUND_INSET = 0
+local EDITBOX_BACKGROUND_ALPHA = 0.25
+local EDITBOX_BACKGROUND_MASK = (RefineUI.Media and RefineUI.Media.Textures and RefineUI.Media.Textures.FrameMask)
+    or "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local EDITBOX_IDLE_ALPHA = 0
 local EDITBOX_ACTIVE_ALPHA = 1
+local EDITBOX_ANCHOR_X = 6
+local EDITBOX_ANCHOR_Y = 28
 local MAX_CHAT_EDITBOX_SCAN = 40
 local function BuildChatFramesHookKey(owner, method, suffix)
 	local ownerId
@@ -100,9 +103,31 @@ local function BuildChatFramesHookKey(owner, method, suffix)
 	return "ChatFrames:" .. ownerId .. ":" .. method
 end
 
+local function BuildChatFramesTimerKey(owner, suffix)
+    local ownerId
+    if type(owner) == "table" and owner.GetName then
+        ownerId = owner:GetName()
+    end
+    if not ownerId or ownerId == "" then
+        ownerId = tostring(owner)
+    end
+    return "ChatFrames:" .. ownerId .. ":Timer:" .. suffix
+end
+
 local function GetEditBoxHeight(fontSize)
     local size = tonumber(fontSize) or 12
     return math.max(EDITBOX_MIN_HEIGHT, size + EDITBOX_HEIGHT_PADDING)
+end
+
+local function ApplyEditBoxLayout(editBox, chatFrame)
+    if not editBox or not chatFrame then
+        return
+    end
+
+    editBox:ClearAllPoints()
+    editBox:SetPoint("BOTTOMLEFT", chatFrame, "TOPLEFT", -EDITBOX_ANCHOR_X, EDITBOX_ANCHOR_Y)
+    editBox:SetPoint("BOTTOMRIGHT", chatFrame, "TOPRIGHT", EDITBOX_ANCHOR_X, EDITBOX_ANCHOR_Y)
+    editBox:SetAltArrowKeyMode(false)
 end
 
 local function ApplyEditBoxTypography(editBox, fontSize)
@@ -131,10 +156,8 @@ local function IsPlayerInCombat()
 end
 
 local function QueueFrameWidthFix(frame, width)
-    if not frame or _chatDeferredWidthFixQueued[frame] or not C_Timer then return end
-    _chatDeferredWidthFixQueued[frame] = true
-    C_Timer.After(0, function()
-        _chatDeferredWidthFixQueued[frame] = nil
+    if not frame then return end
+    RefineUI:After(BuildChatFramesTimerKey(frame, "WidthFix"), 0, function()
         if not frame or not frame.GetWidth or not frame.SetWidth then return end
         if frame:GetWidth() > ((width or 0.001) + 0.009) then
             frame:SetWidth(width or 0.001)
@@ -143,10 +166,8 @@ local function QueueFrameWidthFix(frame, width)
 end
 
 local function QueueFramePointFix(frame, applyFn)
-    if not frame or not applyFn or _chatDeferredPointFixQueued[frame] or not C_Timer then return end
-    _chatDeferredPointFixQueued[frame] = true
-    C_Timer.After(0, function()
-        _chatDeferredPointFixQueued[frame] = nil
+    if not frame or not applyFn then return end
+    RefineUI:After(BuildChatFramesTimerKey(frame, "PointFix"), 0, function()
         if not frame then return end
         applyFn(frame)
     end)
@@ -163,22 +184,18 @@ local function RequestDockUpdate()
         return
     end
 
-    if C_Timer then
-        C_Timer.After(0, function()
-            if not IsPlayerInCombat() then
-                FCF_DockUpdate()
-            else
-                RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-                    if not IsPlayerInCombat() then
-                        FCF_DockUpdate()
-                        RefineUI:OffEvent("PLAYER_REGEN_ENABLED", CHAT_DOCK_UPDATE_REGEN_KEY)
-                    end
-                end, CHAT_DOCK_UPDATE_REGEN_KEY)
-            end
-        end)
-    else
-        FCF_DockUpdate()
-    end
+    RefineUI:After(CHAT_DOCK_UPDATE_TIMER_KEY, 0, function()
+        if not IsPlayerInCombat() then
+            FCF_DockUpdate()
+        else
+            RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
+                if not IsPlayerInCombat() then
+                    FCF_DockUpdate()
+                    RefineUI:OffEvent("PLAYER_REGEN_ENABLED", CHAT_DOCK_UPDATE_REGEN_KEY)
+                end
+            end, CHAT_DOCK_UPDATE_REGEN_KEY)
+        end
+    end)
 end
 
 local function ApplyChatFrameTypography(chatFrame, fontSize)
@@ -186,6 +203,40 @@ local function ApplyChatFrameTypography(chatFrame, fontSize)
     local size = math.max(tonumber(fontSize) or 11, 11)
     chatFrame:SetFont(RefineUI.Media.Fonts.Attachment, size, "THINOUTLINE")
     chatFrame:SetShadowOffset(1, -1)
+end
+
+local function GetConfiguredPrimaryChatSize()
+    local width = (Chat.db and Chat.db.Width) or 380
+    local height = (Chat.db and Chat.db.Height) or 155
+    return width, height
+end
+
+local function GetPrimaryChatSize()
+    local defaultWidth, defaultHeight = GetConfiguredPrimaryChatSize()
+    if ChatFrame1 and ChatFrame1.GetWidth and ChatFrame1.GetHeight then
+        local width = ChatFrame1:GetWidth()
+        local height = ChatFrame1:GetHeight()
+        if width and width > 0 and height and height > 0 then
+            return width, height
+        end
+    end
+    return defaultWidth, defaultHeight
+end
+
+local function UpdatePrimaryChatLinkedWidths()
+    local width = GetPrimaryChatSize()
+    if QuickJoinToastButton and QuickJoinToastButton.Toast then
+        QuickJoinToastButton.Toast:SetWidth(width + 7)
+        if QuickJoinToastButton.Toast.Text then
+            QuickJoinToastButton.Toast.Text:SetWidth(width - 20)
+        end
+    end
+end
+
+local function HookPrimaryChatSizeUpdates()
+    -- Avoid attaching script hooks to Blizzard chat frames. Those hooks taint the
+    -- frame object, and encounter-time message handling later runs on that same
+    -- frame through Blizzard-owned OnEvent/MessageEventHandler paths.
 end
 
 local function LockHiddenRegion(region)
@@ -208,7 +259,6 @@ local function LockHiddenRegion(region)
     end
     if region.Hide then
         region:Hide()
-        region.Show = region.Hide
     end
 
     if region.SetShown then
@@ -249,18 +299,88 @@ local function ForceHideAllChatEditBoxBorderRegions()
     end
 end
 
+local function GetEditBoxBorderOverlay(editBox)
+    if not editBox then
+        return nil
+    end
+
+    local overlay = _editBoxBorderOverlays[editBox]
+    if not overlay then
+        overlay = CreateFrame("Frame", nil, editBox)
+        overlay:EnableMouse(false)
+        _editBoxBorderOverlays[editBox] = overlay
+    end
+
+    overlay:ClearAllPoints()
+    overlay:SetPoint("TOPLEFT", editBox, "TOPLEFT", -4, 4)
+    overlay:SetPoint("BOTTOMRIGHT", editBox, "BOTTOMRIGHT", 4, -4)
+    overlay:SetFrameStrata(editBox:GetFrameStrata())
+    overlay:SetFrameLevel(math.max(0, editBox:GetFrameLevel() + 2))
+    if overlay.SetClipsChildren then
+        overlay:SetClipsChildren(true)
+    end
+
+    RefineUI.CreateBorder(overlay, 0, 0, EDITBOX_BORDER_EDGE_SIZE)
+    return overlay
+end
+
+local function EnsureRefineEditBoxBackground(editBox)
+    if not editBox then
+        return nil
+    end
+
+    local background = _editBoxBackgrounds[editBox]
+    if not background then
+        background = editBox:CreateTexture(nil, "BACKGROUND", nil, -8)
+        _editBoxBackgrounds[editBox] = background
+    end
+
+    background:ClearAllPoints()
+    background:SetPoint("TOPLEFT", editBox, "TOPLEFT", EDITBOX_BACKGROUND_INSET, -EDITBOX_BACKGROUND_INSET)
+    background:SetPoint("BOTTOMRIGHT", editBox, "BOTTOMRIGHT", -EDITBOX_BACKGROUND_INSET, EDITBOX_BACKGROUND_INSET)
+    background:SetColorTexture(0, 0, 0, EDITBOX_BACKGROUND_ALPHA)
+
+    local backgroundMask = _editBoxBackgroundMasks[editBox]
+    if not backgroundMask and editBox.CreateMaskTexture and background.AddMaskTexture then
+        backgroundMask = editBox:CreateMaskTexture()
+        _editBoxBackgroundMasks[editBox] = backgroundMask
+        background:AddMaskTexture(backgroundMask)
+    end
+    if backgroundMask then
+        backgroundMask:SetAllPoints(background)
+        backgroundMask:SetTexture(EDITBOX_BACKGROUND_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    end
+
+    return background
+end
+
 local function EnsureRefineEditBoxBorder(editBox)
     if not editBox then return end
-    RefineUI.CreateBorder(editBox, 4, 4, EDITBOX_BORDER_EDGE_SIZE)
-    local border = editBox.border
+    EnsureRefineEditBoxBackground(editBox)
+    local overlay = GetEditBoxBorderOverlay(editBox)
+    if not overlay then return end
+
+    overlay:SetFrameStrata(editBox:GetFrameStrata())
+    overlay:SetFrameLevel(math.max(0, editBox:GetFrameLevel() + 2))
+    overlay:SetAlpha(1)
+    overlay:Show()
+
+    local border = overlay.border
     if not border then return end
-    border:SetFrameStrata(editBox:GetFrameStrata())
-    border:SetFrameLevel(math.max(0, editBox:GetFrameLevel() + 2))
     border:SetAlpha(1)
     border:Show()
     if border.EnableMouse then
         border:EnableMouse(false)
     end
+end
+
+local function UpdateEditBoxMouseState(editBox)
+    if not editBox or not editBox.EnableMouse then
+        return
+    end
+
+    local canClick = editBox.IsShown and editBox:IsShown() and editBox.HasFocus and editBox:HasFocus()
+    editBox:EnableMouse(canClick == true)
 end
 
 local function UpdateEditBoxAlpha(editBox)
@@ -270,19 +390,10 @@ local function UpdateEditBoxAlpha(editBox)
         alpha = EDITBOX_ACTIVE_ALPHA
     end
     editBox:SetAlpha(alpha)
-    if editBox.border then
-        editBox.border:SetAlpha(alpha)
+    local overlay = _editBoxBorderOverlays[editBox]
+    if overlay then
+        overlay:SetAlpha(alpha)
     end
-end
-
-local function HookEditBoxAlphaBehavior(editBox)
-    if not editBox or _editBoxAlphaHooks[editBox] then return end
-    _editBoxAlphaHooks[editBox] = true
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnShow", "RefineAlpha"), editBox, "OnShow", UpdateEditBoxAlpha)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusGained", "RefineAlpha"), editBox, "OnEditFocusGained", UpdateEditBoxAlpha)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusLost", "RefineAlpha"), editBox, "OnEditFocusLost", UpdateEditBoxAlpha)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnTextChanged", "RefineAlpha"), editBox, "OnTextChanged", UpdateEditBoxAlpha)
-    UpdateEditBoxAlpha(editBox)
 end
 
 local function RemoveBlizzardEditBoxArt(editBox, chatName, id)
@@ -298,8 +409,9 @@ local function RemoveBlizzardEditBoxArt(editBox, chatName, id)
     }
 
     -- Fallback for template/expansion variants: strip any chat input border textures by path.
-    for i = 1, editBox:GetNumRegions() do
-        local region = select(i, editBox:GetRegions())
+    local regions = { editBox:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region.IsObjectType and region:IsObjectType("Texture") and region.GetTexture then
             local texture = region:GetTexture()
             if type(texture) == "string" and strfind(texture, "ChatInputBorder", 1, true) then
@@ -314,79 +426,76 @@ local function RemoveBlizzardEditBoxArt(editBox, chatName, id)
 end
 
 local function EnsureBlizzardEditBoxArtHidden(editBox, chatName, id)
-    if not editBox or _editBoxBlizzArtHiddenHooks[editBox] then return end
-    _editBoxBlizzArtHiddenHooks[editBox] = true
-
-    local function refresh()
-        RemoveBlizzardEditBoxArt(editBox, chatName, id)
-    end
-
-    refresh()
+    if not editBox then return end
+    RemoveBlizzardEditBoxArt(editBox, chatName, id)
     ForceHideAllChatEditBoxBorderRegions()
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnShow", "BlizzEditBoxArt"), editBox, "OnShow", refresh)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusGained", "BlizzEditBoxArt"), editBox, "OnEditFocusGained", refresh)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusLost", "BlizzEditBoxArt"), editBox, "OnEditFocusLost", refresh)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnTextChanged", "BlizzEditBoxArt"), editBox, "OnTextChanged", refresh)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnUpdate", "BlizzEditBoxArt"), editBox, "OnUpdate", function(self, elapsed)
-        _editBoxBlizzArtElapsed[self] = (_editBoxBlizzArtElapsed[self] or 0) + (elapsed or 0)
-        if _editBoxBlizzArtElapsed[self] >= 0.2 then
-            _editBoxBlizzArtElapsed[self] = 0
-            refresh()
-        end
-    end)
 end
 
--- Channel sticky types
-local STICKY_TYPES = {
-	"SAY", "PARTY", "PARTY_LEADER", "GUILD", "OFFICER", "RAID",
-	"RAID_WARNING", "INSTANCE_CHAT", "INSTANCE_CHAT_LEADER", "WHISPER",
-	"BN_WHISPER", "CHANNEL"
-}
-
--- Tab channel switch cycles
-local CHANNEL_CYCLES = {
-	{ chatType = "SAY",           use = function() return 1 end },
-	{ chatType = "PARTY",         use = function() return not IsInRaid() and IsInGroup(LE_PARTY_CATEGORY_HOME) end },
-	{ chatType = "RAID",          use = function() return IsInRaid(LE_PARTY_CATEGORY_HOME) end },
-	{ chatType = "INSTANCE_CHAT", use = function() return IsPartyLFG() end },
-	{ chatType = "GUILD",         use = function() return IsInGuild() end },
-	{ chatType = "SAY",           use = function() return 1 end },
-}
-
-----------------------------------------------------------------------------------------
--- Global String Overrides
-----------------------------------------------------------------------------------------
--- Wrapped in function for proper initialization timing
-local function InstallGlobalStringsOnce()
-    if _didInstallGlobals then return end
-    _didInstallGlobals = true
-
-    local L = RefineUI.Locale.Chat or {}
-    
-    local strings = {
-        CHAT_INSTANCE_CHAT_GET = "|Hchannel:INSTANCE_CHAT|h[" .. (L.InstanceChat or "I") .. "]|h %s:\32",
-        CHAT_INSTANCE_CHAT_LEADER_GET = "|Hchannel:INSTANCE_CHAT|h[" .. (L.InstanceChatLeader or "IL") .. "]|h %s:\32",
-        CHAT_BN_WHISPER_GET = (L.BNWhisper or "BN") .. " %s:\32",
-        CHAT_GUILD_GET = "|Hchannel:GUILD|h[" .. (L.Guild or "G") .. "]|h %s:\32",
-        CHAT_OFFICER_GET = "|Hchannel:OFFICER|h[" .. (L.Officer or "O") .. "]|h %s:\32",
-        CHAT_PARTY_GET = "|Hchannel:PARTY|h[" .. (L.Party or "P") .. "]|h %s:\32",
-        CHAT_PARTY_LEADER_GET = "|Hchannel:PARTY|h[" .. (L.PartyLeader or "PL") .. "]|h %s:\32",
-        CHAT_PARTY_GUIDE_GET = "|Hchannel:PARTY|h[" .. (L.PartyLeader or "PL") .. "]|h %s:\32",
-        CHAT_RAID_GET = "|Hchannel:RAID|h[" .. (L.Raid or "R") .. "]|h %s:\32",
-        CHAT_RAID_LEADER_GET = "|Hchannel:RAID|h[" .. (L.RaidLeader or "RL") .. "]|h %s:\32",
-        CHAT_RAID_WARNING_GET = "[" .. (L.RaidWarning or "RW") .. "] %s:\32",
-        CHAT_PET_BATTLE_COMBAT_LOG_GET = "|Hchannel:PET_BATTLE_COMBAT_LOG|h[" .. (L.PetBattle or "PB") .. "]|h:\32",
-        CHAT_PET_BATTLE_INFO_GET = "|Hchannel:PET_BATTLE_INFO|h[" .. (L.PetBattle or "PB") .. "]|h:\32",
-        CHAT_FLAG_AFK = "|cffE7E716" .. (L.AFK or "[AFK]") .. "|r ",
-        CHAT_FLAG_DND = "|cffFF0000" .. (L.DND or "[DND]") .. "|r ",
-        CHAT_FLAG_GM = "|cff4154F5" .. (L.GM or "[GM]") .. "|r ",
-        ERR_FRIEND_ONLINE_SS = "|Hplayer:%s|h[%s]|h " .. (L.ComeOnline or "has come online."),
-        ERR_FRIEND_OFFLINE_S = "[%s] " .. (L.GoneOffline or "has gone offline.")
-    }
-
-    for k, v in pairs(strings) do
-        _G[k] = v
+local function SuppressChatWidget(widget)
+    if not widget then
+        return
     end
+
+    if widget.SetAlpha then
+        widget:SetAlpha(0)
+    end
+
+    if widget.Hide then
+        widget:Hide()
+    end
+
+    if widget.EnableMouse then
+        widget:EnableMouse(false)
+    end
+
+    if widget.Disable then
+        pcall(widget.Disable, widget)
+    end
+
+    if widget.SetShown then
+        hooksecurefunc(widget, "SetShown", function(self, shown)
+            if shown then
+                self:SetAlpha(0)
+                self:Hide()
+            end
+        end)
+    end
+
+    if widget.Show then
+        hooksecurefunc(widget, "Show", function(self)
+            self:SetAlpha(0)
+            self:Hide()
+        end)
+    end
+end
+
+local function GetEditBoxColorInfo(editBox)
+    if not editBox then
+        return nil
+    end
+
+    local chatType
+    if editBox.GetChatType then
+        chatType = editBox:GetChatType()
+    else
+        chatType = editBox:GetAttribute("chatType")
+    end
+
+    if type(chatType) ~= "string" or chatType == "" then
+        return nil
+    end
+
+    if chatType == "CHANNEL" and editBox.GetChannelTarget then
+        local localID = editBox:GetChannelTarget()
+        if type(localID) == "number" and localID > 0 then
+            local channelInfo = ChatTypeInfo["CHANNEL" .. localID]
+            if channelInfo then
+                return channelInfo
+            end
+        end
+    end
+
+    return ChatTypeInfo[chatType]
 end
 
 -- Update editbox border color and hide header text
@@ -394,87 +503,149 @@ local function UpdateEditBoxStyle(editBox)
 	if not editBox then return end
 	
 	-- Update border color based on channel
-	if editBox.border then
-		local chatType = editBox:GetAttribute("chatType")
-		if chatType then
-			local info = ChatTypeInfo[chatType]
-			if info then
-				editBox.border:SetBackdropBorderColor(info.r, info.g, info.b, 1)
-            else
-                local c = RefineUI.Config and RefineUI.Config.General and RefineUI.Config.General.BorderColor
-                if c then
-                    editBox.border:SetBackdropBorderColor(c[1], c[2], c[3], c[4] or 1)
-                end
-			end
-        else
-            local c = RefineUI.Config and RefineUI.Config.General and RefineUI.Config.General.BorderColor
-            if c then
-                editBox.border:SetBackdropBorderColor(c[1], c[2], c[3], c[4] or 1)
-            end
-		end
+	local overlay = _editBoxBorderOverlays[editBox]
+	if overlay and overlay.border then
+        local info = GetEditBoxColorInfo(editBox)
+        if info then
+            overlay.border:SetBackdropBorderColor(info.r, info.g, info.b, 1)
+            return
+        end
+
+        local c = RefineUI.Config and RefineUI.Config.General and RefineUI.Config.General.BorderColor
+        if c then
+            overlay.border:SetBackdropBorderColor(c[1], c[2], c[3], c[4] or 1)
+        end
 	end
-	
-	if USE_EDITBOX_HEADER_INSETS then
-		-- Optional minimalist mode: hide channel header text.
-		if editBox.header then editBox.header:Hide() end
-		if editBox.headerSuffix then editBox.headerSuffix:Hide() end
-		editBox:SetTextInsets(8, 8, 0, 0)
-	else
-		if editBox.header then editBox.header:Show() end
-		if editBox.headerSuffix then editBox.headerSuffix:Hide() end
-	end
+end
+
+local function RefreshEditBoxVisualState(editBox)
+    if not editBox then
+        return
+    end
+
+    EnsureRefineEditBoxBorder(editBox)
+    UpdateEditBoxStyle(editBox)
+    UpdateEditBoxAlpha(editBox)
+    UpdateEditBoxMouseState(editBox)
 end
 
 local function HookSingleEditBoxBorderColor(editBox)
-    if not editBox or _editBoxBorderColorHooks[editBox] then return end
+    if not editBox or _editBoxBorderColorHooks[editBox] then
+        return
+    end
+
     _editBoxBorderColorHooks[editBox] = true
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnShow", "BorderColor"), editBox, "OnShow", UpdateEditBoxStyle)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnTextChanged", "BorderColor"), editBox, "OnTextChanged", UpdateEditBoxStyle)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusGained", "BorderColor"), editBox, "OnEditFocusGained", UpdateEditBoxStyle)
-    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusLost", "BorderColor"), editBox, "OnEditFocusLost", UpdateEditBoxStyle)
+    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnShow", "RefineBorder"), editBox, "OnShow", RefreshEditBoxVisualState)
+    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnHide", "RefineBorder"), editBox, "OnHide", RefreshEditBoxVisualState)
+    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnTextChanged", "RefineBorder"), editBox, "OnTextChanged", RefreshEditBoxVisualState)
+    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusGained", "RefineBorder"), editBox, "OnEditFocusGained", RefreshEditBoxVisualState)
+    RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusLost", "RefineBorder"), editBox, "OnEditFocusLost", RefreshEditBoxVisualState)
 end
 
--- Hook editboxes for border color updates
 local function HookEditBoxBorderColor()
     if CHAT_FRAMES then
         for _, frameName in ipairs(CHAT_FRAMES) do
             local frame = _G[frameName]
-            if frame and frame.editBox and frame.editBox.border then
+            if frame and frame.editBox then
                 HookSingleEditBoxBorderColor(frame.editBox)
             end
         end
-    else
-	    for i = 1, NUM_CHAT_WINDOWS do
-		    local editBox = _G["ChatFrame"..i.."EditBox"]
-		    if editBox and editBox.border then
-                HookSingleEditBoxBorderColor(editBox)
-		    end
-	    end
+        return
+    end
+
+    for index = 1, NUM_CHAT_WINDOWS do
+        local editBox = _G[format("ChatFrame%sEditBox", index)]
+        if editBox then
+            HookSingleEditBoxBorderColor(editBox)
+        end
     end
 end
 
--- Switch channels by Tab
-local function UpdateTabChannelSwitch(self)
-    if not self or type(self.GetText) ~= "function" then return end
-    local text = self:GetText()
-    if type(text) ~= "string" or (RefineUI.IsAccessibleValue and not RefineUI:IsAccessibleValue(text)) then
+local function RefreshAllChatEditBoxVisualState()
+    if CHAT_FRAMES then
+        for _, frameName in ipairs(CHAT_FRAMES) do
+            local chatFrame = _G[frameName]
+            if chatFrame and chatFrame.editBox then
+                RefreshEditBoxVisualState(chatFrame.editBox)
+            end
+        end
         return
     end
-	if strsub(text, 1, 1) == "/" then return end
-	local currChatType = self:GetAttribute("chatType")
-	for i, curr in ipairs(CHANNEL_CYCLES) do
-		if curr.chatType == currChatType then
-			local h, r, step = i + 1, #CHANNEL_CYCLES, 1
-			if IsShiftKeyDown() then h, r, step = i - 1, 1, -1 end
-			for j = h, r, step do
-				if CHANNEL_CYCLES[j]:use() then
-					self:SetAttribute("chatType", CHANNEL_CYCLES[j].chatType)
-					ChatEdit_UpdateHeader(self)
-					return
-				end
-			end
-		end
-	end
+
+    for index = 1, NUM_CHAT_WINDOWS do
+        local editBox = _G[format("ChatFrame%sEditBox", index)]
+        if editBox then
+            RefreshEditBoxVisualState(editBox)
+        end
+    end
+end
+
+local function InstallEditBoxHeaderRefreshHook()
+    if _editBoxHeaderHookInstalled then
+        return
+    end
+
+    _editBoxHeaderHookInstalled = true
+    RefineUI:HookOnce("ChatFrames:ChatEdit_UpdateHeader:RefineBorder", "ChatEdit_UpdateHeader", function(editBox)
+        local chatFrame = editBox and editBox.chatFrame
+        if chatFrame and not IsPlayerInCombat() then
+            ApplyEditBoxLayout(editBox, chatFrame)
+        end
+        if chatFrame and chatFrame.GetName and chatFrame.GetID and HIDE_BLIZZ_EDITBOX_BORDER_TEXTURE then
+            EnsureBlizzardEditBoxArtHidden(editBox, chatFrame:GetName(), chatFrame:GetID())
+        end
+        RefreshEditBoxVisualState(editBox)
+        if Chat.UpdateTabAlpha then
+            Chat:UpdateTabAlpha()
+        end
+    end)
+
+    if ChatFrameUtil then
+        RefineUI:HookOnce("ChatFrames:ChatFrameUtil:ActivateChat", ChatFrameUtil, "ActivateChat", function(editBox)
+            local chatFrame = editBox and editBox.chatFrame
+            if chatFrame and not IsPlayerInCombat() then
+                ApplyEditBoxLayout(editBox, chatFrame)
+            end
+            RefreshEditBoxVisualState(editBox)
+            if Chat.UpdateTabAlpha then
+                Chat:UpdateTabAlpha()
+            end
+        end)
+        RefineUI:HookOnce("ChatFrames:ChatFrameUtil:DeactivateChat", ChatFrameUtil, "DeactivateChat", function(editBox)
+            RefreshEditBoxVisualState(editBox)
+            if editBox and editBox.Hide then
+                editBox:Hide()
+            end
+            if Chat.UpdateTabAlpha then
+                Chat:UpdateTabAlpha()
+            end
+        end)
+    end
+
+    local editBoxMixin = ChatFrameEditBoxMixin or ChatFrameEditBoxBaseMixin
+    if editBoxMixin then
+        RefineUI:HookOnce("ChatFrames:ChatFrameEditBoxMixin:SetChatType", editBoxMixin, "SetChatType", function(editBox)
+            if editBox and editBox.IsShown and editBox:IsShown() then
+                RefreshEditBoxVisualState(editBox)
+            end
+        end)
+        RefineUI:HookOnce("ChatFrames:ChatFrameEditBoxMixin:SetChannelTarget", editBoxMixin, "SetChannelTarget", function(editBox)
+            if editBox and editBox.IsShown and editBox:IsShown() then
+                RefreshEditBoxVisualState(editBox)
+            end
+        end)
+        RefineUI:HookOnce("ChatFrames:ChatFrameEditBoxMixin:Deactivate", editBoxMixin, "Deactivate", function(editBox)
+            if editBox and editBox.Hide and (not editBox.HasFocus or not editBox:HasFocus()) then
+                editBox:Hide()
+            end
+            if editBox then
+                RefreshEditBoxVisualState(editBox)
+            end
+            if Chat.UpdateTabAlpha then
+                Chat:UpdateTabAlpha()
+            end
+        end)
+    end
 end
 
 ----------------------------------------------------------------------------------------
@@ -506,36 +677,8 @@ local function SetChatStyle(frame, options)
 	chatFrame:SetFading(false)
     ApplyChatFrameTypography(chatFrame, fontSize)
 
-    if editBox and not visualOnly then
-	    -- Keep native editbox rendering, only control placement.
-        editBox:ClearAllPoints()
-	    editBox:SetPoint("BOTTOMLEFT", ChatFrame1, "TOPLEFT", -10, 23)
-	    editBox:SetPoint("BOTTOMRIGHT", ChatFrame1, "TOPRIGHT", 11, 23)
-        editBox:SetAltArrowKeyMode(false)
-        ApplyEditBoxTypography(editBox, fontSize)
-        if HIDE_BLIZZ_EDITBOX_BORDER_TEXTURE then
-            EnsureBlizzardEditBoxArtHidden(editBox, chat, id)
-        end
-        if USE_EDITBOX_BORDER_ONLY then
-            EnsureRefineEditBoxBorder(editBox)
-            UpdateEditBoxStyle(editBox)
-            HookSingleEditBoxBorderColor(editBox)
-            if not _editBoxBorderRefreshHooks[editBox] then
-                _editBoxBorderRefreshHooks[editBox] = true
-                RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnShow", "RefineBorderRefresh"), editBox, "OnShow", EnsureRefineEditBoxBorder)
-                RefineUI:HookScriptOnce(BuildChatFramesHookKey(editBox, "OnEditFocusGained", "RefineBorderRefresh"), editBox, "OnEditFocusGained", EnsureRefineEditBoxBorder)
-            end
-        end
-        if USE_EDITBOX_HEADER_INSETS then
-            if editBox.header then editBox.header:Hide() end
-            if editBox.headerSuffix then editBox.headerSuffix:Hide() end
-            editBox:SetTextInsets(8, 8, 0, 0)
-        else
-            if editBox.header then editBox.header:Show() end
-            if editBox.headerSuffix then editBox.headerSuffix:Hide() end
-        end
-        HookEditBoxAlphaBehavior(editBox)
-    end
+    -- Keep Blizzard's native chat edit box ownership. Encounter-time whisper and
+    -- temporary chat windows run through protected header/layout paths.
 
 	-- Strip default textures
 	for _, textureName in ipairs(CHAT_FRAME_TEXTURES) do
@@ -559,7 +702,10 @@ local function SetChatStyle(frame, options)
                 if element.SetTexture then element:SetTexture(nil) end
                 if element.SetAlpha then element:SetAlpha(0) end
             else
-                RefineUI.Kill(element)
+                if element.SetTexture then
+                    element:SetTexture(nil)
+                end
+                SuppressChatWidget(element)
             end
         end
 	end
@@ -568,14 +714,14 @@ local function SetChatStyle(frame, options)
         if visualOnly then
             if frame.ScrollBar.SetAlpha then frame.ScrollBar:SetAlpha(0) end
         else
-            RefineUI.Kill(frame.ScrollBar)
+            SuppressChatWidget(frame.ScrollBar)
         end
     end
 	if frame.ScrollToBottomButton then
         if visualOnly then
             if frame.ScrollToBottomButton.SetAlpha then frame.ScrollToBottomButton:SetAlpha(0) end
         else
-            RefineUI.Kill(frame.ScrollToBottomButton)
+            SuppressChatWidget(frame.ScrollToBottomButton)
         end
     end
 
@@ -583,24 +729,23 @@ local function SetChatStyle(frame, options)
         if visualOnly then
             if tab.conversationIcon.SetAlpha then tab.conversationIcon:SetAlpha(0) end
         else
-            RefineUI.Kill(tab.conversationIcon)
+            SuppressChatWidget(tab.conversationIcon)
         end
     end
 
-    if not visualOnly and USE_CUSTOM_EDITBOX_SKIN and editBox then
-	    -- Add RefineUI border to editbox
-        EnsureBlizzardEditBoxArtHidden(editBox, chat, id)
+    if not visualOnly and editBox then
+        if not IsPlayerInCombat() then
+            ApplyEditBoxLayout(editBox, chatFrame)
+        end
+        ApplyEditBoxTypography(editBox, fontSize)
 
-	    -- RefineUI.AddAPI(editBox) -- REMOVED
-        EnsureRefineEditBoxBorder(editBox)
-	    if USE_EDITBOX_HEADER_INSETS then
-	        if editBox.header then editBox.header:Hide() end
-	        if editBox.headerSuffix then editBox.headerSuffix:Hide() end
-	        editBox:SetTextInsets(8, 8, 0, 0)
-	    else
-	        if editBox.header then editBox.header:Show() end
-	        if editBox.headerSuffix then editBox.headerSuffix:Hide() end
-	    end
+        if USE_EDITBOX_BORDER_ONLY then
+            if HIDE_BLIZZ_EDITBOX_BORDER_TEXTURE then
+                EnsureBlizzardEditBoxArtHidden(editBox, chat, id)
+            end
+            RefreshEditBoxVisualState(editBox)
+            HookEditBoxBorderColor()
+        end
     end
 
 	-- Combat log styling
@@ -627,56 +772,6 @@ local function SetChatStyle(frame, options)
 		    CombatLogQuickButtonFrameButton1:SetPoint("BOTTOM", 0, 0)
         end
 	end
-
-
-
-    local function ForEachChatTab(callback)
-        if CHAT_FRAMES then
-            for _, frameName in ipairs(CHAT_FRAMES) do
-                local t = _G[frameName .. "Tab"]
-                if t then
-                    callback(t)
-                end
-            end
-            return
-        end
-        for i = 1, NUM_CHAT_WINDOWS do
-            local t = _G[format("ChatFrame%sTab", i)]
-            if t then
-                callback(t)
-            end
-        end
-    end
-	
-	-- Hover logic for TabsMouseOver and CopyButton
-    if not visualOnly then
-	    frame:HookScript("OnEnter", function()
-		    if Chat.db.TabsMouseOver then
-                ForEachChatTab(function(t)
-                    if t:IsShown() then
-                        RefineUI:FadeIn(t)
-                    end
-                end)
-		    end
-		    if Chat.CopyButton then
-			    RefineUI:FadeIn(Chat.CopyButton)
-		    end
-	    end)
-
-	    frame:HookScript("OnLeave", function()
-		    if Chat.db.TabsMouseOver then
-                ForEachChatTab(function(t)
-                    if t:IsShown() then
-                        RefineUI:FadeOut(t)
-                    end
-                end)
-		    end
-		    if Chat.CopyButton then
-			    RefineUI:FadeOut(Chat.CopyButton)
-		    end
-	    end)
-    end
-
     if visualOnly then
         _visuallyStyledFrames[frame] = true
     else
@@ -704,39 +799,12 @@ local function SetupChat()
         end
     end
 
-    -- Keep editbox text/header font style synced with current chat font sizes.
-    if CHAT_FRAMES then
-        for _, frameName in ipairs(CHAT_FRAMES) do
-            local f = _G[frameName]
-            if f and f.GetID then
-                local _, fontSize = FCF_GetChatWindowInfo(f:GetID())
-                ApplyChatFrameTypography(f, fontSize)
-                if f.editBox then
-                    ApplyEditBoxTypography(f.editBox, fontSize)
-                end
-            end
-        end
-    end
+    RefreshAllChatEditBoxVisualState()
+    HookEditBoxBorderColor()
 
-	-- Make channels sticky
-	for _, chatType in ipairs(STICKY_TYPES) do
-		ChatTypeInfo[chatType].sticky = 1
-	end
+    -- Avoid mutating Blizzard chat metadata tables. Those tables participate in
+    -- encounter-time chat handling and secret-safe formatting.
 
-	-- Hook editbox border colors after borders are created
-	HookEditBoxBorderColor()
-    if HIDE_BLIZZ_EDITBOX_BORDER_TEXTURE then
-        ForceHideAllChatEditBoxBorderRegions()
-    end
-
-    -- Use native timestamp rendering so timestamps appear at the start of each line.
-    if Chat.ApplyTimestampSetting then
-        Chat:ApplyTimestampSetting()
-    elseif Chat.db and Chat.db.TimeStamps then
-        C_CVar.SetCVar("showTimestamps", "|cff808080[%H:%M]|r ")
-    else
-        C_CVar.SetCVar("showTimestamps", "none")
-    end
 end
 
 local function SetupChatPosAndFont()
@@ -753,19 +821,8 @@ local function SetupChatPosAndFont()
 		FCF_SetChatWindowFontSize(nil, chat, fontSize)
 
         ApplyChatFrameTypography(chat, fontSize)
-        if chat.editBox then
-            ApplyEditBoxTypography(chat.editBox, fontSize)
-        end
-
 		if i == 1 then
 			chat:ClearAllPoints()
-			
-			-- Use Chat.db which is initialized in OnInitialize
-			-- Falls back to Config values if DB not available
-			local width = (Chat.db and Chat.db.Width) or 380
-			local height = (Chat.db and Chat.db.Height) or 155
-			
-			chat:SetSize(width, height)
 			if Chat.positions.ChatFrame1 then
                 chat:SetPoint(unpack(Chat.positions.ChatFrame1))
             end
@@ -784,7 +841,6 @@ local function SetupChatPosAndFont()
 			RequestDockUpdate()
 		end
 
-        RefineUI:HookScriptOnce(BuildChatFramesHookKey(chat, "OnMouseWheel"), chat, "OnMouseWheel", FloatingChatFrame_OnMouseScroll)
 	end
     if CHAT_FRAMES then
         for _, frameName in ipairs(CHAT_FRAMES) do
@@ -794,9 +850,6 @@ local function SetupChatPosAndFont()
                 fontSize = math.max(tonumber(fontSize) or 11, 11)
                 FCF_SetChatWindowFontSize(nil, chat, fontSize)
                 ApplyChatFrameTypography(chat, fontSize)
-                if chat.editBox then
-                    ApplyEditBoxTypography(chat.editBox, fontSize)
-                end
             end
         end
     end
@@ -826,8 +879,7 @@ local function SetupChatPosAndFont()
             QuickJoinToastButton.Toast:SetPoint(unpack(Chat.positions.QuickJoinToastButton))
         end
         QuickJoinToastButton.Toast.Background:SetTexture("")
-        QuickJoinToastButton.Toast:SetWidth((Chat.db.Width or 380) + 7)
-        QuickJoinToastButton.Toast.Text:SetWidth((Chat.db.Width or 380) - 20)
+        UpdatePrimaryChatLinkedWidths()
     end
 
     if BNToastFrame then
@@ -864,23 +916,7 @@ local function SetupChatVisualsOnly()
         end
     end
 
-    -- Keep the primary chat window width/height close to configured values without touching
-    -- dock state, saved layout, or points during combat reload.
-    if ChatFrame1 and ChatFrame1.SetSize then
-        local width = (Chat.db and Chat.db.Width) or 380
-        local height = (Chat.db and Chat.db.Height) or 155
-        pcall(ChatFrame1.SetSize, ChatFrame1, width, height)
-    end
-
-    if QuickJoinToastButton and QuickJoinToastButton.Toast then
-        local width = (Chat.db and Chat.db.Width) or 380
-        if QuickJoinToastButton.Toast.SetWidth then
-            pcall(QuickJoinToastButton.Toast.SetWidth, QuickJoinToastButton.Toast, width + 7)
-        end
-        if QuickJoinToastButton.Toast.Text and QuickJoinToastButton.Toast.Text.SetWidth then
-            pcall(QuickJoinToastButton.Toast.Text.SetWidth, QuickJoinToastButton.Toast.Text, width - 20)
-        end
-    end
+    UpdatePrimaryChatLinkedWidths()
 end
 
 local function SetupChatPosAndFontSafe()
@@ -899,14 +935,15 @@ end
 local function SetupTempChat()
 	local frame = FCF_GetCurrentChatFrame()
     if not frame then return end
-	if not _styledFrames[frame] then
-		SetChatStyle(frame)
-	end
+    if not _styledFrames[frame] then
+        SetChatStyle(frame)
+    end
     local _, fontSize = FCF_GetChatWindowInfo(frame:GetID())
     ApplyChatFrameTypography(frame, fontSize)
     if frame.editBox then
         ApplyEditBoxTypography(frame.editBox, fontSize)
-        UpdateEditBoxStyle(frame.editBox)
+        RefreshEditBoxVisualState(frame.editBox)
+        HookEditBoxBorderColor()
     end
 end
 
@@ -921,10 +958,10 @@ local function InstallRuntimeHooksOnce()
     _didInstallRuntime = true
 
     -- Kill chat UI buttons
-    if ChatFrameMenuButton then RefineUI.Kill(ChatFrameMenuButton) end
-    if ChatFrameChannelButton then RefineUI.Kill(ChatFrameChannelButton) end
-    if ChatFrameToggleVoiceDeafenButton then RefineUI.Kill(ChatFrameToggleVoiceDeafenButton) end
-    if ChatFrameToggleVoiceMuteButton then RefineUI.Kill(ChatFrameToggleVoiceMuteButton) end
+    if ChatFrameMenuButton then SuppressChatWidget(ChatFrameMenuButton) end
+    if ChatFrameChannelButton then SuppressChatWidget(ChatFrameChannelButton) end
+    if ChatFrameToggleVoiceDeafenButton then SuppressChatWidget(ChatFrameToggleVoiceDeafenButton) end
+    if ChatFrameToggleVoiceMuteButton then SuppressChatWidget(ChatFrameToggleVoiceMuteButton) end
 
     -- Position overflow button
     if GeneralDockManagerOverflowButton then
@@ -942,21 +979,7 @@ local function InstallRuntimeHooksOnce()
 
     -- Hook temporary window creation
     RefineUI:HookOnce("ChatFrames:FCF_OpenTemporaryWindow", "FCF_OpenTemporaryWindow", SetupTempChat)
-
-    -- Hook Tab channel switching
-    RefineUI:HookOnce("ChatFrames:ChatEdit_CustomTabPressed", "ChatEdit_CustomTabPressed", UpdateTabChannelSwitch)
-    if HIDE_BLIZZ_EDITBOX_BORDER_TEXTURE then
-        RefineUI:HookOnce("ChatFrames:ChatEdit_UpdateHeader:HideBlizzEditBoxArt", "ChatEdit_UpdateHeader", function(editBox)
-            local frame = editBox and editBox.chatFrame
-            if frame and frame.GetName and frame.GetID then
-                EnsureBlizzardEditBoxArtHidden(editBox, frame:GetName(), frame:GetID())
-                HookSingleEditBoxBorderColor(editBox)
-                UpdateEditBoxStyle(editBox)
-            else
-                ForceHideAllChatEditBoxBorderRegions()
-            end
-        end)
-    end
+    InstallEditBoxHeaderRefreshHook()
 
     -- Keep editbox typography in sync when chat font size changes at runtime.
     RefineUI:HookOnce("ChatFrames:FCF_SetChatWindowFontSize", "FCF_SetChatWindowFontSize", function(arg1, arg2, arg3)
@@ -968,10 +991,6 @@ local function InstallRuntimeHooksOnce()
         end
         if frame then
             ApplyChatFrameTypography(frame, size)
-            if frame.editBox then
-                ApplyEditBoxTypography(frame.editBox, size)
-                UpdateEditBoxStyle(frame.editBox)
-            end
         end
     end)
 end
@@ -991,12 +1010,10 @@ local function RunInitialChatSetup()
 
     InstallRuntimeHooksOnce()
     SetupChat()
+    HookPrimaryChatSizeUpdates()
     SetupChatPosAndFontSafe()
     Chat:SetupTabs()
     Chat:SetupCopy()
-    if Chat.SetupHistory then
-        Chat:SetupHistory()
-    end
 
     _didInitialChatSetup = true
     _didCombatSafeChatVisualSetup = true
@@ -1018,6 +1035,10 @@ local function RunCombatSafeChatVisualSetup()
 end
 
 local function HandlePlayerEnteringWorldChatSetup()
+    if Chat.SyncEncounterState then
+        Chat:SyncEncounterState()
+    end
+
     if not _didInitialChatSetup then
         RunInitialChatSetup()
         return
@@ -1026,12 +1047,17 @@ local function HandlePlayerEnteringWorldChatSetup()
     SetupChatPosAndFontSafe()
 end
 
+local function HandleEncounterStateChanged(_, isInProgress)
+    if Chat.SetEncounterActive then
+        Chat:SetEncounterActive(isInProgress == true)
+    end
+end
+
 function Chat:OnEnable()
     if not self.db or self.db.Enable ~= true then
         return
     end
 
-    InstallGlobalStringsOnce()
     if self.SetupIcons then
         self:SetupIcons()
     end
@@ -1047,6 +1073,9 @@ function Chat:OnEnable()
     if self.InstallMessagePipeline then
         self:InstallMessagePipeline()
     end
+    if self.SyncEncounterState then
+        self:SyncEncounterState()
+    end
 
     if not RunInitialChatSetup() then
         RunCombatSafeChatVisualSetup()
@@ -1057,4 +1086,5 @@ function Chat:OnEnable()
     
     -- Re-apply position/font rules when entering world, but only after initial chat setup has safely run.
     RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", HandlePlayerEnteringWorldChatSetup, CHAT_WORLD_SETUP_KEY)
+    RefineUI:RegisterEventCallback("ENCOUNTER_STATE_CHANGED", HandleEncounterStateChanged, CHAT_ENCOUNTER_STATE_KEY)
 end

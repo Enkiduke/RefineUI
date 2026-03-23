@@ -47,6 +47,38 @@ local function GetParameterRestrictions(frame, setting)
   return nil
 end
 
+local function ApproximatelyEqual(a, b)
+  return math.abs((a or 0) - (b or 0)) < 0.0001
+end
+
+local function GetSliderStorageMode(restrictions)
+  if not restrictions or restrictions.type ~= Enum.EditModeSettingDisplayType.Slider then
+    return "raw"
+  end
+
+  local convertValue = restrictions.ConvertValue
+  local stepSize = restrictions.stepSize
+  if type(convertValue) ~= "function" or type(stepSize) ~= "number" or stepSize <= 0 then
+    return "raw"
+  end
+
+  local minValue = restrictions.minValue or 0
+  local sampleValue = minValue + stepSize
+  local ok, converted = pcall(convertValue, restrictions, sampleValue, false)
+  if not ok or type(converted) ~= "number" then
+    return "raw"
+  end
+
+  if ApproximatelyEqual(converted, 1) then
+    return "step"
+  end
+  if ApproximatelyEqual(converted, stepSize) then
+    return "diff_from_min"
+  end
+
+  return "raw"
+end
+
 -- RefineUI: Expose for debugging
 lib.GetParameterRestrictions = GetParameterRestrictions
 
@@ -92,8 +124,7 @@ function lib:SetFrameSetting(frame, setting, value)
   local system = GetSystemByFrame(frame)
 
   assert(system, FRAME_ERROR)
-
-  assert(value == math.floor(value), "Non-negative integer values only")
+  assert(type(value) == "number", "Numeric values only")
 
   local restrictions = GetParameterRestrictions(frame, setting)
 
@@ -112,9 +143,15 @@ function lib:SetFrameSetting(frame, setting, value)
       min = 0
       max = 1
     elseif restrictions.type == Enum.EditModeSettingDisplayType.Slider then
-      if restrictions.stepSize then
+      local storageMode = GetSliderStorageMode(restrictions)
+      if storageMode == "step" then
+        min = 0
+        max = (restrictions.maxValue - restrictions.minValue) / restrictions.stepSize
+        value = (value - restrictions.minValue) / restrictions.stepSize
+      elseif storageMode == "diff_from_min" then
         min = 0
         max = restrictions.maxValue - restrictions.minValue
+        value = value - restrictions.minValue
       else
         min = restrictions.minValue
         max = restrictions.maxValue
@@ -139,6 +176,16 @@ function lib:GetFrameSetting(frame, setting)
 
   for _, item in pairs(system.settings) do
     if item.setting == setting then
+      local restrictions = GetParameterRestrictions(frame, setting)
+      if restrictions and restrictions.type == Enum.EditModeSettingDisplayType.Slider then
+        local storageMode = GetSliderStorageMode(restrictions)
+        if storageMode == "step" then
+          return (item.value * restrictions.stepSize) + restrictions.minValue
+        elseif storageMode == "diff_from_min" then
+          return item.value + restrictions.minValue
+        end
+      end
+
       return item.value
     end
   end

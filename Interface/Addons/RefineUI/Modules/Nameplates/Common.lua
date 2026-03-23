@@ -271,6 +271,17 @@ function Util.GetNameplateFromUnitFrame(unitFrame)
     return parent
 end
 
+local function IsComparableVisualSignature(signature)
+    return type(signature) == "string" and signature ~= ""
+end
+
+local function AreComparableVisualSignaturesEqual(left, right)
+    if not IsComparableVisualSignature(left) or not IsComparableVisualSignature(right) then
+        return false
+    end
+    return left == right
+end
+
 -- Centralized cross-module visual refresh entry point for nameplate unit frames.
 -- opts:
 --   refreshCrowdControl: bool -> refresh CC model/state, suppressing CC-local portrait/border refresh
@@ -284,28 +295,65 @@ function RefineUI:RefreshNameplateVisualState(unitFrame, unit, event, opts)
 
     opts = opts or {}
     local resolvedUnit = Util.ResolveUnitToken(unit, unitFrame.unit)
+    local data = self.NameplateData and self.NameplateData[unitFrame] or nil
+    -- When portrait and borders refresh together, let the shared orchestrator own
+    -- the final border pass so portrait updates do not immediately recompute it again.
+    local suppressPortraitBorderRefresh = opts.refreshPortrait == true and opts.refreshBorders == true
+    local suppressData = suppressPortraitBorderRefresh and data or nil
+    local crowdControlSignatureBefore = data and data.CrowdControlVisualSignature or nil
+    local refreshCrowdControl = opts.refreshCrowdControl == true
+    local refreshPortrait = opts.refreshPortrait == true
+    local refreshBorders = opts.refreshBorders == true
 
-    if opts.refreshCrowdControl and self.UpdateNameplateCrowdControl then
+    if refreshCrowdControl and self.UpdateNameplateCrowdControl then
         -- Suppress CC-local portrait/border fan-out; caller owns visual orchestration.
         self:UpdateNameplateCrowdControl(unitFrame, resolvedUnit, event, true)
     end
 
-    if opts.refreshBorders and self.UpdateBorderColors then
-        self:UpdateBorderColors(unitFrame, opts.forceCastCheck)
+    local crowdControlSignatureAfter = data and data.CrowdControlVisualSignature or nil
+    local crowdControlChanged = not AreComparableVisualSignaturesEqual(crowdControlSignatureBefore, crowdControlSignatureAfter)
+
+    if refreshPortrait and self.UpdateDynamicPortrait then
+        local portraitData = suppressData or data
+        if not (portraitData and portraitData.RefineHidden == true) then
+            local comparablePortraitSignature = self.GetPredictedNameplatePortraitVisualSignature
+                and self:GetPredictedNameplatePortraitVisualSignature(unitFrame, resolvedUnit, event)
+                or nil
+            local shouldSkipPortraitRefresh = (not crowdControlChanged)
+                and data ~= nil
+                and AreComparableVisualSignaturesEqual(comparablePortraitSignature, data.PortraitVisualSignature)
+
+            if not shouldSkipPortraitRefresh then
+                local portraitUnit = resolvedUnit
+                if not Util.IsUsableUnitToken(portraitUnit) then
+                    portraitUnit = unitFrame.unit
+                end
+                if Util.IsUsableUnitToken(portraitUnit) then
+                    local nameplate = Util.GetNameplateFromUnitFrame(unitFrame)
+                    if nameplate then
+                        if suppressData then
+                            suppressData.SuppressPortraitBorderRefresh = true
+                        end
+                        self:UpdateDynamicPortrait(nameplate, portraitUnit, event)
+                        if suppressData then
+                            suppressData.SuppressPortraitBorderRefresh = nil
+                        end
+                    end
+                end
+            end
+        end
     end
 
-    if opts.refreshPortrait and self.UpdateDynamicPortrait then
-        local portraitUnit = resolvedUnit
-        if not Util.IsUsableUnitToken(portraitUnit) then
-            portraitUnit = unitFrame.unit
-        end
-        if not Util.IsUsableUnitToken(portraitUnit) then
-            return
-        end
+    if refreshBorders and self.UpdateBorderColors then
+        local comparableBorderSignature = self.GetPredictedNameplateBorderVisualSignature
+            and self:GetPredictedNameplateBorderVisualSignature(unitFrame, opts.forceCastCheck)
+            or nil
+        local shouldSkipBorderRefresh = (not crowdControlChanged)
+            and data ~= nil
+            and AreComparableVisualSignaturesEqual(comparableBorderSignature, data.BorderVisualSignature)
 
-        local nameplate = Util.GetNameplateFromUnitFrame(unitFrame)
-        if nameplate then
-            self:UpdateDynamicPortrait(nameplate, portraitUnit, event)
+        if not shouldSkipBorderRefresh then
+            self:UpdateBorderColors(unitFrame, opts.forceCastCheck)
         end
     end
 end

@@ -53,7 +53,7 @@ function EncounterTimeline:RegisterEncounterTimelineEditModeSettings()
     settings[#settings + 1] = {
         kind = settingType.Dropdown,
         name = "Track Text Anchor",
-        default = EncounterTimeline.TRACK_TEXT_ANCHOR.LEFT,
+        default = EncounterTimeline.TRACK_TEXT_ANCHOR.RIGHT,
         values = {
             { text = "Left", value = EncounterTimeline.TRACK_TEXT_ANCHOR.LEFT },
             { text = "Right", value = EncounterTimeline.TRACK_TEXT_ANCHOR.RIGHT },
@@ -78,4 +78,3 @@ end
 function EncounterTimeline:AttachBigIconEditModeSettings(_frame)
     return
 end
-

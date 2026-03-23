@@ -20,6 +20,7 @@ local Media = RefineUI.Media
 local type = type
 local select = select
 local pcall = pcall
+local max = math.max
 
 local CreateFrame = CreateFrame
 local UnitIsPlayer = UnitIsPlayer
@@ -28,10 +29,15 @@ local UnitAffectingCombat = UnitAffectingCombat
 ----------------------------------------------------------------------------------------
 -- Aura Skinning
 ----------------------------------------------------------------------------------------
-function Nameplates:SkinNamePlateAura(frame)
+function Nameplates:SkinNamePlateAura(frame, visualInset)
     if not frame then
         return
     end
+
+    local resolvedVisualInset = type(visualInset) == "number" and max(0, visualInset) or 0
+    local iconInset = 1 + resolvedVisualInset
+    local cooldownInset = resolvedVisualInset - 1
+    local borderInset = 6 - resolvedVisualInset
 
     local function ApplyAuraCooldownSwipe()
         local cooldown = frame.Cooldown or frame.cooldown or frame.CooldownFrame
@@ -87,6 +93,9 @@ function Nameplates:SkinNamePlateAura(frame)
         if cooldown.SetDrawSwipe then
             cooldown:SetDrawSwipe(true)
         end
+        if cooldown.SetHideCountdownNumbers then
+            cooldown:SetHideCountdownNumbers(true)
+        end
         if cooldown.SetSwipeTexture then
             cooldown:SetSwipeTexture(Media.Textures.CooldownSwipeSmall)
         end
@@ -94,17 +103,15 @@ function Nameplates:SkinNamePlateAura(frame)
             cooldown:SetSwipeColor(0, 0, 0, 0.8)
         end
 
-        RefineUI.SetInside(cooldown, frame, -2, -2)
+        RefineUI.SetInside(cooldown, frame, cooldownInset, cooldownInset)
     end
 
-    if self:GetNameplateState(frame, "AuraSkinned", false) then
-        ApplyAuraCooldownSwipe()
-        return
-    end
+    local isSkinned = self:GetNameplateState(frame, "AuraSkinned", false)
 
-    if frame.Icon then
-        for i = 1, select("#", frame:GetRegions()) do
-            local region = select(i, frame:GetRegions())
+    if not isSkinned and frame.Icon then
+        local regions = { frame:GetRegions() }
+        for i = 1, #regions do
+            local region = regions[i]
             if region:IsObjectType("MaskTexture") then
                 region:SetAlpha(0)
             elseif region:IsObjectType("Texture") and region ~= frame.Icon then
@@ -113,10 +120,13 @@ function Nameplates:SkinNamePlateAura(frame)
         end
 
         frame.Icon:SetTexCoord(0.1, 0.9, 0.1, 0.9)
-        RefineUI.SetInside(frame.Icon, frame, 1, 1)
     end
 
-    RefineUI.CreateBorder(frame, 6, 6, 12)
+    if frame.Icon then
+        RefineUI.SetInside(frame.Icon, frame, iconInset, iconInset)
+    end
+
+    RefineUI.CreateBorder(frame, borderInset, borderInset, 14)
 
     if frame.CountFrame and frame.CountFrame.Count then
         RefineUI.Font(frame.CountFrame.Count, 10, nil, "OUTLINE")
@@ -132,6 +142,40 @@ function Nameplates:SkinNamePlateAura(frame)
     end
 
     self:SetNameplateState(frame, "AuraSkinned", true)
+    self:SetNameplateState(frame, "AuraVisualInset", resolvedVisualInset)
+end
+
+function Nameplates:UpdateNameplatePortraitModelEvents(unitFrame, unit, enabled)
+    if not unitFrame then
+        return
+    end
+
+    local private = self:GetPrivate()
+    local util = private and private.Util
+    local data = self:GetNameplateData(unitFrame)
+    local eventFrame = data and data.EventFrame
+    if not util or not data or not eventFrame then
+        return
+    end
+
+    if enabled ~= true then
+        eventFrame:UnregisterAllEvents()
+        data.EventFrameUnit = nil
+        return
+    end
+
+    if not util.IsUsableUnitToken(unit) then
+        eventFrame:UnregisterAllEvents()
+        data.EventFrameUnit = nil
+        return
+    end
+
+    if data.EventFrameUnit ~= unit then
+        eventFrame:UnregisterAllEvents()
+        eventFrame:RegisterUnitEvent("UNIT_PORTRAIT_UPDATE", unit)
+        eventFrame:RegisterUnitEvent("UNIT_MODEL_CHANGED", unit)
+        data.EventFrameUnit = unit
+    end
 end
 
 ----------------------------------------------------------------------------------------
@@ -159,6 +203,9 @@ function Nameplates:StyleNameplate(nameplate, unit)
     end
 
     local data = self:GetNameplateData(unitFrame)
+    local isPredictedNameOnly = self.IsNameOnlyNameplateInternal
+        and self:IsNameOnlyNameplateInternal(unitFrame, data, false)
+        or false
     local health = unitFrame.healthBar or unitFrame.HealthBar
     if not health then
         return
@@ -195,9 +242,9 @@ function Nameplates:StyleNameplate(nameplate, unit)
                 return
             end
 
-            if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then
-                Nameplates:UpdateHealth(nameplate, parentUnit)
-            elseif event == "UNIT_PORTRAIT_UPDATE" or event == "UNIT_MODEL_CHANGED" then
+            -- Health text follows Blizzard's CompactUnitFrame_UpdateHealth hook so
+            -- this local event frame only handles portrait/model churn.
+            if event == "UNIT_PORTRAIT_UPDATE" or event == "UNIT_MODEL_CHANGED" then
                 if Nameplates.QueuePortraitRefresh then
                     Nameplates:QueuePortraitRefresh(unitFrame, parentUnit, event)
                 elseif RefineUI.UpdateDynamicPortrait then
@@ -246,20 +293,12 @@ function Nameplates:StyleNameplate(nameplate, unit)
         RefineUI:StyleNameplateCastBar(unitFrame.CastBar)
     end
 
-    if data.EventFrame and util.IsUsableUnitToken(unit) and data.EventFrameUnit ~= unit then
-        data.EventFrame:UnregisterAllEvents()
-        data.EventFrame:RegisterUnitEvent("UNIT_PORTRAIT_UPDATE", unit)
-        data.EventFrame:RegisterUnitEvent("UNIT_MODEL_CHANGED", unit)
-        data.EventFrame:RegisterUnitEvent("UNIT_HEALTH", unit)
-        data.EventFrame:RegisterUnitEvent("UNIT_MAXHEALTH", unit)
-        data.EventFrameUnit = unit
-    elseif data.EventFrame and data.EventFrameUnit and not util.IsUsableUnitToken(unit) then
-        data.EventFrame:UnregisterAllEvents()
-        data.EventFrameUnit = nil
-    end
+    self:UpdateNameplatePortraitModelEvents(unitFrame, unit, not isPredictedNameOnly)
 
     RefineUI:CreateTargetArrows(unitFrame)
 
     self:UpdateName(nameplate, unit)
-    self:UpdateHealth(nameplate, unit)
+    if not isPredictedNameOnly then
+        self:UpdateHealth(nameplate, unit)
+    end
 end

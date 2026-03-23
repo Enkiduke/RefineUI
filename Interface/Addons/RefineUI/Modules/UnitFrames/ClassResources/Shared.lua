@@ -18,11 +18,16 @@ local CreateColor = CreateColor
 local UnitClass = UnitClass
 local GetSpecialization = GetSpecialization
 local GetTime = GetTime
+local GetCollapsingStarCost = GetCollapsingStarCost
 local unpack = unpack
 local min = math.min
 local type = type
 local select = select
 local issecretvalue = _G.issecretvalue
+local GetSpecializationInfo = C_SpecializationInfo and C_SpecializationInfo.GetSpecializationInfo
+local GetSpellCastCount = C_Spell and C_Spell.GetSpellCastCount
+local GetSpellMaxCumulativeAuraApplications = C_Spell and C_Spell.GetSpellMaxCumulativeAuraApplications
+local GetPlayerAuraBySpellID = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID
 
 CR.Constants = CR.Constants or {
     POWER_COMBO_POINTS = Enum.PowerType.ComboPoints,
@@ -45,8 +50,20 @@ CR.Constants = CR.Constants or {
     SPEC_DK_BLOOD = 1,
     SPEC_DK_FROST = 2,
     SPEC_DK_UNHOLY = 3,
+    SPEC_DH_VENGEANCE = 581,
+    SPEC_DH_DEVOURER = 1480,
     SPEC_MONK_BREWMASTER = 1,
     SPEC_MONK_WINDWALKER = 3,
+    SOUL_FRAGMENTS_MAX_VENGEANCE = 6,
+    SPELL_SOUL_CLEAVE_ID = 228477,
+    AURA_DARK_HEART_ID = 1225789,
+    AURA_COLLAPSING_STAR_ID = 1227702,
+    SOUL_FRAGMENTS_SPARK_VISUAL = {
+        atlas = "UF-DDH-CollapsingStar-Bar-Endcap",
+        xOffset = 1,
+        barHeight = 10,
+        showAtMax = false,
+    },
     ENHANCEMENT_MAELSTROM_WEAPON_AURA_SPELL_ID = 344179,
     RESOURCE_BAR_TEXTURE = (Media.Textures and Media.Textures.Smooth) or "Interface\\Buttons\\WHITE8X8",
 }
@@ -97,6 +114,70 @@ function CR.IsNonSecretTexture(value)
 
     local valueType = type(value)
     return valueType == "string" or valueType == "number"
+end
+
+function CR.GetPlayerSpecID()
+    if type(GetSpecialization) ~= "function" or type(GetSpecializationInfo) ~= "function" then
+        return nil
+    end
+
+    local specIndex = GetSpecialization()
+    if not specIndex or specIndex <= 0 then
+        return nil
+    end
+
+    return GetSpecializationInfo(specIndex)
+end
+
+function CR.ShouldShowSoulFragments(specID)
+    if CR.PlayerClass ~= "DEMONHUNTER" then
+        return false
+    end
+
+    specID = specID or CR.GetPlayerSpecID()
+    return specID == CR.Constants.SPEC_DH_VENGEANCE or specID == CR.Constants.SPEC_DH_DEVOURER
+end
+
+function CR.GetSoulFragmentsState(specID)
+    local K = CR.Constants
+
+    specID = specID or CR.GetPlayerSpecID()
+
+    if specID == K.SPEC_DH_VENGEANCE then
+        local currentValue = type(GetSpellCastCount) == "function" and GetSpellCastCount(K.SPELL_SOUL_CLEAVE_ID) or 0
+        if type(currentValue) ~= "number" or currentValue < 0 then
+            currentValue = 0
+        end
+
+        return currentValue, K.SOUL_FRAGMENTS_MAX_VENGEANCE
+    end
+
+    if specID ~= K.SPEC_DH_DEVOURER then
+        return 0, 0
+    end
+
+    local darkHeartAura = type(GetPlayerAuraBySpellID) == "function" and GetPlayerAuraBySpellID(K.AURA_DARK_HEART_ID) or nil
+    local collapsingStarAura = type(GetPlayerAuraBySpellID) == "function" and GetPlayerAuraBySpellID(K.AURA_COLLAPSING_STAR_ID) or nil
+    local activeAura = collapsingStarAura or darkHeartAura
+
+    local currentValue = activeAura and activeAura.applications or 0
+    local maxValue = 0
+
+    if collapsingStarAura and type(GetCollapsingStarCost) == "function" then
+        maxValue = GetCollapsingStarCost() or 0
+    elseif type(GetSpellMaxCumulativeAuraApplications) == "function" then
+        maxValue = GetSpellMaxCumulativeAuraApplications(K.AURA_DARK_HEART_ID) or 0
+    end
+
+    if type(currentValue) ~= "number" or currentValue < 0 then
+        currentValue = 0
+    end
+
+    if type(maxValue) ~= "number" or maxValue < 0 then
+        maxValue = 0
+    end
+
+    return currentValue, maxValue
 end
 
 function CR.ClearCooldownSafe(cooldown)
@@ -341,6 +422,7 @@ function CR.HideBlizzardResource(frame)
 end
 
 local PaladinTextColorCurve
+local SoulFragmentsTextColorCurve
 
 function CR.GetPaladinTextColorCurve(maxValue)
     if not PaladinTextColorCurve or PaladinTextColorCurve._max ~= maxValue then
@@ -352,6 +434,18 @@ function CR.GetPaladinTextColorCurve(maxValue)
     end
 
     return PaladinTextColorCurve
+end
+
+function CR.GetSoulFragmentsTextColorCurve(maxValue)
+    if not SoulFragmentsTextColorCurve or SoulFragmentsTextColorCurve._max ~= maxValue then
+        SoulFragmentsTextColorCurve = C_CurveUtil.CreateColorCurve()
+        SoulFragmentsTextColorCurve:SetType(Enum.LuaCurveType.Linear)
+        SoulFragmentsTextColorCurve:AddPoint(0.0, CreateColor(1, 1, 1, 1))
+        SoulFragmentsTextColorCurve:AddPoint(maxValue or 6, CreateColor(0.06, 0.42, 0.92, 1))
+        SoulFragmentsTextColorCurve._max = maxValue
+    end
+
+    return SoulFragmentsTextColorCurve
 end
 
 function CR.SetupGlowThreshold(resource)

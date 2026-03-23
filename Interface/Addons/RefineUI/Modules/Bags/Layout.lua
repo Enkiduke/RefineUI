@@ -45,6 +45,7 @@ local GetCursorInfo = GetCursorInfo
 ----------------------------------------------------------------------------------------
 
 local MAIN_CAT_GAP = 1
+local COMBINED_SECTION_CATEGORY = "__combined__"
 
 ----------------------------------------------------------------------------------------
 -- State
@@ -52,6 +53,8 @@ local MAIN_CAT_GAP = 1
 
 Bags.customDropPool = Bags.customDropPool or {}
 Bags.activeCustomDrops = Bags.activeCustomDrops or {}
+Bags.bagSectionDropPool = Bags.bagSectionDropPool or {}
+Bags.activeBagSectionDrops = Bags.activeBagSectionDrops or {}
 Bags.SlotFrameByKey = Bags.SlotFrameByKey or {}
 Bags.SectionFrameByKey = Bags.SectionFrameByKey or {}
 Bags.slotVisualRevisionByFrame = Bags.slotVisualRevisionByFrame or setmetatable({}, { __mode = "k" })
@@ -141,6 +144,75 @@ local function ReleaseCustomCategoryDropTargets()
         table.insert(Bags.customDropPool, button)
     end
     wipe(Bags.activeCustomDrops)
+end
+
+local function AcquireBagSectionDropTarget(parent)
+    local button = table.remove(Bags.bagSectionDropPool)
+    if not button then
+        button = CreateFrame("Button", nil, parent)
+        button:EnableMouse(true)
+        button:RegisterForClicks("LeftButtonUp")
+        button:RegisterForDrag("LeftButton")
+        button:SetHitRectInsets(0, 0, 0, 0)
+
+        button:SetScript("OnReceiveDrag", function(selfButton)
+            if Bags.HandleBagSectionDrop then
+                Bags.HandleBagSectionDrop(selfButton._targetBagID)
+            end
+        end)
+
+        button:SetScript("OnMouseUp", function(selfButton, mouseButton)
+            if mouseButton == "LeftButton" and GetCursorInfo() and Bags.HandleBagSectionDrop then
+                Bags.HandleBagSectionDrop(selfButton._targetBagID)
+            end
+        end)
+
+        button.SlotBG = button:CreateTexture(nil, "BACKGROUND")
+        button.SlotBG:SetAllPoints()
+        local slotAtlasOk = pcall(button.SlotBG.SetAtlas, button.SlotBG, "bags-item-slot64", true)
+        if not slotAtlasOk then
+            button.SlotBG:SetColorTexture(0.12, 0.15, 0.2, 0.85)
+        end
+
+        button.Hover = button:CreateTexture(nil, "HIGHLIGHT")
+        button.Hover:SetAllPoints()
+        button.Hover:SetColorTexture(1, 1, 1, 0.14)
+
+        button.Border = CreateFrame("Frame", nil, button, "BackdropTemplate")
+        button.Border:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+        button.Border:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
+
+        if RefineUI.SetTemplate then
+            RefineUI.SetTemplate(button.Border, "Transparent", 4, 4)
+        else
+            button.Border:SetBackdrop({
+                edgeFile = "Interface\\Buttons\\WHITE8x8",
+                edgeSize = 1,
+            })
+            button.Border:SetBackdropBorderColor(0.35, 0.6, 1, 0.85)
+        end
+
+        button.RefineUIAddIcon = button:CreateTexture(nil, "OVERLAY")
+        button.RefineUIAddIcon:SetPoint("CENTER", button, "CENTER", 0, 0)
+        button.RefineUIAddIcon:SetSize(18, 18)
+        button.RefineUIAddIcon:SetTexture("Interface\\AddOns\\RefineUI\\Media\\Textures\\add.blp")
+        button.RefineUIAddIcon:SetVertexColor(0.65, 0.86, 1, 0.95)
+    end
+
+    button:Show()
+    if button.Border then button.Border:Show() end
+    if button.RefineUIAddIcon then button.RefineUIAddIcon:Show() end
+    return button
+end
+
+local function ReleaseBagSectionDropTargets()
+    for _, button in ipairs(Bags.activeBagSectionDrops) do
+        button:Hide()
+        button:ClearAllPoints()
+        button._targetBagID = nil
+        table.insert(Bags.bagSectionDropPool, button)
+    end
+    wipe(Bags.activeBagSectionDrops)
 end
 
 local function GetStatusColor(freeCount, totalCount)
@@ -393,6 +465,13 @@ local function LayoutMainSections(frame, snapshot)
     local contentWidth = columns * (SLOT_SIZE + ITEM_SPACING_X) - ITEM_SPACING_X
     local contentStartX = math.max(0, math.floor((availableWidth - contentWidth) * 0.5 + 0.5))
     local hasCursorItem = (Bags.HasCursorItem and Bags.HasCursorItem()) or false
+    local cursorItemID = nil
+    local sourceBagID = nil
+    if Bags.GetCursorItemContext then
+        hasCursorItem, cursorItemID, _, _, sourceBagID = Bags.GetCursorItemContext()
+    end
+    local combinedViewEnabled = Bags.IsCombinedViewEnabled and Bags.IsCombinedViewEnabled()
+    local bagViewEnabled = Bags.IsBagViewEnabled and Bags.IsBagViewEnabled()
 
     local visitedSectionKeys = {}
     local visitedSlotKeys = {}
@@ -402,16 +481,25 @@ local function LayoutMainSections(frame, snapshot)
     local currentCol = 0
 
     ReleaseCustomCategoryDropTargets()
+    ReleaseBagSectionDropTargets()
 
     for _, section in ipairs(sections) do
         local slotKeys = section.slotKeys or {}
         local itemCount = #slotKeys
         local isCustomCategory = Bags.IsCustomCategoryKey and Bags.IsCustomCategoryKey(section.categoryKey)
+        local isBagSection = bagViewEnabled and type(section.targetBagID) == "number"
         local showCustomDrop = isCustomCategory and not section.subCategoryKey and hasCursorItem
-        local visibleSlots = itemCount + (showCustomDrop and 1 or 0)
+        local showBagDrop = isBagSection
+            and hasCursorItem
+            and type(cursorItemID) == "number"
+            and Bags.CanAcceptBagSectionDrop
+            and Bags.CanAcceptBagSectionDrop(section.targetBagID, cursorItemID, sourceBagID)
+        local visibleSlots = itemCount + (showCustomDrop and 1 or 0) + (showBagDrop and 1 or 0)
         local showEmptyCustomHeader = isCustomCategory and itemCount == 0 and not showCustomDrop
+        local showEmptyBagHeader = isBagSection and itemCount == 0
+        local showSectionHeader = not (combinedViewEnabled and section.categoryKey == COMBINED_SECTION_CATEGORY)
 
-        if visibleSlots > 0 or showEmptyCustomHeader then
+        if visibleSlots > 0 or showEmptyCustomHeader or showEmptyBagHeader then
             local colsNeeded = math.min(math.max(visibleSlots, 1), columns)
 
             if currentCol > 0 and (currentCol + colsNeeded > columns) then
@@ -421,39 +509,41 @@ local function LayoutMainSections(frame, snapshot)
                 currentCol = 0
             end
 
-            local sectionFrame = EnsureMainSectionFrame(frame.ItemContainer, section.key)
-            if sectionFrame then
-                visitedSectionKeys[section.key] = true
-                sectionFrame:ClearAllPoints()
-                sectionFrame:SetPoint(
-                    "TOPLEFT",
-                    frame.ItemContainer,
-                    "TOPLEFT",
-                    contentStartX + currentCol * (SLOT_SIZE + ITEM_SPACING_X),
-                    -yOffset
-                )
+            if showSectionHeader then
+                local sectionFrame = EnsureMainSectionFrame(frame.ItemContainer, section.key)
+                if sectionFrame then
+                    visitedSectionKeys[section.key] = true
+                    sectionFrame:ClearAllPoints()
+                    sectionFrame:SetPoint(
+                        "TOPLEFT",
+                        frame.ItemContainer,
+                        "TOPLEFT",
+                        contentStartX + currentCol * (SLOT_SIZE + ITEM_SPACING_X),
+                        -yOffset
+                    )
 
-                local headerWidth = colsNeeded * (SLOT_SIZE + ITEM_SPACING_X) - ITEM_SPACING_X
-                sectionFrame:SetWidth(math.max(50, headerWidth))
+                    local headerWidth = colsNeeded * (SLOT_SIZE + ITEM_SPACING_X) - ITEM_SPACING_X
+                    sectionFrame:SetWidth(math.max(50, headerWidth))
 
-                local label = section.label or section.categoryKey or "Other"
-                sectionFrame.Text:SetText(string.format("%s (%d)", label, itemCount))
+                    local label = section.label or section.categoryKey or "Other"
+                    sectionFrame.Text:SetText(string.format("%s (%d)", label, itemCount))
 
-                if section.categoryKey == "Recent" then
-                    sectionFrame.Text:SetTextColor(0.3, 1, 0.3)
-                    sectionFrame.Line:SetColorTexture(0.3, 1, 0.3, 0.5)
-                elseif isCustomCategory then
-                    sectionFrame.Text:SetTextColor(0.68, 0.83, 1.0)
-                    sectionFrame.Line:SetColorTexture(0.45, 0.65, 0.95, 0.55)
-                else
-                    sectionFrame.Text:SetTextColor(1, 0.82, 0)
-                    sectionFrame.Line:SetColorTexture(1, 0.82, 0, 0.45)
-                end
+                    if section.categoryKey == "Recent" then
+                        sectionFrame.Text:SetTextColor(0.3, 1, 0.3)
+                        sectionFrame.Line:SetColorTexture(0.3, 1, 0.3, 0.5)
+                    elseif isCustomCategory then
+                        sectionFrame.Text:SetTextColor(0.68, 0.83, 1.0)
+                        sectionFrame.Line:SetColorTexture(0.45, 0.65, 0.95, 0.55)
+                    else
+                        sectionFrame.Text:SetTextColor(1, 0.82, 0)
+                        sectionFrame.Line:SetColorTexture(1, 0.82, 0, 0.45)
+                    end
 
-                if itemCount <= 1 then
-                    sectionFrame.Line:Hide()
-                else
-                    sectionFrame.Line:Show()
+                    if itemCount <= 1 then
+                        sectionFrame.Line:Hide()
+                    else
+                        sectionFrame.Line:Show()
+                    end
                 end
             end
 
@@ -468,7 +558,8 @@ local function LayoutMainSections(frame, snapshot)
                         local row = math.floor(idx / slotColumns)
                         local col = currentCol + (idx % slotColumns)
                         local xPos = contentStartX + col * (SLOT_SIZE + ITEM_SPACING_X)
-                        local yPos = -(yOffset + HEADER_HEIGHT + row * (SLOT_SIZE + ITEM_SPACING_Y))
+                        local sectionHeaderHeight = showSectionHeader and HEADER_HEIGHT or 0
+                        local yPos = -(yOffset + sectionHeaderHeight + row * (SLOT_SIZE + ITEM_SPACING_Y))
 
                         slot:ClearAllPoints()
                         slot:SetPoint("TOPLEFT", frame.ItemContainer, "TOPLEFT", xPos, yPos)
@@ -484,7 +575,8 @@ local function LayoutMainSections(frame, snapshot)
                 local dropRow = math.floor(dropIndex / slotColumns)
                 local dropCol = currentCol + (dropIndex % slotColumns)
                 local dropX = contentStartX + dropCol * (SLOT_SIZE + ITEM_SPACING_X)
-                local dropY = -(yOffset + HEADER_HEIGHT + (dropRow * (SLOT_SIZE + ITEM_SPACING_Y)))
+                local sectionHeaderHeight = showSectionHeader and HEADER_HEIGHT or 0
+                local dropY = -(yOffset + sectionHeaderHeight + (dropRow * (SLOT_SIZE + ITEM_SPACING_Y)))
 
                 local dropButton = AcquireCustomCategoryDropTarget(frame.ItemContainer)
                 dropButton:SetFrameStrata(frame:GetFrameStrata() or "MEDIUM")
@@ -495,8 +587,26 @@ local function LayoutMainSections(frame, snapshot)
                 table.insert(Bags.activeCustomDrops, dropButton)
             end
 
+            if showBagDrop then
+                local dropIndex = itemCount + (showCustomDrop and 1 or 0)
+                local dropRow = math.floor(dropIndex / slotColumns)
+                local dropCol = currentCol + (dropIndex % slotColumns)
+                local dropX = contentStartX + dropCol * (SLOT_SIZE + ITEM_SPACING_X)
+                local sectionHeaderHeight = showSectionHeader and HEADER_HEIGHT or 0
+                local dropY = -(yOffset + sectionHeaderHeight + (dropRow * (SLOT_SIZE + ITEM_SPACING_Y)))
+
+                local dropButton = AcquireBagSectionDropTarget(frame.ItemContainer)
+                dropButton:SetFrameStrata(frame:GetFrameStrata() or "MEDIUM")
+                dropButton:SetFrameLevel((frame.ItemContainer:GetFrameLevel() or 1) + 25)
+                dropButton:SetSize(SLOT_SIZE, SLOT_SIZE)
+                dropButton:SetPoint("TOPLEFT", frame.ItemContainer, "TOPLEFT", dropX, dropY)
+                dropButton._targetBagID = section.targetBagID
+                table.insert(Bags.activeBagSectionDrops, dropButton)
+            end
+
             local rowsUsed = visibleSlots > 0 and math.ceil(visibleSlots / slotColumns) or 0
-            local sectionHeight = HEADER_HEIGHT + rowsUsed * (SLOT_SIZE + ITEM_SPACING_Y)
+            local sectionHeaderHeight = showSectionHeader and HEADER_HEIGHT or 0
+            local sectionHeight = sectionHeaderHeight + rowsUsed * (SLOT_SIZE + ITEM_SPACING_Y)
             rowMaxHeight = math.max(rowMaxHeight, sectionHeight)
             currentCol = currentCol + colsNeeded + MAIN_CAT_GAP
         end
@@ -557,6 +667,10 @@ local function ApplyMainDelta(frame, delta, opts)
     opts = opts or {}
     local cfg = Bags.GetConfig and Bags.GetConfig() or RefineUI.Config.Bags or {}
     local borders = GetBordersModule()
+
+    if Bags.RefreshSortControl then
+        Bags.RefreshSortControl()
+    end
 
     IterateDeltaBucket(delta.removed, function(slotKey, oldState)
         if oldState and oldState.viewKey == "main" then
@@ -737,4 +851,3 @@ function Bags.UpdateLayout(frame, force)
         forceReflow = force and true or false,
     })
 end
-

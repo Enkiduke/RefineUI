@@ -166,13 +166,13 @@ local function CreateCustomPartyText(frame)
         text:SetPoint("CENTER", frame.healthBar, "CENTER", 0, 0)
         data.CustomPercentText = text
         
-        local function OnPartyEvent(event, u)
-            if u == frame.unit then UpdateCustomPartyHP({frame = frame}) end
+        local function OnPartyEvent()
+            UpdateCustomPartyHP({ frame = frame })
         end
         
         local frameName = frame.GetName and frame:GetName()
         local key = "Party_"..(frameName or tostring(frame))
-        RefineUI:OnEvents({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, OnPartyEvent, key)
+        RefineUI:OnUnitEvents(frame.unit, { "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, OnPartyEvent, key)
         
         data.customTextCreated = true
     end

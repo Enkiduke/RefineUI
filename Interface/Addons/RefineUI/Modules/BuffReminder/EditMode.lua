@@ -826,10 +826,7 @@ local function HookEditModeDialog()
 end
 
 local function ApplyStoredPosition(point, x, y)
-    if not RefineUI.Positions then
-        RefineUI.Positions = {}
-    end
-    RefineUI.Positions[BuffReminder.FRAME_NAME] = { point, "UIParent", point, x, y }
+    RefineUI:SetPosition(BuffReminder.FRAME_NAME, { point, "UIParent", point, x, y })
 end
 
 function BuffReminder:RegisterEditModeFrame()

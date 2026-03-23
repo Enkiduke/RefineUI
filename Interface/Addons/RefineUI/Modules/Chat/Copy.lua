@@ -3,7 +3,7 @@
 -- Description: Provides a mechanism to copy text from chat frames.
 ----------------------------------------------------------------------------------------
 
-local AddOnName, RefineUI = ...
+local _, RefineUI = ...
 local Chat = RefineUI:GetModule("Chat")
 
 ----------------------------------------------------------------------------------------
@@ -14,13 +14,14 @@ local tinsert = table.insert
 local table_concat = table.concat
 local gsub = string.gsub
 local find = string.find
+local pairs = pairs
+local setmetatable = setmetatable
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
 local CreateFrame = CreateFrame
 local UIParent = _G.UIParent
-local FCF_GetCurrentChatFrame = _G.FCF_GetCurrentChatFrame
 local C_Timer = _G.C_Timer
 
 ----------------------------------------------------------------------------------------
@@ -29,6 +30,7 @@ local C_Timer = _G.C_Timer
 local frame
 local scrollArea
 local _copyIsSetup = false
+local copyButtons = setmetatable({}, { __mode = "k" })
 
 -- Patterns for sanitization
 local RAID_TARGET_PATTERN_1 = "|T[^\\]+\\[^\\]+\\[Uu][Ii]%-[Rr][Aa][Ii][Dd][Tt][Aa][Rr][Gg][Ee][Tt][Ii][Nn][Gg][Ii][Cc][Oo][Nn]_(%d)[^|]+|t"
@@ -40,7 +42,36 @@ local HYPERLINK_PATTERN = "|A[^|]+|a"
 local HAS_TEX = "|T"
 local HAS_ATLAS = "|A"
 
+local function IsCopySuspended()
+    return Chat and Chat.ShouldSuspendOptionalEnhancements and Chat:ShouldSuspendOptionalEnhancements() == true
+end
+
+local function ApplyCopyButtonState(button)
+    if not button then
+        return
+    end
+
+    if IsCopySuspended() then
+        button:SetAlpha(0)
+        button:Hide()
+        if button.EnableMouse then
+            button:EnableMouse(false)
+        end
+        return
+    end
+
+    button:Show()
+    button:SetAlpha(0.4)
+    if button.EnableMouse then
+        button:EnableMouse(true)
+    end
+end
+
 local function MessageIsProtected(message)
+    if Chat and Chat.MessageIsProtected then
+        return Chat:MessageIsProtected(message)
+    end
+
     local canChangeMessage = function(arg1, id)
         if id and arg1 == "" then return id end
     end
@@ -138,7 +169,7 @@ function Chat:SetupCopy()
         local cf = _G["ChatFrame"..i]
         local btn = CreateFrame("Button", nil, cf)
         RefineUI.Size(btn, 20, 20)
-        btn:SetAlpha(0)
+        btn:SetAlpha(0.4)
         RefineUI.Point(btn, "BOTTOMRIGHT", cf, "BOTTOMRIGHT", 2, -2)
         
         local tex = btn:CreateTexture(nil, "OVERLAY")
@@ -146,15 +177,23 @@ function Chat:SetupCopy()
         tex:SetTexture(RefineUI.Media.Textures.ChatCopy)
         tex:SetVertexColor(1, 0.824, 0)
         
-        btn:SetScript("OnEnter", function(self) RefineUI:FadeIn(self) end)
-        btn:SetScript("OnLeave", function(self) 
-            if not cf:IsMouseOver() then RefineUI:FadeOut(self) end 
+        btn:SetScript("OnEnter", function(self)
+            if IsCopySuspended() then
+                return
+            end
+            self:SetAlpha(1)
+        end)
+        btn:SetScript("OnLeave", function(self)
+            if IsCopySuspended() then
+                return
+            end
+            self:SetAlpha(0.4)
         end)
         
-        cf:HookScript("OnEnter", function() RefineUI:FadeIn(btn) end)
-        cf:HookScript("OnLeave", function() RefineUI:FadeOut(btn) end)
-        
         btn:SetScript("OnClick", function()
+            if IsCopySuspended() then
+                return
+            end
             if not frame then CreateCopyFrame() end
             
             local text = GetChatLines(cf)
@@ -164,7 +203,24 @@ function Chat:SetupCopy()
             
             C_Timer.After(0.1, ScrollDown)
         end)
+
+        copyButtons[cf] = btn
+        ApplyCopyButtonState(btn)
     end
 
     _copyIsSetup = true
+end
+
+function Chat:GetCopyButton(chatFrame)
+    return copyButtons[chatFrame]
+end
+
+function Chat:RefreshCopyButtons()
+    for _, button in pairs(copyButtons) do
+        ApplyCopyButtonState(button)
+    end
+
+    if IsCopySuspended() and frame and frame.Hide then
+        frame:Hide()
+    end
 end

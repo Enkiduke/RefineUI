@@ -7,7 +7,7 @@ local _, RefineUI = ...
 local Bags = RefineUI:GetModule("Bags")
 if not Bags then return end
 
-if RefineUI.Config.Bags and RefineUI.Config.Bags.Enable == false then
+if type(RefineUI.IsModuleStartupEnabled) == "function" and not RefineUI:IsModuleStartupEnabled("Bags") then
     return
 end
 
@@ -34,11 +34,13 @@ local table = table
 local pcall = pcall
 local bitband = bit and bit.band
 local CreateFrame = CreateFrame
+local GameTooltip = GameTooltip
 local GetCursorInfo = GetCursorInfo
 local GetMouseFocus = GetMouseFocus
 local GetMouseFoci = GetMouseFoci
 local InCombatLockdown = InCombatLockdown
 local IsMouseButtonDown = IsMouseButtonDown
+local MenuUtil = MenuUtil
 local PutItemInBackpack = PutItemInBackpack
 local PutItemInBag = PutItemInBag
 
@@ -47,14 +49,17 @@ local PutItemInBag = PutItemInBag
 ----------------------------------------------------------------------------------------
 
 local DEFAULT_BAG_WIDTH = 600
-local DEFAULT_SLOT_SIZE = 37
+local DEFAULT_SLOT_SIZE = 36
 local DEFAULT_ITEM_SPACING_X = 5
-local DEFAULT_ITEM_SPACING_Y = 5
+local DEFAULT_ITEM_SPACING_Y = 2
 local PADDING = 8
 local CONTENT_INSET = 5
 local HEADER_HEIGHT = 18
 local SUB_HEADER_HEIGHT = 16
 local BOTTOM_HEIGHT = 30
+local SEARCH_RIGHT_RESERVE = 150
+local SEARCH_SORT_BUTTON_SIZE = 24
+local SEARCH_SORT_BUTTON_GAP = 6
 local BACKPACK_BAG_ID = BACKPACK_CONTAINER or 0
 local NORMAL_BAG_LAST_ID = NUM_BAG_SLOTS or 4
 local REAGENT_BAG_ID = REAGENTBAG_CONTAINER or ((Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5)
@@ -169,8 +174,15 @@ function Bags.ApplyLayoutConfig()
     if Bags.Frame then
         Bags.Frame:SetWidth(Bags.BAG_WIDTH)
         if Bags.Frame.SearchBox then
-            Bags.Frame.SearchBox:SetWidth(math.max(120, Bags.BAG_WIDTH - 150))
+            local sortReserve = (Bags.ShouldShowSortControl and Bags.ShouldShowSortControl())
+                and (SEARCH_SORT_BUTTON_SIZE + SEARCH_SORT_BUTTON_GAP + 6)
+                or 0
+            Bags.Frame.SearchBox:SetWidth(math.max(120, Bags.BAG_WIDTH - SEARCH_RIGHT_RESERVE - sortReserve))
         end
+    end
+
+    if Bags.RefreshSortControl then
+        Bags.RefreshSortControl()
     end
 
     if Bags.ApplyReagentLayoutConfig then
@@ -292,6 +304,118 @@ searchBox:SetPoint("TOPLEFT", Frame, "TOPLEFT", 60, -32)
 searchBox:SetSize(450, 20)
 Frame.SearchBox = searchBox
 
+local sortButton = CreateFrame("Button", nil, Frame)
+sortButton:SetSize(SEARCH_SORT_BUTTON_SIZE, SEARCH_SORT_BUTTON_SIZE)
+sortButton:SetPoint("LEFT", searchBox, "RIGHT", SEARCH_SORT_BUTTON_GAP, 0)
+sortButton:SetFrameStrata(Frame:GetFrameStrata() or "MEDIUM")
+sortButton:SetFrameLevel((Frame:GetFrameLevel() or 1) + 10)
+sortButton:RegisterForClicks("LeftButtonUp")
+
+sortButton.NormalTexture = sortButton:CreateTexture(nil, "ARTWORK")
+sortButton.NormalTexture:SetAllPoints()
+sortButton.NormalTexture:SetAtlas("bags-button-autosort-up", true)
+
+sortButton.PushedTexture = sortButton:CreateTexture(nil, "ARTWORK")
+sortButton.PushedTexture:SetAllPoints()
+sortButton.PushedTexture:SetAtlas("bags-button-autosort-down", true)
+sortButton.PushedTexture:Hide()
+
+sortButton.Highlight = sortButton:CreateTexture(nil, "HIGHLIGHT")
+sortButton.Highlight:SetAllPoints()
+sortButton.Highlight:SetColorTexture(1, 1, 1, 0.12)
+
+sortButton:SetScript("OnMouseDown", function(selfButton)
+    if selfButton.PushedTexture then
+        selfButton.PushedTexture:Show()
+    end
+end)
+
+sortButton:SetScript("OnMouseUp", function(selfButton)
+    if selfButton.PushedTexture then
+        selfButton.PushedTexture:Hide()
+    end
+end)
+
+sortButton:SetScript("OnHide", function(selfButton)
+    if selfButton.PushedTexture then
+        selfButton.PushedTexture:Hide()
+    end
+end)
+
+sortButton:SetScript("OnEnter", function(selfButton)
+    if not GameTooltip then return end
+    GameTooltip:SetOwner(selfButton, "ANCHOR_TOP")
+    local viewMode = Bags.GetViewMode and Bags.GetViewMode()
+    local currentMode = (Bags.GetActiveSortMode and Bags.GetActiveSortMode()) or ((Bags.SORT_MODE and Bags.SORT_MODE.BLIZZARD) or "Blizzard")
+    GameTooltip:SetText("Bag Sort")
+    if viewMode == Bags.BAG_VIEW_MODE.BY_BAG then
+        GameTooltip:AddLine("Click to physically sort items in their real bag slots using Blizzard sorting.", 0.85, 0.85, 0.85, true)
+    else
+        GameTooltip:AddLine("Current: " .. tostring(currentMode), 0.85, 0.85, 0.85)
+    end
+    GameTooltip:Show()
+end)
+
+sortButton:SetScript("OnLeave", function()
+    if GameTooltip then
+        GameTooltip:Hide()
+    end
+end)
+
+sortButton:SetScript("OnClick", function(selfButton)
+    local viewMode = Bags.GetViewMode and Bags.GetViewMode()
+    if viewMode == Bags.BAG_VIEW_MODE.BY_BAG then
+        if Bags.HasCursorItem and Bags.HasCursorItem() then
+            return
+        end
+        if C_Container and type(C_Container.SortBags) == "function" then
+            if PlaySound and SOUNDKIT and SOUNDKIT.UI_BAG_SORTING_01 then
+                PlaySound(SOUNDKIT.UI_BAG_SORTING_01)
+            end
+            C_Container.SortBags()
+        end
+        return
+    end
+
+    if not MenuUtil or type(MenuUtil.CreateContextMenu) ~= "function" then
+        return
+    end
+
+    if viewMode ~= Bags.BAG_VIEW_MODE.COMBINED then
+        return
+    end
+
+    MenuUtil.CreateContextMenu(selfButton, function(_, rootDescription)
+        rootDescription:CreateTitle("Bag Sort")
+
+        local options = {
+            Bags.SORT_MODE.BLIZZARD,
+            Bags.SORT_MODE.TYPE,
+            Bags.SORT_MODE.QUALITY,
+            Bags.SORT_MODE.NAME,
+        }
+
+        for index = 1, #options do
+            local sortMode = options[index]
+            rootDescription:CreateRadio(sortMode, function()
+                return (Bags.GetSortModeForView and Bags.GetSortModeForView(viewMode)) == sortMode
+            end, function()
+                if Bags.SetSortModeForView then
+                    Bags.SetSortModeForView(viewMode, sortMode)
+                end
+                if Bags.RefreshSortControl then
+                    Bags.RefreshSortControl()
+                end
+                if Bags.RequestUpdate then
+                    Bags.RequestUpdate({ forceReflow = true })
+                end
+            end)
+        end
+    end)
+end)
+
+Frame.SortButton = sortButton
+
 ----------------------------------------------------------------------------------------
 -- Search logic
 ----------------------------------------------------------------------------------------
@@ -372,6 +496,25 @@ searchBox:SetScript("OnTextChanged", function(self)
         Frame:UpdateLayout()
     end
 end)
+
+function Bags.RefreshSortControl()
+    if not Bags.Frame or not Bags.Frame.SearchBox or not Bags.Frame.SortButton then
+        return
+    end
+
+    local show = Bags.ShouldShowSortControl and Bags.ShouldShowSortControl()
+    local searchWidth = math.max(120, Bags.BAG_WIDTH - SEARCH_RIGHT_RESERVE - (show and (SEARCH_SORT_BUTTON_SIZE + SEARCH_SORT_BUTTON_GAP + 6) or 0))
+    Bags.Frame.SearchBox:SetWidth(searchWidth)
+
+    Bags.Frame.SortButton:ClearAllPoints()
+    Bags.Frame.SortButton:SetPoint("LEFT", Bags.Frame.SearchBox, "RIGHT", SEARCH_SORT_BUTTON_GAP, 0)
+
+    if show then
+        Bags.Frame.SortButton:Show()
+    else
+        Bags.Frame.SortButton:Hide()
+    end
+end
 
     if Bags.ApplyLayoutConfig then
         Bags.ApplyLayoutConfig()
@@ -547,6 +690,19 @@ local function PlaceCursorItemInBestBag(itemID, prefersReagentBag)
     end)
 end
 
+local function CanAcceptSpecificBagDrop(targetBagID, itemID, sourceBagID)
+    if type(targetBagID) ~= "number" then
+        return false
+    end
+
+    if type(sourceBagID) == "number" and sourceBagID == targetBagID then
+        return false
+    end
+
+    local itemFamily = GetCursorItemFamily(itemID)
+    return CanPlaceCursorItemInBag(targetBagID, itemFamily)
+end
+
 local function EnsureBagWindowDropOverlay()
     if bagDropOverlay then
         return bagDropOverlay
@@ -637,6 +793,7 @@ UpdateBagWindowDropOverlay = function(hasCursorItem, itemID, isFromPlayerBag, pr
     if not overlay then return end
 
     local shouldShow = Frame:IsShown()
+        and not (Bags.IsBagViewEnabled and Bags.IsBagViewEnabled())
         and hasCursorItem
         and type(itemID) == "number"
         and itemID > 0
@@ -677,6 +834,43 @@ HandleBagWindowDrop = function()
     end
 
     UpdateBagWindowDropOverlay(hasCursorItem, itemID, isFromPlayerBag, prefersReagentBag)
+    return false
+end
+
+function Bags.CanAcceptBagSectionDrop(targetBagID, itemID, sourceBagID)
+    return CanAcceptSpecificBagDrop(targetBagID, itemID, sourceBagID)
+end
+
+function Bags.HandleBagSectionDrop(targetBagID)
+    if not PutItemInBackpack or not PutItemInBag then
+        HideBagWindowDropOverlay()
+        return false
+    end
+
+    local hasCursorItem, itemID, _, _, sourceBagID = nil, nil, nil, nil, nil
+    if Bags.GetCursorItemContext then
+        hasCursorItem, itemID, _, _, sourceBagID = Bags.GetCursorItemContext()
+    end
+
+    if not hasCursorItem or type(itemID) ~= "number" or itemID <= 0 then
+        HideBagWindowDropOverlay()
+        return false
+    end
+
+    if not CanAcceptSpecificBagDrop(targetBagID, itemID, sourceBagID) then
+        HideBagWindowDropOverlay()
+        return false
+    end
+
+    local placed = TryPlaceCursorItemInBag(targetBagID)
+    if placed then
+        HideBagWindowDropOverlay()
+        if Bags.RequestUpdate then
+            Bags.RequestUpdate({ renderOnly = true, forceReflow = true, cursorOnly = true })
+        end
+        return true
+    end
+
     return false
 end
 
@@ -762,6 +956,7 @@ local slotCount = 0
 local hoveredCustomSlot = nil
 local wasRightMouseDown = false
 local pendingLayoutAfterCombat = false
+local pendingSlotPoolWarmAfterCombat = false
 
 local slotDisplayCategoryByFrame = Bags.slotDisplayCategoryByFrame
 if type(slotDisplayCategoryByFrame) ~= "table" then
@@ -1057,7 +1252,7 @@ end
 
 function Bags.WarmSlotPool(desiredCount)
     if InCombatLockdown() then
-        pendingLayoutAfterCombat = true
+        pendingSlotPoolWarmAfterCombat = true
         return
     end
 
@@ -1094,6 +1289,8 @@ end
 ----------------------------------------------------------------------------------------
 
 local BAG_REFRESH_DEBOUNCE_KEY = "Bags:SnapshotRefresh"
+local BAG_EVENT_KEY_PREFIX = "Bags:Events"
+local BAG_WARM_SLOT_TIMER_KEY = "Bags:WarmSlotPools"
 local BAG_TOGGLE_COMMAND = "REFINEUI_TOGGLEBAGS"
 local BAG_OVERRIDE_BINDINGS = {
     "TOGGLEBACKPACK",
@@ -1403,31 +1600,19 @@ local function WarmBagSlotPools()
     end
 end
 
-local eventFrame = CreateFrame("Frame")
-eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-eventFrame:RegisterEvent("UPDATE_BINDINGS")
-eventFrame:RegisterEvent("BAG_UPDATE_DELAYED")
-eventFrame:RegisterEvent("BAG_CONTAINER_UPDATE")
-eventFrame:RegisterEvent("ITEM_LOCK_CHANGED")
-eventFrame:RegisterEvent("ITEM_UNLOCKED")
-eventFrame:RegisterEvent("PLAYER_MONEY")
-eventFrame:RegisterEvent("EQUIPMENT_SETS_CHANGED")
-eventFrame:RegisterEvent("QUEST_ACCEPTED")
-eventFrame:RegisterEvent("QUEST_REMOVED")
-eventFrame:RegisterEvent("QUEST_TURNED_IN")
-eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
-
-eventFrame:SetScript("OnEvent", function(_, event, ...)
+local function OnBagEvent(event, ...)
     if event == "PLAYER_ENTERING_WORLD" then
         EnsureBlizzardBagFramesRedirected()
         HideBlizzardBags()
         InstallBlizzardBagHooks()
         ApplyBagBindingOverrides()
         RequestUpdate()
-        C_Timer.After(0, WarmBagSlotPools)
+        RefineUI:After(BAG_WARM_SLOT_TIMER_KEY, 0, WarmBagSlotPools)
     elseif event == "PLAYER_REGEN_ENABLED" then
-        WarmBagSlotPools()
+        if pendingSlotPoolWarmAfterCombat then
+            pendingSlotPoolWarmAfterCombat = false
+            WarmBagSlotPools()
+        end
         if bagBindingRefreshPending then
             ApplyBagBindingOverrides()
         end
@@ -1463,7 +1648,23 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
     else
         RequestUpdate()
     end
-end)
+end
+
+RefineUI:OnEvents({
+    "PLAYER_ENTERING_WORLD",
+    "PLAYER_REGEN_ENABLED",
+    "UPDATE_BINDINGS",
+    "BAG_UPDATE_DELAYED",
+    "BAG_CONTAINER_UPDATE",
+    "ITEM_LOCK_CHANGED",
+    "ITEM_UNLOCKED",
+    "PLAYER_MONEY",
+    "EQUIPMENT_SETS_CHANGED",
+    "QUEST_ACCEPTED",
+    "QUEST_REMOVED",
+    "QUEST_TURNED_IN",
+    "QUEST_LOG_UPDATE",
+}, OnBagEvent, BAG_EVENT_KEY_PREFIX)
 
 ----------------------------------------------------------------------------------------
 -- Interaction

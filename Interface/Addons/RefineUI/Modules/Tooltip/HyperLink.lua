@@ -9,6 +9,7 @@ local _, RefineUI = ...
 -- Module
 ----------------------------------------------------------------------------------------
 local Tooltip = RefineUI:GetModule("Tooltip")
+local Chat = RefineUI:GetModule("Chat")
 if not Tooltip then
     return
 end
@@ -24,8 +25,13 @@ local type = type
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
+local EventRegistry = _G.EventRegistry
 local GameTooltip = _G.GameTooltip
-local NUM_CHAT_WINDOWS = NUM_CHAT_WINDOWS
+
+----------------------------------------------------------------------------------------
+-- State
+----------------------------------------------------------------------------------------
+local callbacksRegistered = false
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -47,13 +53,16 @@ local HYPERLINK_TYPES = {
 -- Hyperlink Handlers
 ----------------------------------------------------------------------------------------
 local function ShouldSuppressHyperlinkTooltip()
+    if Chat and Chat.ShouldSuspendOptionalEnhancements and Chat:ShouldSuspendOptionalEnhancements() then
+        return true
+    end
     if type(Tooltip.MaybeHideInCombat) == "function" then
         return Tooltip:MaybeHideInCombat(GameTooltip) == true
     end
     return false
 end
 
-local function OnHyperlinkEnter(frame, link)
+local function OnHyperlinkEnter(_, frame, link)
     if type(link) ~= "string" or link == "" then
         return
     end
@@ -102,11 +111,15 @@ end
 -- Initialization
 ----------------------------------------------------------------------------------------
 function Tooltip:InitializeHyperlinkSupport()
-    for chatIndex = 1, NUM_CHAT_WINDOWS do
-        local frame = _G["ChatFrame" .. chatIndex]
-        if frame then
-            RefineUI:HookScriptOnce("Tooltip:ChatFrame" .. chatIndex .. ":OnHyperlinkEnter", frame, "OnHyperlinkEnter", OnHyperlinkEnter)
-            RefineUI:HookScriptOnce("Tooltip:ChatFrame" .. chatIndex .. ":OnHyperlinkLeave", frame, "OnHyperlinkLeave", OnHyperlinkLeave)
-        end
+    if callbacksRegistered then
+        return
     end
+
+    if not EventRegistry or type(EventRegistry.RegisterCallback) ~= "function" then
+        return
+    end
+
+    callbacksRegistered = true
+    EventRegistry:RegisterCallback("ChatFrame.OnHyperlinkEnter", OnHyperlinkEnter, self)
+    EventRegistry:RegisterCallback("ChatFrame.OnHyperlinkLeave", OnHyperlinkLeave, self)
 end

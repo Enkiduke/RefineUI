@@ -163,8 +163,9 @@ local function ForEachChildFrameFontString(frame, callback, seen)
     end
     seen[frame] = true
 
-    for i = 1, frame:GetNumRegions() do
-        local region = select(i, frame:GetRegions())
+    local regions = { frame:GetRegions() }
+    for i = 1, #regions do
+        local region = regions[i]
         if region and region.GetObjectType and region:GetObjectType() == "FontString" then
             callback(region)
         end
@@ -692,12 +693,17 @@ function Quests:OnInitialize()
     end)
 
     self:CreateSettingsButton()
+    if self.RegisterObjectiveTrackerEditModeSettings then
+        self:RegisterObjectiveTrackerEditModeSettings()
+    end
+    if self.ApplyObjectiveTrackerScale then
+        self:ApplyObjectiveTrackerScale()
+    end
 
     if not InCombatLockdown() then
         ObjectiveTrackerFrame:SetParent(UIParent)
         ObjectiveTrackerFrame:SetAlpha(1)
         ObjectiveTrackerFrame:Show()
-        ObjectiveTrackerFrame:SetScale(1.2)
     end
     
     RefineUI:HookOnce("Quests:QuestInfo_Display", "QuestInfo_Display", function()

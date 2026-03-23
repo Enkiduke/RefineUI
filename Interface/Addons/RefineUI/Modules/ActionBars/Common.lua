@@ -103,6 +103,7 @@ private.DeferredManager = private.DeferredManager or {
     PressButtons = {},
     CooldownButtons = {},
     StateButtons = {},
+    UsabilityButtons = {},
     RangeButtons = {},
 }
 private.ActionResyncDebug = private.ActionResyncDebug or {
@@ -270,6 +271,42 @@ function private.RefreshButtonCollection(buttons, refreshCooldown, refreshState,
         end
 
         if private.RefreshButton(button, refreshCooldown, refreshState, forceState, hasTargetValue) then
+            touched = touched + 1
+        end
+    end
+
+    return touched
+end
+
+function private.RefreshButtonUsabilityCollection(buttons, forceState)
+    if not buttons or not next(buttons) then
+        return 0
+    end
+
+    local touched = 0
+    for button in pairs(buttons) do
+        if button and button:IsVisible() then
+            private.RefreshButtonUsability(button, forceState == true)
+            touched = touched + 1
+        end
+    end
+
+    return touched
+end
+
+function private.RefreshButtonRangeCollection(buttons, forceState, hasTarget)
+    if not buttons or not next(buttons) then
+        return 0
+    end
+
+    local hasTargetValue = hasTarget
+    local touched = 0
+    for button in pairs(buttons) do
+        if button and button:IsVisible() then
+            if hasTargetValue == nil then
+                hasTargetValue = UnitExists("target")
+            end
+            private.RefreshButtonRange(button, forceState == true, hasTargetValue)
             touched = touched + 1
         end
     end

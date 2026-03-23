@@ -63,6 +63,7 @@ RefineUI.Media.Textures = {
     PowerBar = M .. [[Textures\PowerBar.blp]],
     CooldownSwipe = M .. [[Textures\CDBig.blp]],
     CooldownSwipeSmall = M .. [[Textures\CDSmall.blp]],
+    TickCircle = M .. [[Textures\TickCircle.blp]],
     
     -- UnitFrame Parts
     Frame = M .. [[Textures\Frame.blp]],

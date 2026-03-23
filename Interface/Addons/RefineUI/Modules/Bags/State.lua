@@ -32,6 +32,12 @@ local next = next
 ----------------------------------------------------------------------------------------
 
 local PREFETCH_DEBOUNCE_KEY = "Bags:MetadataPrefetch"
+local MAIN_SECTION = {
+    COMBINED_KEY = "main:__combined__:",
+    COMBINED_CATEGORY = "__combined__",
+    COMBINED_LABEL = "Combined",
+    BAG_CATEGORY_PREFIX = "__bag__:",
+}
 
 ----------------------------------------------------------------------------------------
 -- State
@@ -266,6 +272,146 @@ local function BuildCategoryOrderIndex()
     return index
 end
 
+local function CompareTextAsc(a, b)
+    a = tostring(a or "")
+    b = tostring(b or "")
+    if a == b then
+        return nil
+    end
+    if a == "" then
+        return false
+    end
+    if b == "" then
+        return true
+    end
+    return a < b
+end
+
+local function CompareNumberAsc(a, b)
+    a = tonumber(a) or 0
+    b = tonumber(b) or 0
+    if a == b then
+        return nil
+    end
+    return a < b
+end
+
+local function CompareNumberDesc(a, b)
+    a = tonumber(a) or -1
+    b = tonumber(b) or -1
+    if a == b then
+        return nil
+    end
+    return a > b
+end
+
+local function CompareBlizzardSlotOrder(sa, sb)
+    local result = CompareNumberAsc(sa and sa.bagID, sb and sb.bagID)
+    if result ~= nil then
+        return result
+    end
+    return (tonumber(sa and sa.slotIndex) or 0) < (tonumber(sb and sb.slotIndex) or 0)
+end
+
+local function GetSlotSortMeta(slotState, categoryOrderIndex)
+    local meta = Bags.GetItemMetadata and Bags.GetItemMetadata(slotState.itemID, slotState.hyperlink) or nil
+    return {
+        categoryIndex = categoryOrderIndex[slotState.categoryKey] or 9999,
+        subCategory = tostring(slotState.subCategoryKey or ""),
+        itemType = tostring((meta and meta.itemType) or slotState.categoryKey or ""),
+        itemSubType = tostring((meta and meta.itemSubType) or slotState.subCategoryKey or ""),
+        quality = tonumber((meta and meta.quality) or slotState.quality) or -1,
+        name = tostring((meta and meta.nameLower) or ""),
+    }
+end
+
+local function CompareSectionSlots(sa, sb, sortMode, categoryOrderIndex)
+    if sortMode == Bags.SORT_MODE.TYPE then
+        local sortA = GetSlotSortMeta(sa, categoryOrderIndex)
+        local sortB = GetSlotSortMeta(sb, categoryOrderIndex)
+
+        local result = CompareNumberAsc(sortA.categoryIndex, sortB.categoryIndex)
+        if result ~= nil then return result end
+
+        result = CompareTextAsc(sortA.subCategory, sortB.subCategory)
+        if result ~= nil then return result end
+
+        result = CompareTextAsc(sortA.itemType, sortB.itemType)
+        if result ~= nil then return result end
+
+        result = CompareTextAsc(sortA.itemSubType, sortB.itemSubType)
+        if result ~= nil then return result end
+
+        result = CompareNumberDesc(sortA.quality, sortB.quality)
+        if result ~= nil then return result end
+
+        result = CompareTextAsc(sortA.name, sortB.name)
+        if result ~= nil then return result end
+    elseif sortMode == Bags.SORT_MODE.QUALITY then
+        local sortA = GetSlotSortMeta(sa, categoryOrderIndex)
+        local sortB = GetSlotSortMeta(sb, categoryOrderIndex)
+
+        local result = CompareNumberDesc(sortA.quality, sortB.quality)
+        if result ~= nil then return result end
+
+        result = CompareNumberAsc(sortA.categoryIndex, sortB.categoryIndex)
+        if result ~= nil then return result end
+
+        result = CompareTextAsc(sortA.subCategory, sortB.subCategory)
+        if result ~= nil then return result end
+
+        result = CompareTextAsc(sortA.name, sortB.name)
+        if result ~= nil then return result end
+    elseif sortMode == Bags.SORT_MODE.NAME then
+        local sortA = GetSlotSortMeta(sa, categoryOrderIndex)
+        local sortB = GetSlotSortMeta(sb, categoryOrderIndex)
+
+        local result = CompareTextAsc(sortA.name, sortB.name)
+        if result ~= nil then return result end
+
+        result = CompareNumberDesc(sortA.quality, sortB.quality)
+        if result ~= nil then return result end
+
+        result = CompareNumberAsc(sortA.categoryIndex, sortB.categoryIndex)
+        if result ~= nil then return result end
+    end
+
+    return CompareBlizzardSlotOrder(sa, sb)
+end
+
+local function GetMainBagLabel(bagID)
+    if bagID == (BACKPACK_CONTAINER or 0) then
+        return BAG_NAME_BACKPACK or "Backpack"
+    end
+
+    if C_Container and C_Container.GetBagName then
+        local bagName = C_Container.GetBagName(bagID)
+        if type(bagName) == "string" and bagName ~= "" then
+            return bagName
+        end
+    end
+
+    return string.format("Bag %d", tonumber(bagID) or 0)
+end
+
+local function BuildBagSectionCache()
+    local cache = {}
+    local maxBagSlots = NUM_BAG_SLOTS or 4
+
+    for bagID = 0, maxBagSlots do
+        if bagID ~= 5 then
+            cache[bagID] = {
+                categoryKey = MAIN_SECTION.BAG_CATEGORY_PREFIX .. tostring(bagID),
+                key = "main:" .. MAIN_SECTION.BAG_CATEGORY_PREFIX .. tostring(bagID) .. ":",
+                label = GetMainBagLabel(bagID),
+                order = bagID + 1,
+            }
+        end
+    end
+
+    return cache
+end
+
 ----------------------------------------------------------------------------------------
 -- Search logic
 ----------------------------------------------------------------------------------------
@@ -329,7 +475,7 @@ end
 -- Slot State
 ----------------------------------------------------------------------------------------
 
-local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unresolvedMeta)
+local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache)
     if not info or not info.itemID then return nil end
 
     local itemID = info.itemID
@@ -351,6 +497,9 @@ local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unreso
     local sectionLabel
     local sectionOrder
     local sectionSubOrder = 0
+    local sectionCategoryKey
+    local sectionSubCategoryKey
+    local sectionTargetBagID
 
     if bagID == 5 then
         viewKey = "reagent"
@@ -362,16 +511,41 @@ local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unreso
         sectionLabel = reagentLabel or categoryKey or (OTHER or "Other")
         sectionOrder = reagentSort or 9999
         sectionKey = "reagent:" .. tostring(categoryKey)
+        sectionCategoryKey = categoryKey
+        sectionSubCategoryKey = nil
+        sectionTargetBagID = nil
     else
         viewKey = "main"
         if Bags.GetItemCategory then
             categoryKey, subCategoryKey = Bags.GetItemCategory(bagID, slotIndex, info)
         end
         categoryKey = categoryKey or "Other"
-        sectionLabel = subCategoryKey or (Bags.GetCategoryLabel and Bags.GetCategoryLabel(categoryKey)) or categoryKey
-        sectionOrder = categoryOrderIndex[categoryKey] or 9999
-        sectionSubOrder = subCategoryKey and 1 or 0
-        sectionKey = "main:" .. tostring(categoryKey) .. ":" .. tostring(subCategoryKey or "")
+        if Bags.IsCombinedViewEnabled and Bags.IsCombinedViewEnabled() then
+            sectionCategoryKey = MAIN_SECTION.COMBINED_CATEGORY
+            sectionSubCategoryKey = nil
+            sectionLabel = MAIN_SECTION.COMBINED_LABEL
+            sectionOrder = 1
+            sectionSubOrder = 0
+            sectionKey = MAIN_SECTION.COMBINED_KEY
+            sectionTargetBagID = nil
+        elseif Bags.IsBagViewEnabled and Bags.IsBagViewEnabled() then
+            local bagSection = bagSectionCache and bagSectionCache[bagID]
+            sectionCategoryKey = (bagSection and bagSection.categoryKey) or (MAIN_SECTION.BAG_CATEGORY_PREFIX .. tostring(bagID))
+            sectionSubCategoryKey = nil
+            sectionLabel = (bagSection and bagSection.label) or GetMainBagLabel(bagID)
+            sectionOrder = (bagSection and bagSection.order) or (bagID + 1)
+            sectionSubOrder = 0
+            sectionKey = (bagSection and bagSection.key) or ("main:" .. MAIN_SECTION.BAG_CATEGORY_PREFIX .. tostring(bagID) .. ":")
+            sectionTargetBagID = bagID
+        else
+            sectionCategoryKey = categoryKey
+            sectionSubCategoryKey = subCategoryKey
+            sectionLabel = subCategoryKey or (Bags.GetCategoryLabel and Bags.GetCategoryLabel(categoryKey)) or categoryKey
+            sectionOrder = categoryOrderIndex[categoryKey] or 9999
+            sectionSubOrder = subCategoryKey and 1 or 0
+            sectionKey = "main:" .. tostring(categoryKey) .. ":" .. tostring(subCategoryKey or "")
+            sectionTargetBagID = nil
+        end
     end
 
     local state = {
@@ -388,6 +562,9 @@ local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unreso
         isNewItem = isNewItem,
         categoryKey = categoryKey,
         subCategoryKey = subCategoryKey,
+        sectionCategoryKey = sectionCategoryKey,
+        sectionSubCategoryKey = sectionSubCategoryKey,
+        sectionTargetBagID = sectionTargetBagID,
         sectionKey = sectionKey,
         sectionLabel = sectionLabel,
         sectionOrder = sectionOrder,
@@ -415,11 +592,12 @@ local function AddToSection(sectionMap, sectionList, slotState)
         section = {
             key = slotState.sectionKey,
             viewKey = slotState.viewKey,
-            categoryKey = slotState.categoryKey,
-            subCategoryKey = slotState.subCategoryKey,
+            categoryKey = (slotState.sectionCategoryKey ~= nil) and slotState.sectionCategoryKey or slotState.categoryKey,
+            subCategoryKey = (slotState.sectionCategoryKey ~= nil) and slotState.sectionSubCategoryKey or slotState.subCategoryKey,
             label = slotState.sectionLabel,
             sortOrder = slotState.sectionOrder or 9999,
             subOrder = slotState.sectionSubOrder or 0,
+            targetBagID = slotState.sectionTargetBagID,
             slotKeys = {},
         }
         sectionMap[slotState.sectionKey] = section
@@ -428,18 +606,14 @@ local function AddToSection(sectionMap, sectionList, slotState)
     table.insert(section.slotKeys, slotState.slotKey)
 end
 
-local function SortSectionSlots(section, slotStateByKey)
+local function SortSectionSlots(section, slotStateByKey, sortMode, categoryOrderIndex)
     table.sort(section.slotKeys, function(a, b)
         local sa = slotStateByKey[a]
         local sb = slotStateByKey[b]
         if not sa or not sb then
             return tostring(a) < tostring(b)
         end
-
-        if sa.bagID ~= sb.bagID then
-            return sa.bagID < sb.bagID
-        end
-        return sa.slotIndex < sb.slotIndex
+        return CompareSectionSlots(sa, sb, sortMode, categoryOrderIndex or {})
     end)
 end
 
@@ -484,6 +658,7 @@ function Bags.RefreshBagState(opts)
     end
 
     local categoryOrderIndex = BuildCategoryOrderIndex()
+    local bagSectionCache = BuildBagSectionCache()
     local prevSlotStateByKey = Bags.SlotStateByKey or {}
     local nextSlotStateByKey = {}
     local unresolvedMeta = {}
@@ -508,7 +683,7 @@ function Bags.RefreshBagState(opts)
                 if not info or not info.itemID then
                     freeSlotsBag = freeSlotsBag + 1
                 else
-                    local slotState = BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unresolvedMeta)
+                    local slotState = BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache)
                     if slotState then
                         nextSlotStateByKey[slotState.slotKey] = slotState
                         AddToSection(mainSectionsByKey, mainSectionList, slotState)
@@ -525,7 +700,7 @@ function Bags.RefreshBagState(opts)
         if not info or not info.itemID then
             freeSlotsReagent = freeSlotsReagent + 1
         else
-            local slotState = BuildSlotState(5, slotIndex, info, categoryOrderIndex, unresolvedMeta)
+            local slotState = BuildSlotState(5, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache)
             if slotState then
                 nextSlotStateByKey[slotState.slotKey] = slotState
                 AddToSection(reagentSectionsByKey, reagentSectionList, slotState)
@@ -534,7 +709,33 @@ function Bags.RefreshBagState(opts)
     end
 
     local enabledOrder = (Bags.GetEnabledCategoryOrder and Bags.GetEnabledCategoryOrder()) or Bags.CATEGORY_ORDER or {}
-    if Bags.IsCustomCategoryKey then
+    local combinedViewEnabled = Bags.IsCombinedViewEnabled and Bags.IsCombinedViewEnabled()
+    local bagViewEnabled = Bags.IsBagViewEnabled and Bags.IsBagViewEnabled()
+    local mainSortMode = (Bags.SORT_MODE and Bags.SORT_MODE.BLIZZARD) or "Blizzard"
+    if not bagViewEnabled then
+        mainSortMode = (Bags.GetActiveSortMode and Bags.GetActiveSortMode()) or mainSortMode
+    end
+    if bagViewEnabled then
+        for bagID, bagSection in pairs(bagSectionCache) do
+            if type(bagID) == "number" and bagID ~= 5 and bagSection and not mainSectionsByKey[bagSection.key] then
+                local section = {
+                    key = bagSection.key,
+                    viewKey = "main",
+                    categoryKey = bagSection.categoryKey,
+                    subCategoryKey = nil,
+                    label = bagSection.label,
+                    sortOrder = bagSection.order or (bagID + 1),
+                    subOrder = 0,
+                    targetBagID = bagID,
+                    slotKeys = {},
+                }
+                mainSectionsByKey[bagSection.key] = section
+                table.insert(mainSectionList, section)
+            end
+        end
+    end
+
+    if not combinedViewEnabled and not bagViewEnabled and Bags.IsCustomCategoryKey then
         for _, categoryKey in ipairs(enabledOrder) do
             if Bags.IsCustomCategoryKey(categoryKey) then
                 local sectionKey = "main:" .. tostring(categoryKey) .. ":"
@@ -557,10 +758,10 @@ function Bags.RefreshBagState(opts)
     end
 
     for _, section in ipairs(mainSectionList) do
-        SortSectionSlots(section, nextSlotStateByKey)
+        SortSectionSlots(section, nextSlotStateByKey, mainSortMode, categoryOrderIndex)
     end
     for _, section in ipairs(reagentSectionList) do
-        SortSectionSlots(section, nextSlotStateByKey)
+        SortSectionSlots(section, nextSlotStateByKey, (Bags.SORT_MODE and Bags.SORT_MODE.BLIZZARD) or "Blizzard", categoryOrderIndex)
     end
 
     table.sort(mainSectionList, function(a, b)

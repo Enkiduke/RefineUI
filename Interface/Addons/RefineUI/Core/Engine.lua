@@ -35,6 +35,10 @@ RefineUI.MyClass = select(2, UnitClass("player"))
 -- Initialization
 ----------------------------------------------------------------------------------------
 function RefineUI:OnInitialize()
+    if self.InitializeDatabase then
+        self:InitializeDatabase()
+    end
+
     -- Sync constants immediately
     if self.UpdatePixelConstants then self:UpdatePixelConstants() end
 end
@@ -54,6 +58,12 @@ loader:SetScript("OnEvent", function(self, event, ...)
             self:UnregisterEvent("ADDON_LOADED")
         end
     elseif event == "PLAYER_LOGIN" then
+        -- Pixel-perfect layout depends on the effective UI scale being established
+        -- before the rest of the startup pipeline builds or restyles frames.
+        if RefineUI.SetUIScale then
+            RefineUI:SetUIScale()
+        end
+
         if RefineUI.RunStartupCallbacks then
             RefineUI:RunStartupCallbacks()
         elseif RefineUI.OnEnable then
@@ -61,12 +71,6 @@ loader:SetScript("OnEvent", function(self, event, ...)
             RefineUI:OnEnable()
         end
 
-        -- Final Pixel Perfect enforcement (sets CVars) only after DB/init flow
-        -- and only when installation has completed.
-        local db = RefineUI.DB
-        if RefineUI.SetUIScale and db and db.Installed and db.InstallState == "ready" then
-            RefineUI:SetUIScale()
-        end
         self:UnregisterEvent("PLAYER_LOGIN")
     end
 end)

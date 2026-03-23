@@ -197,7 +197,6 @@ function CDM:GetCooldownVisualStyle(cooldownID, layoutKey)
     if type(style.Font) == "table" then
         result.Font = NormalizeColor(style.Font)
     end
-
     if not result.Border and not result.Bar and not result.Font then
         return nil
     end
@@ -576,9 +575,6 @@ function CDM:OnVisualStylesChanged()
         fontColorTokenCache[key] = nil
     end
     self:InvalidateTrackerRenderSignatures()
-    if self.RequestCooldownViewerVisualRefresh then
-        self:RequestCooldownViewerVisualRefresh()
-    end
     self:RequestRefresh(true)
     if self:IsSettingsFrameShown() and self.RefreshSettingsSection then
         self:RefreshSettingsSection()
@@ -687,6 +683,7 @@ function CDM:ClearCooldownVisualStyle(cooldownID, what, layoutKey)
         style.Border = nil
         style.Bar = nil
         style.Font = nil
+        style.Radial = nil
     end
 
     if PruneEmptyStyle(style) then
@@ -744,11 +741,15 @@ function CDM:ApplyTrackerCooldownTextVisual(cooldown, cooldownID)
     ApplyCooldownTextColor(cooldown, textColor)
 end
 
-function CDM:RequestCooldownViewerVisualRefresh()
-end
-
 function CDM:InitializeVisuals()
+    if self.visualsInitialized then
+        return
+    end
+    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
+        return
+    end
     if self.InstallVisualMenuHooks then
         self:InstallVisualMenuHooks()
     end
+    self.visualsInitialized = true
 end

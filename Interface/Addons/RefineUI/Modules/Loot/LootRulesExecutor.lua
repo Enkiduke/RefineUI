@@ -33,8 +33,6 @@ local C_TransmogCollection = C_TransmogCollection
 local C_ToyBox = C_ToyBox
 local C_PetJournal = C_PetJournal
 local C_MountJournal = C_MountJournal
-local GetItemIcon = C_Item and C_Item.GetItemIconByID
-
 local GetLootSlotType = GetLootSlotType
 local GetLootSlotLink = GetLootSlotLink
 local GetLootSlotInfo = GetLootSlotInfo
@@ -103,17 +101,6 @@ local function GetItemIDFromLink(link)
     return itemID and tonumber(itemID) or nil
 end
 
-local function BuildItemIconString(itemID)
-    if not itemID or not GetItemIcon then
-        return ""
-    end
-    local icon = GetItemIcon(itemID)
-    if not icon then
-        return ""
-    end
-    return ("|T%s:0|t "):format(icon)
-end
-
 local function ResolveDisplayItemLink(link, itemID)
     if type(link) == "string" and link ~= "" and link:find("|Hitem:") then
         return link
@@ -140,15 +127,14 @@ local function ResolveDisplayItemLink(link, itemID)
 end
 
 local function PrintItemActionMessage(prefix, itemID, link, reason)
-    local iconString = BuildItemIconString(itemID)
     local displayLink = ResolveDisplayItemLink(link, itemID)
     local detail = (type(reason) == "string" and reason ~= "") and reason or nil
 
     if detail then
-        RefineUI:Print("%s%s|r %s%s %s(%s)|r", MESSAGE_PREFIX_COLOR, prefix, iconString, displayLink, MESSAGE_REASON_COLOR, detail)
+        RefineUI:Print("%s%s|r %s %s(%s)|r", MESSAGE_PREFIX_COLOR, prefix, displayLink, MESSAGE_REASON_COLOR, detail)
         return
     end
-    RefineUI:Print("%s%s|r %s%s", MESSAGE_PREFIX_COLOR, prefix, iconString, displayLink)
+    RefineUI:Print("%s%s|r %s", MESSAGE_PREFIX_COLOR, prefix, displayLink)
 end
 
 local function BuildFilteredLootReasonText(rule)

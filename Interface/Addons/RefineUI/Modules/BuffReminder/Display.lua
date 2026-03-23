@@ -24,10 +24,33 @@ local SOUNDKIT = _G.SOUNDKIT
 local RAID_CLASS_COLORS = _G.RAID_CLASS_COLORS
 local type = type
 local math_max = math.max
+local pcall = pcall
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
 ----------------------------------------------------------------------------------------
+local function ApplyMousePassthrough(frame)
+    if not frame then
+        return
+    end
+
+    if type(frame.EnableMouse) == "function" then
+        pcall(frame.EnableMouse, frame, false)
+    end
+    if type(frame.SetMouseClickEnabled) == "function" then
+        pcall(frame.SetMouseClickEnabled, frame, false)
+    end
+    if type(frame.SetMouseMotionEnabled) == "function" then
+        pcall(frame.SetMouseMotionEnabled, frame, false)
+    end
+    if type(frame.SetPropagateMouseClicks) == "function" then
+        pcall(frame.SetPropagateMouseClicks, frame, true)
+    end
+    if type(frame.SetPropagateMouseMotion) == "function" then
+        pcall(frame.SetPropagateMouseMotion, frame, true)
+    end
+end
+
 local function CreateFlashAnimation(frame)
     local group = frame:CreateAnimationGroup()
     group:SetLooping("REPEAT")
@@ -155,7 +178,7 @@ function BuffReminder:EnsureRootFrame()
     local frame = CreateFrame("Frame", self.FRAME_NAME, UIParent)
     frame:SetFrameStrata("MEDIUM")
     frame:SetFrameLevel(25)
-    frame:EnableMouse(false)
+    ApplyMousePassthrough(frame)
 
     local point, relativeTo, relativePoint, x, y = self:ResolveAnchorPosition()
     frame:SetPoint(point, relativeTo, relativePoint, x, y)
@@ -188,6 +211,7 @@ function BuffReminder:EnsureIconFrame(index)
 
     frame = CreateFrame("Frame", nil, self.rootFrame)
     frame:SetFrameLevel(self.rootFrame:GetFrameLevel() + 1)
+    ApplyMousePassthrough(frame)
     RefineUI.SetTemplate(frame, "Default")
     frame.icon = frame:CreateTexture(nil, "ARTWORK")
     frame.icon:SetAllPoints()

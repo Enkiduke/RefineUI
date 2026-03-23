@@ -380,6 +380,7 @@ end
 -- Hook Guards
 ----------------------------------------------------------------------------------------
 RefineUI._hookRegistry = RefineUI._hookRegistry or {}
+local observability = RefineUI.Observability
 
 local function describeTarget(target)
     if type(target) == "string" then
@@ -422,7 +423,9 @@ end
 
 local function wrapObservedHook(key, fn)
     return function(...)
-        observeHookCall(key)
+        if observability and observability.enabled then
+            observeHookCall(key)
+        end
         return fn(...)
     end
 end

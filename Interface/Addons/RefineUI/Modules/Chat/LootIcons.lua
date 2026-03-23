@@ -18,6 +18,7 @@ local ChatTypeInfo = ChatTypeInfo
 local GOLD_ICON   = "|TInterface\\MoneyFrame\\UI-GoldIcon:12:12:2:0|t"
 local SILVER_ICON = "|TInterface\\MoneyFrame\\UI-SilverIcon:12:12:2:0|t"
 local COPPER_ICON = "|TInterface\\MoneyFrame\\UI-CopperIcon:12:12:2:0|t"
+local LOOT_MONEY_PREFIX_COLOR = "|cffffd700"
 local _moneyChatTypeID
 
 local GOLD_TEXT   = GOLD_AMOUNT:gsub("%%d", "")
@@ -39,6 +40,19 @@ local function IsMoneyMessage(infoID, event)
     return _moneyChatTypeID and infoID and infoID == _moneyChatTypeID
 end
 
+local function IsTransformedMoneyMessage(message)
+    if type(message) ~= "string" then
+        return false
+    end
+    if not message:find(LOOT_MONEY_PREFIX_COLOR, 1, true) then
+        return false
+    end
+
+    return message:find(GOLD_ICON, 1, true)
+        or message:find(SILVER_ICON, 1, true)
+        or message:find(COPPER_ICON, 1, true)
+end
+
 function Chat:TransformLootMoneyMessage(message, infoID, event)
     if not self._lootMoneyIconsEnabled then
         return message
@@ -47,6 +61,9 @@ function Chat:TransformLootMoneyMessage(message, infoID, event)
         return message
     end
     if not IsMoneyMessage(infoID, event) then
+        return message
+    end
+    if IsTransformedMoneyMessage(message) then
         return message
     end
     if not message:find(LOOT_MONEY_PREFIX, 1, true) then

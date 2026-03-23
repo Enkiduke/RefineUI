@@ -97,18 +97,24 @@ function RefineUI:UpdateTarget(frame)
         RefineUI.NameplateData[frame] = data
     end
     
+    local previousTarget = data.isTarget
+    local previousNameOnly = data.lastTargetNameOnly
     local isTarget = IsTargetNameplateUnitFrame(frame)
     data.isTarget = isTarget
     local isNameOnly = data.RefineHidden == true
     if RefineUI.IsNameOnlyNameplate then
         isNameOnly = RefineUI:IsNameOnlyNameplate(frame, data)
     end
-    if RefineUI.UpdateNameplateRaidIconAnchor then
+
+    -- Raid icon anchoring is already refreshed by visibility and Blizzard raid-target/
+    -- anchor hooks. Only reapply here when our name-only mode actually changed.
+    if RefineUI.UpdateNameplateRaidIconAnchor and (previousNameOnly ~= isNameOnly or data.RaidIconAnchorMode == nil) then
         RefineUI:UpdateNameplateRaidIconAnchor(frame, data, isNameOnly)
     end
+    data.lastTargetNameOnly = isNameOnly
     
     -- 1. Border Colors (Centralized)
-    if RefineUI.UpdateBorderColors then
+    if (not isNameOnly) and RefineUI.UpdateBorderColors and previousTarget ~= isTarget then
         RefineUI:UpdateBorderColors(frame)
     end
 
@@ -116,21 +122,33 @@ function RefineUI:UpdateTarget(frame)
     -- 3. Arrows
     if data and data.TargetArrows then
         if Config.Nameplates and Config.Nameplates.TargetIndicator == false then
-            data.TargetArrows:Hide()
+            if data.TargetArrowsShown ~= false then
+                data.TargetArrows:Hide()
+                data.TargetArrowsShown = false
+                data.TargetArrowAnchor = nil
+            end
         elseif isTarget then
-            data.TargetArrows:Show()
+            if data.TargetArrowsShown ~= true then
+                data.TargetArrows:Show()
+                data.TargetArrowsShown = true
+            end
             
             -- Dynamic Positioning based on enabled elements
             local left = data.TargetArrows.Left
             local right = data.TargetArrows.Right
 
             local anchor
+            local showLeft = false
             if isNameOnly then
                 anchor = data.RefineName or frame.Name
-                left:Show()
+                showLeft = true
             else
                 anchor = frame.healthBar or frame.Name
-                left:Hide()
+            end
+
+            if left and data.TargetArrowLeftShown ~= showLeft then
+                left:SetShown(showLeft)
+                data.TargetArrowLeftShown = showLeft
             end
             
             if anchor then
@@ -139,14 +157,26 @@ function RefineUI:UpdateTarget(frame)
                     rightOffset = rightOffset + 6
                 end
 
-                left:ClearAllPoints()
-                RefineUI.Point(left, "RIGHT", anchor, "LEFT", -4, 0)
-                
-                right:ClearAllPoints()
-                RefineUI.Point(right, "LEFT", anchor, "RIGHT", rightOffset, 0)
+                if data.TargetArrowAnchor ~= anchor
+                    or data.TargetArrowRightOffset ~= rightOffset
+                    or data.TargetArrowNameOnly ~= isNameOnly then
+                    left:ClearAllPoints()
+                    RefineUI.Point(left, "RIGHT", anchor, "LEFT", -4, 0)
+                    
+                    right:ClearAllPoints()
+                    RefineUI.Point(right, "LEFT", anchor, "RIGHT", rightOffset, 0)
+
+                    data.TargetArrowAnchor = anchor
+                    data.TargetArrowRightOffset = rightOffset
+                    data.TargetArrowNameOnly = isNameOnly
+                end
             end
         else
-            data.TargetArrows:Hide()
+            if data.TargetArrowsShown ~= false then
+                data.TargetArrows:Hide()
+                data.TargetArrowsShown = false
+                data.TargetArrowAnchor = nil
+            end
         end
     end
     
@@ -163,7 +193,7 @@ function RefineUI:UpdateTarget(frame)
         finalAlpha = 1
     else
         finalAlpha = nonTargetAlpha
-        if data and data.isCasting == true and castingAlpha > finalAlpha then
+        if (not isNameOnly) and data and data.isCasting == true and castingAlpha > finalAlpha then
             finalAlpha = castingAlpha
         end
     end

@@ -34,6 +34,9 @@ function Tooltip:OnInitialize()
     if self.InitializeTooltipAnchor then
         self:InitializeTooltipAnchor()
     end
+    if self.InitializeTooltipEditMode then
+        self:InitializeTooltipEditMode()
+    end
     if self.InitializeTooltipUnit then
         self:InitializeTooltipUnit()
     end

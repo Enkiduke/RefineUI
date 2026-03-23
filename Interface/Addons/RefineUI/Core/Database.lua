@@ -13,6 +13,7 @@ local GetRealmName = GetRealmName
 local UnitName = UnitName
 local type, pairs = type, pairs
 local ReloadUI = ReloadUI
+local wipe = wipe
 
 ----------------------------------------------------------------------------------------
 -- Logic
@@ -26,6 +27,102 @@ local function DeepCopy(src)
         dest[k] = DeepCopy(v)
     end
     return dest
+end
+
+local function CopyInto(dest, src)
+    if type(dest) ~= "table" then
+        dest = {}
+    else
+        wipe(dest)
+    end
+
+    if type(src) ~= "table" then
+        return dest
+    end
+
+    for k, v in pairs(src) do
+        dest[k] = DeepCopy(v)
+    end
+
+    return dest
+end
+
+local function IsValidLayoutTierKey(tierKey)
+    return type(tierKey) == "string"
+        and type(RefineUI.ManagedLayoutNames) == "table"
+        and RefineUI.ManagedLayoutNames[tierKey] ~= nil
+end
+
+function RefineUI:GetStoredLayoutTier(profile)
+    local db = profile or self.DB
+    local storedTier = type(db) == "table" and db.ActiveLayoutTier or nil
+    if IsValidLayoutTierKey(storedTier) then
+        return storedTier
+    end
+
+    return self.ActiveLayoutTier or self:GetLayoutTier()
+end
+
+function RefineUI:SetStoredLayoutTier(tierKey, profile)
+    local db = profile or self.DB
+    local resolvedTier = IsValidLayoutTierKey(tierKey) and tierKey or self:GetLayoutTier()
+
+    if type(db) == "table" then
+        db.ActiveLayoutTier = resolvedTier
+    end
+
+    self.ActiveLayoutTier = resolvedTier
+    return resolvedTier
+end
+
+local function EnsureLayoutProfiles(profile)
+    profile.LayoutProfiles = profile.LayoutProfiles or {}
+
+    local layoutProfiles = profile.LayoutProfiles
+    local legacyPositions = type(profile.Positions) == "table" and profile.Positions or nil
+    local activeTier = RefineUI:GetStoredLayoutTier(profile)
+
+    for _, tierKey in pairs(RefineUI.LayoutTier or {}) do
+        layoutProfiles[tierKey] = layoutProfiles[tierKey] or {}
+
+        local tierProfile = layoutProfiles[tierKey]
+        local defaultPositions = RefineUI:GetDefaultPositionsForTier(tierKey)
+
+        if type(tierProfile.Positions) ~= "table" then
+            if legacyPositions and tierKey == activeTier then
+                tierProfile.Positions = DeepCopy(legacyPositions)
+                RefineUI:CopyDefaults(defaultPositions, tierProfile.Positions)
+            else
+                tierProfile.Positions = DeepCopy(defaultPositions)
+            end
+        else
+            RefineUI:CopyDefaults(defaultPositions, tierProfile.Positions)
+        end
+    end
+
+    return layoutProfiles
+end
+
+function RefineUI:BindActiveLayoutProfile(profile, tierKey)
+    local db = profile or self.DB
+    if type(db) ~= "table" then
+        return nil
+    end
+
+    local resolvedTier = self:SetStoredLayoutTier(tierKey, db)
+    local layoutProfiles = EnsureLayoutProfiles(db)
+    local layoutProfile = layoutProfiles[resolvedTier]
+    local runtimePositions = db.Positions
+
+    if type(runtimePositions) ~= "table" then
+        runtimePositions = {}
+        db.Positions = runtimePositions
+    end
+
+    CopyInto(runtimePositions, layoutProfile and layoutProfile.Positions or {})
+    self.Positions = runtimePositions
+
+    return layoutProfile, resolvedTier
 end
 
 local function BindRuntimeConfig(profile)
@@ -42,13 +139,7 @@ local function BindRuntimeConfig(profile)
 
     RefineUI.Config = runtimeConfig
     RefineUI.DB = profile
-
-    local runtimePositions = profile.Positions
-    if type(runtimePositions) ~= "table" then
-        runtimePositions = {}
-        profile.Positions = runtimePositions
-    end
-    RefineUI.Positions = runtimePositions
+    RefineUI:BindActiveLayoutProfile(profile)
 end
 
 -- Recursive copy of defaults
@@ -129,20 +220,13 @@ function RefineUI:InitializeDatabase()
     -- Merge logic: "Copy-on-Load"
     RefineUI:CopyDefaults(RefineUI.DefaultConfig, profile)
 
-    local defaultPositions = RefineUI.Positions
-    if type(profile.Positions) ~= "table" then
-        profile.Positions = DeepCopy(type(defaultPositions) == "table" and defaultPositions or {})
-    elseif type(defaultPositions) == "table" then
-        RefineUI:CopyDefaults(defaultPositions, profile.Positions)
+    if not IsValidLayoutTierKey(profile.ActiveLayoutTier) then
+        profile.ActiveLayoutTier = RefineUI:GetLayoutTier()
     end
+
+    EnsureLayoutProfiles(profile)
     
     -- Runtime profile object + stable RefineUI.Config proxy.
     BindRuntimeConfig(profile)
 end
 
--- Hook into Engine
-local originalInit = RefineUI.OnInitialize
-function RefineUI:OnInitialize()
-    if originalInit then originalInit(self) end
-    self:InitializeDatabase()
-end

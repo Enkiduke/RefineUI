@@ -46,7 +46,12 @@ local DIRECTION_RIGHT = "RIGHT"
 local DIRECTION_UP = "UP"
 local DIRECTION_DOWN = "DOWN"
 local DIRECTION_CENTERED = "CENTERED"
+local RADIAL_BUCKET = "Radial"
+local RADIAL_TEXT_POSITION_CENTER = "CENTER"
+local RADIAL_TEXT_POSITION_ABOVE = "ABOVE"
+local RADIAL_TEXT_POSITION_BELOW = "BELOW"
 local DEFAULT_ICON_BASE_SIZE = 44
+local RADIAL_BASE_SIZE = 512
 local TRACKER_SWIPE_OVERLAY_INSET = 2
 local TRACKER_SWIPE_FRAMELEVEL_OFFSET = 20
 local TRACKER_SWIPE_COLOR_R = 0
@@ -54,20 +59,55 @@ local TRACKER_SWIPE_COLOR_G = 0
 local TRACKER_SWIPE_COLOR_B = 0
 local TRACKER_SWIPE_COLOR_A = 0.8
 local TRACKER_COOLDOWN_TEXT_SIZE = 22
+local RADIAL_BACKGROUND_ALPHA = 0.1
+local RADIAL_FILL_ALPHA = 1
+local RADIAL_TEXT_GAP = 10
+local RADIAL_TIMER_JOB_KEY = "CDM:RadialTimerUpdater"
+local RADIAL_TIMER_INTERVAL = 0.05
+local ActiveRadialCountdowns = setmetatable({}, { __mode = "k" })
+local radialTimerSchedulerInitialized = false
 
 
-local function ApplyTrackerCooldownTextStyle(cooldown)
+local function ApplyTrackerCooldownTextStyle(cooldown, textSize)
     if not cooldown or type(cooldown.GetRegions) ~= "function" then
         return
     end
 
+    local resolvedTextSize = type(textSize) == "number" and textSize or TRACKER_COOLDOWN_TEXT_SIZE
     local regions = { cooldown:GetRegions() }
     for i = 1, #regions do
         local region = regions[i]
         if region and type(region.GetObjectType) == "function" and region:GetObjectType() == "FontString" then
-            region:SetFont(RefineUI.Media.Fonts.Number, TRACKER_COOLDOWN_TEXT_SIZE, "OUTLINE")
+            region:SetFont(RefineUI.Media.Fonts.Number, resolvedTextSize, "OUTLINE")
         end
     end
+end
+
+local function GetTrackerCountdownFontString(cooldown)
+    if not cooldown or type(cooldown.GetCountdownFontString) ~= "function" then
+        return nil
+    end
+
+    local ok, fontString = pcall(cooldown.GetCountdownFontString, cooldown)
+    if not ok then
+        return nil
+    end
+    return fontString
+end
+
+local function SetRadialCountdownText(radialDisplay, value)
+    if not radialDisplay or not radialDisplay.CountdownText then
+        return
+    end
+
+    local displayValue = value
+    if type(value) == "number" and not (issecretvalue and issecretvalue(value)) and RefineUI.FormatTime then
+        displayValue = RefineUI:FormatTime(value)
+    end
+
+    RefineUI:SetFontStringValue(radialDisplay.CountdownText, displayValue, {
+        emptyText = "",
+    })
 end
 
 
@@ -82,6 +122,18 @@ local function GetRefineCooldownSwipeTexture()
     end
     if type(textures.CooldownSwipeSmall) == "string" and textures.CooldownSwipeSmall ~= "" then
         return textures.CooldownSwipeSmall
+    end
+    return nil
+end
+
+local function GetRadialTrackerTexture()
+    local media = RefineUI.Media
+    local textures = media and media.Textures
+    if type(textures) ~= "table" then
+        return nil
+    end
+    if type(textures.TickCircle) == "string" and textures.TickCircle ~= "" then
+        return textures.TickCircle
     end
     return nil
 end
@@ -153,7 +205,7 @@ local function ApplyTrackerCooldownSkin(iconFrame)
         pcall(cooldown.SetSwipeColor, cooldown, TRACKER_SWIPE_COLOR_R, TRACKER_SWIPE_COLOR_G, TRACKER_SWIPE_COLOR_B, TRACKER_SWIPE_COLOR_A)
     end
 
-    ApplyTrackerCooldownTextStyle(cooldown)
+    ApplyTrackerCooldownTextStyle(cooldown, TRACKER_COOLDOWN_TEXT_SIZE)
 
     if swipeTexture and cooldown.SetSwipeTexture then
         pcall(cooldown.SetSwipeTexture, cooldown, swipeTexture)
@@ -252,6 +304,11 @@ local function BuildEntryContentToken(entry)
         parts[#parts + 1] = "start:" .. startToken
     end
 
+    local expirationToken, expirationOk = BuildRenderPrimitive(entry.cooldownExpirationTime, "exp_nil")
+    if expirationOk then
+        parts[#parts + 1] = "exp:" .. expirationToken
+    end
+
     local durationToken, durationOk = BuildRenderPrimitive(entry.cooldownDuration, "dur_nil")
     if durationOk then
         parts[#parts + 1] = "dur:" .. durationToken
@@ -284,6 +341,16 @@ local function BuildBucketLayoutToken(count, iconScale, spacing, orientation, di
         "direction:" .. tostring(direction),
         "edit:" .. (inEditMode and "1" or "0"),
         "count:" .. tostring(count),
+    }, "|")
+end
+
+local function BuildRadialLayoutToken(iconScale, showDurationText, textSize, textPosition, inEditMode)
+    return table.concat({
+        "scale:" .. tostring(iconScale),
+        "show_text:" .. (showDurationText and "1" or "0"),
+        "text_size:" .. tostring(textSize),
+        "text_pos:" .. tostring(textPosition),
+        "edit:" .. (inEditMode and "1" or "0"),
     }, "|")
 end
 
@@ -331,6 +398,252 @@ local function ComputeIconOffset(index, count, iconSize, spacing, orientation, d
         return anchoredOffset, 0
     end
     return anchoredOffset, 0
+end
+
+local function ApplyTrackerCooldownPayload(cooldown, entry, contentChanged)
+    if not cooldown then
+        return false
+    end
+
+    local hasDurationObject = entry and HasValue(entry.duration)
+    local hasCooldownExpirationWindow = entry and HasValue(entry.cooldownExpirationTime) and HasValue(entry.cooldownDuration)
+    local hasCooldownWindow = entry and HasValue(entry.cooldownStartTime) and HasValue(entry.cooldownDuration)
+    local appliedCooldown = false
+
+    if (contentChanged or hasDurationObject or hasCooldownExpirationWindow or hasCooldownWindow)
+        and type(cooldown.SetUseAuraDisplayTime) == "function"
+    then
+        pcall(cooldown.SetUseAuraDisplayTime, cooldown, (hasDurationObject or hasCooldownExpirationWindow or hasCooldownWindow) and true or false)
+    end
+
+    if (contentChanged or hasDurationObject)
+        and hasDurationObject
+        and cooldown.SetCooldownFromDurationObject
+    then
+        local ok = pcall(cooldown.SetCooldownFromDurationObject, cooldown, entry.duration)
+        appliedCooldown = ok and true or false
+    end
+
+    if not appliedCooldown
+        and (contentChanged or hasCooldownExpirationWindow)
+        and hasCooldownExpirationWindow
+        and cooldown.SetCooldownFromExpirationTime
+    then
+        local expirationTime = entry.cooldownExpirationTime
+        local duration = entry.cooldownDuration
+        local modRate = ResolveCooldownModRate(entry.cooldownModRate)
+        local ok = pcall(cooldown.SetCooldownFromExpirationTime, cooldown, expirationTime, duration, modRate)
+        appliedCooldown = ok and true or false
+    end
+
+    if not appliedCooldown and (contentChanged or hasCooldownWindow) and hasCooldownWindow then
+        local startTime = entry.cooldownStartTime
+        local duration = entry.cooldownDuration
+        local modRate = ResolveCooldownModRate(entry.cooldownModRate)
+
+        if cooldown.SetCooldown then
+            local ok = pcall(cooldown.SetCooldown, cooldown, startTime, duration, modRate)
+            appliedCooldown = ok and true or false
+        end
+
+        if not appliedCooldown and cooldown.SetCooldownDuration then
+            local ok = pcall(cooldown.SetCooldownDuration, cooldown, duration, modRate)
+            appliedCooldown = ok and true or false
+        end
+
+        if not appliedCooldown
+            and CooldownFrame_Set
+            and not IsSecret(startTime)
+            and not IsSecret(duration)
+        then
+            local ok = pcall(CooldownFrame_Set, cooldown, startTime, duration, true, false, modRate)
+            appliedCooldown = ok and true or false
+        end
+    end
+
+    if not appliedCooldown
+        and CooldownFrame_Clear
+        and not hasDurationObject
+        and not hasCooldownExpirationWindow
+        and not hasCooldownWindow
+        and contentChanged
+    then
+        CooldownFrame_Clear(cooldown)
+    end
+
+    return appliedCooldown
+end
+
+local function SetBuiltinCountdownHidden(cooldown, hidden)
+    if not cooldown or type(cooldown.SetHideCountdownNumbers) ~= "function" then
+        return
+    end
+    pcall(cooldown.SetHideCountdownNumbers, cooldown, hidden == true)
+end
+
+local function GetCooldownRemainingSeconds(cooldown)
+    if not cooldown or type(cooldown.GetCooldownTimes) ~= "function" then
+        return nil
+    end
+
+    local ok, startMS, durationMS = pcall(cooldown.GetCooldownTimes, cooldown)
+    if not ok or IsSecret(startMS) or IsSecret(durationMS) then
+        return nil
+    end
+    if type(startMS) ~= "number" or type(durationMS) ~= "number" or durationMS <= 0 then
+        return nil
+    end
+
+    local nowMS = GetTime() * 1000
+    local expirationMS = startMS + durationMS
+    if expirationMS <= nowMS then
+        return 0
+    end
+
+    return (expirationMS - nowMS) / 1000
+end
+
+local function UpdateRadialCountdownText(radialDisplay)
+    if not radialDisplay or not radialDisplay.Cooldown then
+        return false
+    end
+
+    if not radialDisplay:IsShown() or not radialDisplay.CountdownText or not radialDisplay.CountdownText:IsShown() then
+        SetRadialCountdownText(radialDisplay, nil)
+        return false
+    end
+
+    local remainingSeconds = GetCooldownRemainingSeconds(radialDisplay.Cooldown)
+    if type(remainingSeconds) ~= "number" then
+        SetRadialCountdownText(radialDisplay, nil)
+        return false
+    end
+
+    if remainingSeconds < 0 then
+        remainingSeconds = 0
+    end
+
+    SetRadialCountdownText(radialDisplay, remainingSeconds)
+    return remainingSeconds > 0
+end
+
+local function RadialTimerUpdateJob()
+    for radialDisplay in pairs(ActiveRadialCountdowns) do
+        if not UpdateRadialCountdownText(radialDisplay) then
+            ActiveRadialCountdowns[radialDisplay] = nil
+        end
+    end
+
+    if next(ActiveRadialCountdowns) == nil and RefineUI.SetUpdateJobEnabled then
+        RefineUI:SetUpdateJobEnabled(RADIAL_TIMER_JOB_KEY, false, false)
+    end
+end
+
+local function EnsureRadialTimerScheduler()
+    if radialTimerSchedulerInitialized or not RefineUI.RegisterUpdateJob then
+        return
+    end
+
+    RefineUI:RegisterUpdateJob(RADIAL_TIMER_JOB_KEY, RADIAL_TIMER_INTERVAL, RadialTimerUpdateJob, {
+        enabled = false,
+    })
+    radialTimerSchedulerInitialized = true
+end
+
+local function SetRadialCountdownActive(radialDisplay, enabled)
+    if not radialDisplay then
+        return
+    end
+
+    if enabled then
+        ActiveRadialCountdowns[radialDisplay] = true
+    else
+        ActiveRadialCountdowns[radialDisplay] = nil
+        SetRadialCountdownText(radialDisplay, nil)
+    end
+
+    EnsureRadialTimerScheduler()
+    if radialTimerSchedulerInitialized and RefineUI.SetUpdateJobEnabled then
+        RefineUI:SetUpdateJobEnabled(RADIAL_TIMER_JOB_KEY, next(ActiveRadialCountdowns) ~= nil, false)
+    end
+end
+
+local function ApplyRadialCountdownTextLayout(radialDisplay, showDurationText, textSize, textPosition)
+    if not radialDisplay or not radialDisplay.Cooldown or not radialDisplay.CountdownText then
+        return
+    end
+
+    local cooldown = radialDisplay.Cooldown
+    SetBuiltinCountdownHidden(cooldown, true)
+
+    local builtinCountdownText = GetTrackerCountdownFontString(cooldown)
+    if builtinCountdownText then
+        builtinCountdownText:SetShown(false)
+    end
+
+    local countdownText = radialDisplay.CountdownText
+    countdownText:ClearAllPoints()
+    if textPosition == RADIAL_TEXT_POSITION_ABOVE then
+        countdownText:SetPoint("BOTTOM", radialDisplay, "TOP", 0, RADIAL_TEXT_GAP)
+    elseif textPosition == RADIAL_TEXT_POSITION_BELOW then
+        countdownText:SetPoint("TOP", radialDisplay, "BOTTOM", 0, -RADIAL_TEXT_GAP)
+    else
+        countdownText:SetPoint("CENTER", radialDisplay, "CENTER", 0, 0)
+    end
+
+    countdownText:SetFont(RefineUI.Media.Fonts.Number, textSize, "OUTLINE")
+    countdownText:SetShown(showDurationText == true)
+end
+
+local function ApplyRadialTrackerSkin(radialDisplay, radialColor, textColor, textSize, showDurationText, textPosition)
+    if not radialDisplay or not radialDisplay.Cooldown or not radialDisplay.Background then
+        return
+    end
+
+    local cooldown = radialDisplay.Cooldown
+    local radialTexture = GetRadialTrackerTexture()
+    local color = radialColor or { 1, 1, 1, 1 }
+    local resolvedTextColor = textColor or { 1, 1, 1, 1 }
+
+    radialDisplay.Background:SetTexture(radialTexture)
+    radialDisplay.Background:SetVertexColor(color[1], color[2], color[3], RADIAL_BACKGROUND_ALPHA)
+
+    if cooldown.SetSwipeTexture and radialTexture then
+        pcall(cooldown.SetSwipeTexture, cooldown, radialTexture)
+    end
+    if cooldown.SetSwipeColor then
+        pcall(cooldown.SetSwipeColor, cooldown, color[1], color[2], color[3], RADIAL_FILL_ALPHA)
+    end
+    if cooldown.SetDrawEdge then
+        pcall(cooldown.SetDrawEdge, cooldown, false)
+    end
+    if cooldown.SetDrawBling then
+        pcall(cooldown.SetDrawBling, cooldown, false)
+    end
+    if cooldown.SetDrawSwipe then
+        pcall(cooldown.SetDrawSwipe, cooldown, true)
+    end
+    if cooldown.SetReverse then
+        pcall(cooldown.SetReverse, cooldown, false)
+    end
+    if cooldown.SetUseCircularEdge then
+        pcall(cooldown.SetUseCircularEdge, cooldown, false)
+    end
+    if cooldown.SetAlpha then
+        pcall(cooldown.SetAlpha, cooldown, 1)
+    end
+    if cooldown.SetMinimumCountdownDuration then
+        pcall(cooldown.SetMinimumCountdownDuration, cooldown, 0)
+    end
+    ApplyRadialCountdownTextLayout(radialDisplay, showDurationText, textSize, textPosition)
+    if radialDisplay.CountdownText then
+        radialDisplay.CountdownText:SetTextColor(
+            resolvedTextColor[1],
+            resolvedTextColor[2],
+            resolvedTextColor[3],
+            resolvedTextColor[4] or 1
+        )
+    end
 end
 
 
@@ -407,79 +720,7 @@ function CDM:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orien
             icon.border:SetBackdropBorderColor(border[1], border[2], border[3], border[4] or 1)
         end
 
-        local hasDurationObject = entry and HasValue(entry.duration)
-        local hasCooldownWindow = entry and HasValue(entry.cooldownStartTime) and HasValue(entry.cooldownDuration)
-        local appliedCooldown = false
-
-        if (contentChanged or hasDurationObject or hasCooldownWindow)
-            and icon.Cooldown
-            and type(icon.Cooldown.SetUseAuraDisplayTime) == "function"
-        then
-            pcall(icon.Cooldown.SetUseAuraDisplayTime, icon.Cooldown, (hasDurationObject or hasCooldownWindow) and true or false)
-        end
-
-        if (contentChanged or hasDurationObject)
-            and hasDurationObject
-            and icon.Cooldown
-            and icon.Cooldown.SetCooldownFromDurationObject
-        then
-            local ok = pcall(icon.Cooldown.SetCooldownFromDurationObject, icon.Cooldown, entry.duration)
-            appliedCooldown = ok and true or false
-        end
-
-        if not appliedCooldown and (contentChanged or hasCooldownWindow) and hasCooldownWindow and icon.Cooldown then
-            local startTime = entry.cooldownStartTime
-            local duration = entry.cooldownDuration
-            local modRate = ResolveCooldownModRate(entry.cooldownModRate)
-
-            if icon.Cooldown.SetCooldown then
-                local ok = pcall(
-                    icon.Cooldown.SetCooldown,
-                    icon.Cooldown,
-                    startTime,
-                    duration,
-                    modRate
-                )
-                appliedCooldown = ok and true or false
-            end
-
-            if not appliedCooldown and icon.Cooldown.SetCooldownDuration then
-                local ok = pcall(
-                    icon.Cooldown.SetCooldownDuration,
-                    icon.Cooldown,
-                    duration,
-                    modRate
-                )
-                appliedCooldown = ok and true or false
-            end
-
-            if not appliedCooldown
-                and CooldownFrame_Set
-                and not IsSecret(startTime)
-                and not IsSecret(duration)
-            then
-                local ok = pcall(
-                    CooldownFrame_Set,
-                    icon.Cooldown,
-                    startTime,
-                    duration,
-                    true,
-                    false,
-                    modRate
-                )
-                appliedCooldown = ok and true or false
-            end
-        end
-
-        if not appliedCooldown
-            and icon.Cooldown
-            and CooldownFrame_Clear
-            and not hasDurationObject
-            and not hasCooldownWindow
-            and contentChanged
-        then
-            CooldownFrame_Clear(icon.Cooldown)
-        end
+        ApplyTrackerCooldownPayload(icon.Cooldown, entry, contentChanged)
 
         if contentChanged and self.ApplyTrackerCooldownTextVisual and icon.Cooldown then
             self:ApplyTrackerCooldownTextVisual(icon.Cooldown, entry and entry.cooldownID)
@@ -508,6 +749,95 @@ function CDM:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orien
         self:StateSet(frame, "trackerBucketLayoutToken", bucketLayoutToken)
     end
     frame:Show()
+    self:RecordPerfSample("cdm_tracker_render", GetTime() - renderStartTime)
+    self:IncrementPerfCounter("cdm_tracker_render")
+end
+
+
+function CDM:RenderRadialTracker(frame, activeEntries, iconScale, bucketCfg)
+    local renderStartTime = GetTime()
+    local inEditMode = self:IsEditModeActive()
+    local entry = activeEntries[1]
+    local radialSize = RADIAL_BASE_SIZE * iconScale
+
+    if not entry and inEditMode then
+        entry = {
+            cooldownID = nil,
+        }
+    end
+
+    local radialDisplay = self:EnsureRadialTrackerDisplay(frame)
+    local layoutToken = BuildRadialLayoutToken(
+        iconScale,
+        bucketCfg.ShowDurationText ~= false,
+        bucketCfg.TextSize,
+        bucketCfg.TextPosition,
+        inEditMode
+    )
+    local layoutChanged = self:StateGet(frame, "trackerRadialLayoutToken") ~= layoutToken
+
+    if not entry then
+        if radialDisplay then
+            if layoutChanged then
+                radialDisplay:SetScale(1)
+                radialDisplay:Size(radialSize, radialSize)
+                frame:Size(radialSize, radialSize)
+            end
+            SetRadialCountdownActive(radialDisplay, false)
+            radialDisplay:Hide()
+        end
+        frame:Hide()
+        self:StateSet(frame, "trackerRadialLayoutToken", layoutToken)
+        self:StateClear(frame, "trackerRadialContentToken")
+        self:RecordPerfSample("cdm_tracker_render", GetTime() - renderStartTime)
+        self:IncrementPerfCounter("cdm_tracker_render")
+        return
+    end
+
+    local contentToken = BuildEntryContentToken(entry)
+    local contentChanged = self:StateGet(frame, "trackerRadialContentToken") ~= contentToken
+    local radialColor = nil
+    local textColor = nil
+    if entry.cooldownID and self.GetCooldownBorderColor then
+        radialColor = self:GetCooldownBorderColor(entry.cooldownID)
+    elseif self.GetDefaultBorderColor then
+        radialColor = self:GetDefaultBorderColor()
+    end
+    if entry.cooldownID and self.GetCooldownFontColor then
+        textColor = self:GetCooldownFontColor(entry.cooldownID)
+    elseif self.GetDefaultFontColor then
+        textColor = self:GetDefaultFontColor()
+    end
+
+    if layoutChanged then
+        radialDisplay:SetScale(1)
+        radialDisplay:Size(radialSize, radialSize)
+        frame:Size(radialSize, radialSize)
+    end
+
+    if contentChanged or layoutChanged then
+        ApplyRadialTrackerSkin(
+            radialDisplay,
+            radialColor,
+            textColor,
+            bucketCfg.TextSize,
+            bucketCfg.ShowDurationText ~= false,
+            bucketCfg.TextPosition
+        )
+    end
+
+    ApplyTrackerCooldownPayload(radialDisplay.Cooldown, entry, contentChanged or layoutChanged)
+    UpdateRadialCountdownText(radialDisplay)
+    SetRadialCountdownActive(radialDisplay, bucketCfg.ShowDurationText ~= false)
+
+    if (contentChanged or layoutChanged) and self.ApplyTrackerCooldownTextVisual and radialDisplay.Cooldown then
+        self:ApplyTrackerCooldownTextVisual(radialDisplay.Cooldown, entry.cooldownID)
+    end
+
+    radialDisplay:Show()
+    frame:Show()
+    self:StateSet(frame, "trackerRadialLayoutToken", layoutToken)
+    self:StateSet(frame, "trackerRadialContentToken", contentToken)
     self:RecordPerfSample("cdm_tracker_render", GetTime() - renderStartTime)
     self:IncrementPerfCounter("cdm_tracker_render")
 end
@@ -544,6 +874,7 @@ function CDM:BuildAssignedTrackerEntry(cooldownID, activePayload)
         auraUnit = activePayload and activePayload.auraUnit,
         auraInstanceID = activePayload and activePayload.auraInstanceID,
         activeStateToken = activePayload and activePayload.activeStateToken,
+        cooldownExpirationTime = activePayload and activePayload.cooldownExpirationTime,
         cooldownStartTime = activePayload and activePayload.cooldownStartTime,
         cooldownDuration = activePayload and activePayload.cooldownDuration,
         cooldownModRate = activePayload and activePayload.cooldownModRate,
@@ -553,17 +884,25 @@ end
 
 function CDM:HideTrackers()
     if not self.trackerFrames then
+        self.activeTrackerEntryCount = 0
         return
     end
+
+    self.activeTrackerEntryCount = 0
 
     for i = 1, #self.TRACKER_BUCKETS do
         local bucket = self.TRACKER_BUCKETS[i]
         local frame = self.trackerFrames[bucket]
         if frame then
+            if frame.RadialDisplay then
+                SetRadialCountdownActive(frame.RadialDisplay, false)
+            end
             frame:Hide()
             self:StateClear(frame, "renderSignature")
             self:StateClear(frame, "renderEntryCount")
             self:StateClear(frame, "trackerBucketLayoutToken")
+            self:StateClear(frame, "trackerRadialLayoutToken")
+            self:StateClear(frame, "trackerRadialContentToken")
         end
     end
 end
@@ -633,11 +972,12 @@ function CDM:RefreshTrackers(dirtyCooldownIDSet)
     end
 
     local activeMap = self:GetActiveAuraMap(requestedCooldownIDs)
+    local totalActiveEntryCount = 0
     for i = 1, #self.TRACKER_BUCKETS do
         local bucket = self.TRACKER_BUCKETS[i]
         local frame = self:EnsureTrackerFrame(bucket)
         if not dirtyBuckets or dirtyBuckets[bucket] then
-            local iconScale, spacing, orientation, direction = self:GetTrackerVisualSettings(bucket)
+            local iconScale, spacing, orientation, direction, bucketCfg = self:GetTrackerVisualSettings(bucket)
             local activeEntries = self.scratchBucketEntries[bucket]
             if not activeEntries then
                 activeEntries = {}
@@ -667,6 +1007,14 @@ function CDM:RefreshTrackers(dirtyCooldownIDSet)
                 end
             end
 
+            if not inEditMode then
+                if bucket == RADIAL_BUCKET then
+                    totalActiveEntryCount = totalActiveEntryCount + (activeEntries[1] and 1 or 0)
+                else
+                    totalActiveEntryCount = totalActiveEntryCount + #activeEntries
+                end
+            end
+
             local previousCount = self:StateGet(frame, "renderEntryCount")
 
             local forceRender = false
@@ -679,9 +1027,16 @@ function CDM:RefreshTrackers(dirtyCooldownIDSet)
             end
 
             if forceRender or dirtyBuckets == nil or dirtyBuckets[bucket] then
-                self:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orientation, direction)
-                self:StateSet(frame, "renderEntryCount", #activeEntries)
+                if bucket == RADIAL_BUCKET then
+                    self:RenderRadialTracker(frame, activeEntries, iconScale, bucketCfg)
+                    self:StateSet(frame, "renderEntryCount", activeEntries[1] and 1 or 0)
+                else
+                    self:RenderTrackerBucket(frame, activeEntries, iconScale, spacing, orientation, direction)
+                    self:StateSet(frame, "renderEntryCount", #activeEntries)
+                end
             end
         end
     end
+
+    self.activeTrackerEntryCount = inEditMode and 0 or totalActiveEntryCount
 end

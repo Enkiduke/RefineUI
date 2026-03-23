@@ -1,0 +1,31 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Frame name="RefineUIGameMenuModuleRowTemplate" virtual="true">
+        <Size x="520" y="28"/>
+        <Layers>
+            <Layer level="ARTWORK">
+                <FontString parentKey="Title" inherits="GameFontHighlight" justifyH="LEFT">
+                    <Anchors>
+                        <Anchor point="LEFT" x="18" y="0"/>
+                        <Anchor point="RIGHT" relativeKey="$parent.Checkbox" relativePoint="LEFT" x="-10" y="0"/>
+                    </Anchors>
+                </FontString>
+                <Texture parentKey="Divider" atlas="Options_HorizontalDivider" alpha="0.45" useAtlasSize="true">
+                    <Anchors>
+                        <Anchor point="BOTTOMLEFT" x="8" y="-1"/>
+                        <Anchor point="BOTTOMRIGHT" x="-8" y="-1"/>
+                    </Anchors>
+                </Texture>
+            </Layer>
+        </Layers>
+        <Frames>
+            <CheckButton parentKey="Checkbox" inherits="MinimalCheckboxArtTemplate">
+                <Size x="24" y="24"/>
+                <Anchors>
+                    <Anchor point="RIGHT" x="-12" y="0"/>
+                </Anchors>
+            </CheckButton>
+        </Frames>
+    </Frame>
+
+    <Script file="GameMenu.lua"/>
+</Ui>

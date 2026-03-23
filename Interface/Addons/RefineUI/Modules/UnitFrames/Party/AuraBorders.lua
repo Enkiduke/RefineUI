@@ -39,6 +39,7 @@ local TrySetFrameLevel    = P.TrySetFrameLevel
 local TrySetFrameStrata   = P.TrySetFrameStrata
 local GetSafeDispelTypeKey = P.GetSafeDispelTypeKey
 local IsPartyRaidCompactFrame = P.IsCompactFrame
+local GetAuraScratch      = P.GetAuraScratch
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -49,7 +50,6 @@ local DEFAULT_COMPACT_AURA_COOLDOWN_X = 2
 local DEFAULT_COMPACT_AURA_COOLDOWN_Y = 2
 
 local CompactDispelColorProbeTexture
-local importantBuffFramesScratch = {}
 local bestFrameColorScratch = {}
 
 local function WipeTable(tbl)
@@ -745,7 +745,9 @@ local function ApplyCompactAuraStylingForFrame(frame)
     frameData.classBuffBorderG = nil
     frameData.classBuffBorderB = nil
 
-    local importantBuffFrames = WipeTable(importantBuffFramesScratch)
+    local auraScratch = GetAuraScratch and GetAuraScratch(frame) or frameData.AuraScratch or {}
+    auraScratch.importantBuffFrames = auraScratch.importantBuffFrames or {}
+    local importantBuffFrames = WipeTable(auraScratch.importantBuffFrames)
     local bestFrameColor = ResetBestFrameColorState()
 
     local EnsureCompactAuraSpacing = P.EnsureCompactAuraSpacing

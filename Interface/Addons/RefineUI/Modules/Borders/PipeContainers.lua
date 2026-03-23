@@ -22,6 +22,9 @@ local EVENT_KEY = {
     ADDON_LOADED_BANK_PANELS = "Borders_BankPanelsLoad",
     ADDON_LOADED_GBANK = "Borders_GBankLoad",
 }
+local DEBOUNCE_KEY = {
+    BANK_REFRESH = "Borders:PipeContainers:BankRefresh",
+}
 
 local HOOK_KEY = {
     BANKFRAME_ON_SHOW = "Borders:BankFrame:OnShow",
@@ -140,12 +143,8 @@ end
 -- Pipe Registration
 ----------------------------------------------------------------------------------------
 local function SetupContainerPipe(self)
-    local bankRefreshQueued = false
     local function QueueBankRefresh()
-        if bankRefreshQueued then return end
-        bankRefreshQueued = true
-        C_Timer.After(0.05, function()
-            bankRefreshQueued = false
+        RefineUI:Debounce(DEBOUNCE_KEY.BANK_REFRESH, 0.05, function()
             self:UpdateBankFrame()
         end)
     end

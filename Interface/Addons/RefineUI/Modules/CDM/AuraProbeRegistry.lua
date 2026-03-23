@@ -9,23 +9,12 @@ if not CDM then
     return
 end
 
-----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
-
-----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
 local type = type
 local pcall = pcall
 local pairs = pairs
-local next = next
-local setmetatable = setmetatable
 local tostring = tostring
 local wipe = _G.wipe or table.wipe
 
@@ -44,7 +33,6 @@ end
 -- Constants
 ----------------------------------------------------------------------------------------
 local DEFAULT_ICON_TEXTURE = 134400
-local RECONCILE_TIMER_KEY = CDM:BuildKey("AuraProbe", "Reconcile")
 local AURA_VIEWER_NAMES = {
     "EssentialCooldownViewer",
     "UtilityCooldownViewer",
@@ -54,18 +42,8 @@ local AURA_VIEWER_NAMES = {
 
 local cooldownIconCache = {}
 local ghostPayloadByCooldownID = {}
-local cooldownIDLookupScratch = {}
-local registeredFramesByCooldownID = {}
-local registeredFrameCooldownID = setmetatable({}, { __mode = "k" })
-local registeredFrameSpellIDs = setmetatable({}, { __mode = "k" })
-local hiddenFrameGraceExpiry = setmetatable({}, { __mode = "k" })
-local registryReconcileQueued = nil
-local registryDirty = true
+local cooldownIDSeenScratch = {}
 local dataChangedCallbackRegistered = false
-local hookedViewers = setmetatable({}, { __mode = "k" })
-local hookedFrames = setmetatable({}, { __mode = "k" })
-local MarkRegistryDirty
-local QueueRegistryReconcile
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
@@ -88,48 +66,11 @@ local function IsNonSecretNumber(value)
     return type(value) == "number"
 end
 
-local function HasNumericValue(value)
-    if IsSecret(value) then
-        return true
-    end
-    return type(value) == "number"
-end
-
-local function HasPositiveNumericValue(value)
-    if IsSecret(value) then
-        return true
-    end
-    return type(value) == "number" and value > 0
-end
-
-local function HasTotemSlotValue(value)
-    if IsSecret(value) then
-        return true
-    end
-    return type(value) == "number" and value > 0
-end
-
-local function IsNonSecretTexture(value)
-    if IsSecret(value) then
-        return false
-    end
-    local valueType = type(value)
-    return valueType == "string" or valueType == "number"
-end
-
 local function IsUnitToken(value)
     if IsSecret(value) then
         return false
     end
     return type(value) == "string" and value ~= ""
-end
-
-local function IsTextureLike(value)
-    if IsSecret(value) then
-        return false
-    end
-    local valueType = type(value)
-    return valueType == "string" or valueType == "number"
 end
 
 local function HasAuraInstanceID(value)
@@ -154,7 +95,7 @@ local function ResolveIconFromSpellID(spellID)
     end
 
     local ok, texture = pcall(C_Spell.GetSpellTexture, spellID)
-    if ok and IsNonSecretTexture(texture) then
+    if ok and HasValue(texture) then
         return texture
     end
     return nil
@@ -172,7 +113,7 @@ local function ResolveIconFromCooldownID(cooldownID)
     end
 
     local texture = ResolveIconFromSpellID(CDM:ResolveCooldownSpellID(info))
-    if IsNonSecretTexture(texture) then
+    if texture then
         cooldownIconCache[cooldownID] = texture
     end
     return texture
@@ -190,129 +131,11 @@ local function ResolveFrameCooldownID(frame, hintedCooldownID)
         end
     end
 
+    if frame and IsNonSecretNumber(frame.cooldownID) and frame.cooldownID > 0 then
+        return frame.cooldownID
+    end
+
     return nil
-end
-
-local function AddResolvedSpellID(spellIDs, seen, spellID)
-    if IsNonSecretNumber(spellID) and spellID > 0 and not seen[spellID] then
-        seen[spellID] = true
-        spellIDs[#spellIDs + 1] = spellID
-    end
-end
-
-local function ResolveFrameAssociatedSpellIDs(frame)
-    local cached = registeredFrameSpellIDs[frame]
-    if type(cached) == "table" then
-        return cached
-    end
-
-    local spellIDs = {}
-    local seen = {}
-    if not frame then
-        return spellIDs
-    end
-
-    local function TryMethod(methodName)
-        if type(frame[methodName]) ~= "function" then
-            return
-        end
-
-        local ok, value = pcall(frame[methodName], frame)
-        if ok then
-            AddResolvedSpellID(spellIDs, seen, value)
-        end
-    end
-
-    TryMethod("GetAuraSpellID")
-    TryMethod("GetLinkedSpell")
-    TryMethod("GetSpellID")
-    TryMethod("GetBaseSpellID")
-
-    local okAuraSpellID, auraSpellID = pcall(function()
-        return frame.auraSpellID
-    end)
-    if okAuraSpellID then
-        AddResolvedSpellID(spellIDs, seen, auraSpellID)
-    end
-
-    local okSpellID, rawSpellID = pcall(function()
-        return frame.spellID
-    end)
-    if okSpellID then
-        AddResolvedSpellID(spellIDs, seen, rawSpellID)
-    end
-
-    local okRangeSpellID, rangeSpellID = pcall(function()
-        return frame.rangeCheckSpellID
-    end)
-    if okRangeSpellID then
-        AddResolvedSpellID(spellIDs, seen, rangeSpellID)
-    end
-
-    if type(frame.GetCooldownInfo) == "function" then
-        local okInfo, cooldownInfo = pcall(frame.GetCooldownInfo, frame)
-        if okInfo and type(cooldownInfo) == "table" then
-            AddResolvedSpellID(spellIDs, seen, cooldownInfo.linkedSpellID)
-            AddResolvedSpellID(spellIDs, seen, cooldownInfo.overrideTooltipSpellID)
-            AddResolvedSpellID(spellIDs, seen, cooldownInfo.overrideSpellID)
-            AddResolvedSpellID(spellIDs, seen, cooldownInfo.spellID)
-            if type(cooldownInfo.linkedSpellIDs) == "table" then
-                for i = 1, #cooldownInfo.linkedSpellIDs do
-                    AddResolvedSpellID(spellIDs, seen, cooldownInfo.linkedSpellIDs[i])
-                end
-            end
-        end
-    end
-
-    registeredFrameSpellIDs[frame] = spellIDs
-    return spellIDs
-end
-
-local function ResolveUniqueLookupCooldownID(cooldownIDSet)
-    if type(cooldownIDSet) ~= "table" then
-        return nil
-    end
-
-    local resolvedCooldownID
-    for cooldownID in pairs(cooldownIDSet) do
-        if not IsNonSecretNumber(cooldownID) or cooldownID <= 0 then
-            return nil
-        end
-        if resolvedCooldownID and resolvedCooldownID ~= cooldownID then
-            return nil
-        end
-        resolvedCooldownID = cooldownID
-    end
-
-    return resolvedCooldownID
-end
-
-local function ResolveUniqueSpellMatchedCooldownID(frame, spellIDLookup)
-    if not frame or type(spellIDLookup) ~= "table" then
-        return nil
-    end
-
-    -- Hidden Blizzard viewer items sometimes expose multiple related spell IDs.
-    -- Only accept spell-based fallback when they collapse to one Refine assignment.
-    local frameSpellIDs = ResolveFrameAssociatedSpellIDs(frame)
-    local matchedCooldownID
-
-    for i = 1, #frameSpellIDs do
-        local spellID = frameSpellIDs[i]
-        local spellCooldownIDs = spellIDLookup[spellID]
-        if spellCooldownIDs then
-            local resolvedCooldownID = ResolveUniqueLookupCooldownID(spellCooldownIDs)
-            if not resolvedCooldownID then
-                return nil
-            end
-            if matchedCooldownID and matchedCooldownID ~= resolvedCooldownID then
-                return nil
-            end
-            matchedCooldownID = resolvedCooldownID
-        end
-    end
-
-    return matchedCooldownID
 end
 
 local function ForEachViewerItemFrame(viewer, callback)
@@ -334,221 +157,17 @@ local function ForEachViewerItemFrame(viewer, callback)
             for i = 1, #itemFrames do
                 callback(itemFrames[i])
             end
-        end
-    end
-end
-
-local function BuildTrackedCooldownIDSet(cooldownIDs)
-    if wipe then
-        wipe(cooldownIDLookupScratch)
-    else
-        for key in pairs(cooldownIDLookupScratch) do
-            cooldownIDLookupScratch[key] = nil
+            return
         end
     end
 
-    if type(cooldownIDs) ~= "table" then
-        return cooldownIDLookupScratch
-    end
-
-    for i = 1, #cooldownIDs do
-        local cooldownID = cooldownIDs[i]
-        if IsNonSecretNumber(cooldownID) and cooldownID > 0 then
-            cooldownIDLookupScratch[cooldownID] = true
-        end
-    end
-
-    return cooldownIDLookupScratch
-end
-
-local function ClearFrameRegistration(frame)
-    if not frame then
-        return
-    end
-
-    local cooldownID = registeredFrameCooldownID[frame]
-    if IsNonSecretNumber(cooldownID) and cooldownID > 0 then
-        local frameSet = registeredFramesByCooldownID[cooldownID]
-        if type(frameSet) == "table" then
-            frameSet[frame] = nil
-            if next(frameSet) == nil then
-                registeredFramesByCooldownID[cooldownID] = nil
+    if type(viewer.GetChildren) == "function" then
+        pcall(function()
+            local children = { viewer:GetChildren() }
+            for i = 1, #children do
+                callback(children[i])
             end
-        end
-    end
-
-    registeredFrameCooldownID[frame] = nil
-    registeredFrameSpellIDs[frame] = nil
-    hiddenFrameGraceExpiry[frame] = nil
-end
-
-local function RegisterFrameForCooldown(frame, cooldownID)
-    if not frame then
-        return
-    end
-    if not IsNonSecretNumber(cooldownID) or cooldownID <= 0 then
-        ClearFrameRegistration(frame)
-        return
-    end
-
-    local currentCooldownID = registeredFrameCooldownID[frame]
-    if currentCooldownID == cooldownID then
-        local currentSet = registeredFramesByCooldownID[cooldownID]
-        if type(currentSet) ~= "table" then
-            currentSet = {}
-            registeredFramesByCooldownID[cooldownID] = currentSet
-        end
-        currentSet[frame] = true
-        return
-    end
-
-    ClearFrameRegistration(frame)
-
-    local frameSet = registeredFramesByCooldownID[cooldownID]
-    if type(frameSet) ~= "table" then
-        frameSet = {}
-        registeredFramesByCooldownID[cooldownID] = frameSet
-    end
-
-    frameSet[frame] = true
-    registeredFrameCooldownID[frame] = cooldownID
-    hiddenFrameGraceExpiry[frame] = nil
-end
-
-local function ClearRegistryFrames()
-    for frame in pairs(registeredFrameCooldownID) do
-        ClearFrameRegistration(frame)
-    end
-end
-
-local function GetAssignedSpellLookup()
-    local snapshot = CDM.GetAssignedCooldownSnapshot and CDM:GetAssignedCooldownSnapshot() or nil
-    if type(snapshot) ~= "table" or type(snapshot.associatedSpellToCooldownIDs) ~= "table" then
-        return {}
-    end
-    return snapshot.associatedSpellToCooldownIDs
-end
-
-local function ResolveTrackedCooldownIDForFrame(frame, trackedCooldownIDSet, spellLookup)
-    local directCooldownID = ResolveFrameCooldownID(frame, registeredFrameCooldownID[frame])
-    if IsNonSecretNumber(directCooldownID) and trackedCooldownIDSet[directCooldownID] then
-        return directCooldownID
-    end
-
-    return ResolveUniqueSpellMatchedCooldownID(frame, spellLookup)
-end
-
-local function GetFrameHideGraceDuration()
-    local ttl = CDM.GetPayloadGhostTTL and CDM:GetPayloadGhostTTL() or 0.20
-    if type(ttl) ~= "number" then
-        ttl = 0.20
-    end
-    if ttl < 0.20 then
-        ttl = 0.20
-    elseif ttl > 0.35 then
-        ttl = 0.35
-    end
-    return ttl
-end
-
-local function MarkFrameHidden(frame)
-    if not frame then
-        return
-    end
-
-    hiddenFrameGraceExpiry[frame] = GetTime() + GetFrameHideGraceDuration()
-end
-
-local function RefreshRegisteredFrame(frame, trackedCooldownIDSet, spellLookup)
-    if not frame then
-        return nil
-    end
-
-    registeredFrameSpellIDs[frame] = nil
-
-    if type(frame.IsShown) == "function" then
-        local okShown, shown = pcall(frame.IsShown, frame)
-        if okShown and shown == false then
-            local expiresAt = hiddenFrameGraceExpiry[frame]
-            if type(expiresAt) ~= "number" then
-                MarkFrameHidden(frame)
-                return registeredFrameCooldownID[frame]
-            end
-            if expiresAt > GetTime() then
-                return registeredFrameCooldownID[frame]
-            end
-            ClearFrameRegistration(frame)
-            return nil
-        end
-    end
-
-    hiddenFrameGraceExpiry[frame] = nil
-    local cooldownID = ResolveTrackedCooldownIDForFrame(frame, trackedCooldownIDSet, spellLookup)
-    RegisterFrameForCooldown(frame, cooldownID)
-    return cooldownID
-end
-
-local function InstallTrackedFrameHooks(frame)
-    if not frame or hookedFrames[frame] then
-        return
-    end
-
-    hookedFrames[frame] = true
-
-    RefineUI:HookScriptOnce("CDM:AuraProbe:Frame:" .. tostring(frame) .. ":OnShow", frame, "OnShow", function(selfFrame)
-        local assignedSnapshot = CDM.GetAssignedCooldownSnapshot and CDM:GetAssignedCooldownSnapshot() or nil
-        local trackedCooldownIDs = assignedSnapshot and assignedSnapshot.allAssignedIDs or nil
-        RefreshRegisteredFrame(selfFrame, BuildTrackedCooldownIDSet(trackedCooldownIDs), GetAssignedSpellLookup())
-    end)
-    RefineUI:HookScriptOnce("CDM:AuraProbe:Frame:" .. tostring(frame) .. ":OnHide", frame, "OnHide", function(selfFrame)
-        MarkFrameHidden(selfFrame)
-    end)
-end
-
-local function InstallViewerHooks(viewer, _viewerName)
-    if not viewer or hookedViewers[viewer] then
-        return
-    end
-
-    hookedViewers[viewer] = true
-    RefineUI:HookScriptOnce("CDM:AuraProbe:Viewer:" .. tostring(viewer) .. ":OnShow", viewer, "OnShow", function()
-        MarkRegistryDirty()
-        QueueRegistryReconcile()
-    end)
-end
-
-local function InstallKnownViewerHooks()
-    for i = 1, #AURA_VIEWER_NAMES do
-        local viewerName = AURA_VIEWER_NAMES[i]
-        local viewer = _G[viewerName]
-        if viewer then
-            InstallViewerHooks(viewer, viewerName)
-        end
-    end
-end
-
-MarkRegistryDirty = function()
-    registryDirty = true
-end
-
-QueueRegistryReconcile = function()
-    if registryReconcileQueued then
-        return
-    end
-    registryReconcileQueued = true
-
-    local function Execute()
-        registryReconcileQueued = nil
-        if registryDirty then
-            InstallKnownViewerHooks()
-        end
-        CDM:RequestRefresh()
-    end
-
-    if RefineUI.After then
-        RefineUI:After(RECONCILE_TIMER_KEY, 0, Execute)
-    else
-        Execute()
+        end)
     end
 end
 
@@ -563,6 +182,8 @@ local function CopyPayload(payload)
         auraUnit = payload.auraUnit,
         auraInstanceID = payload.auraInstanceID,
         activeStateToken = payload.activeStateToken,
+        source = payload.source,
+        cooldownExpirationTime = payload.cooldownExpirationTime,
         cooldownStartTime = payload.cooldownStartTime,
         cooldownDuration = payload.cooldownDuration,
         cooldownModRate = payload.cooldownModRate,
@@ -610,17 +231,15 @@ local function ResolveAuraUnit(frame)
     end
 
     if type(frame.GetAuraDataUnit) == "function" then
-        local okAuraUnit, auraUnit = pcall(frame.GetAuraDataUnit, frame)
-        if okAuraUnit and IsUnitToken(auraUnit) then
-            return auraUnit
+        local okUnit, unit = pcall(frame.GetAuraDataUnit, frame)
+        if okUnit and IsUnitToken(unit) then
+            return unit
         end
     end
 
-    local okRawUnit, rawUnit = pcall(function()
-        return frame.auraDataUnit
-    end)
-    if okRawUnit and IsUnitToken(rawUnit) then
-        return rawUnit
+    local unit = frame.auraDataUnit
+    if IsUnitToken(unit) then
+        return unit
     end
 
     return nil
@@ -632,17 +251,14 @@ local function ResolveAuraInstanceID(frame)
     end
 
     if type(frame.GetAuraSpellInstanceID) == "function" then
-        local okAuraID, auraInstanceID = pcall(frame.GetAuraSpellInstanceID, frame)
-        if okAuraID and HasAuraInstanceID(auraInstanceID) then
+        local okAuraInstanceID, auraInstanceID = pcall(frame.GetAuraSpellInstanceID, frame)
+        if okAuraInstanceID and HasAuraInstanceID(auraInstanceID) then
             return auraInstanceID
         end
     end
 
-    local okRawAuraID, rawAuraID = pcall(function()
+    if HasAuraInstanceID(frame.auraInstanceID) then
         return frame.auraInstanceID
-    end)
-    if okRawAuraID and HasAuraInstanceID(rawAuraID) then
-        return rawAuraID
     end
 
     return nil
@@ -660,31 +276,9 @@ local function ResolveTotemData(frame)
         end
     end
 
-    local okRawTotemData, rawTotemData = pcall(function()
-        return frame.totemData
-    end)
-    if okRawTotemData and HasValue(rawTotemData) then
-        return rawTotemData
-    end
-
-    return nil
-end
-
-local function ResolveFrameActive(frame)
-    if not frame then
-        return nil
-    end
-
-    local okActive, active = pcall(function()
-        return frame.isActive
-    end)
-    if okActive then
-        if IsSecret(active) then
-            return nil
-        end
-        if type(active) == "boolean" then
-            return active
-        end
+    local totemData = frame.totemData
+    if HasValue(totemData) then
+        return totemData
     end
 
     return nil
@@ -696,22 +290,17 @@ local function ResolveTotemSlot(frame, totemData)
     end
 
     local slot = frame.preferredTotemUpdateSlot
-    if HasTotemSlotValue(slot) then
+    if IsNonSecretNumber(slot) and slot > 0 then
         return slot
     end
 
-    if HasValue(totemData) then
-        local okDataSlot, dataSlot = pcall(function()
-            return totemData.slot
-        end)
-        if okDataSlot and HasTotemSlotValue(dataSlot) then
-            return dataSlot
-        end
+    if type(totemData) == "table" and not IsSecret(totemData) and IsNonSecretNumber(totemData.slot) and totemData.slot > 0 then
+        return totemData.slot
     end
 
     if type(frame.GetTotemSlot) == "function" then
         local okSlot, resolvedSlot = pcall(frame.GetTotemSlot, frame)
-        if okSlot and HasTotemSlotValue(resolvedSlot) then
+        if okSlot and IsNonSecretNumber(resolvedSlot) and resolvedSlot > 0 then
             return resolvedSlot
         end
     end
@@ -719,103 +308,122 @@ local function ResolveTotemSlot(frame, totemData)
     return nil
 end
 
-local function ResolveCooldownWindowFromTotemData(totemData, totemSlot)
-    local cooldownStartTime
-    local cooldownDuration
-    local cooldownModRate
+local function ResolveTotemWindowFromSlot(slot)
+    if not IsNonSecretNumber(slot) or slot <= 0 or type(GetTotemInfo) ~= "function" then
+        return nil, nil, nil, nil
+    end
 
-    if not IsSecret(totemData) and type(totemData) == "table" then
+    local okTotemInfo, _hasTotem, _name, startTime, duration, _icon, modRate = pcall(GetTotemInfo, slot)
+    if not okTotemInfo or not HasValue(startTime) or not HasValue(duration) then
+        return nil, nil, nil, nil
+    end
+
+    if IsNonSecretNumber(duration) and duration <= 0 then
+        return nil, nil, nil, nil
+    end
+
+    local resolvedModRate = nil
+    if IsNonSecretNumber(modRate) then
+        resolvedModRate = modRate
+    end
+
+    return startTime, duration, resolvedModRate, nil
+end
+
+local function ResolveTotemState(frame, totemData)
+    local hasTotemData = HasValue(totemData)
+    local slot = ResolveTotemSlot(frame, totemData)
+
+    if not hasTotemData then
+        return slot, false, nil, nil, nil, nil
+    end
+
+    local startTime = nil
+    local duration = nil
+    local icon = nil
+    local modRate = nil
+
+    if type(totemData) == "table" and not IsSecret(totemData) then
         local expirationTime = totemData.expirationTime
-        local duration = totemData.duration
-        local modRate = totemData.modRate
-        if IsNonSecretNumber(expirationTime)
-            and IsNonSecretNumber(duration)
-            and duration > 0
+        if type(expirationTime) == "number"
+            and not IsSecret(expirationTime)
+            and type(totemData.duration) == "number"
+            and not IsSecret(totemData.duration)
         then
-            cooldownStartTime = expirationTime - duration
-            cooldownDuration = duration
-            if IsNonSecretNumber(modRate) then
-                cooldownModRate = modRate
-            end
-            return cooldownStartTime, cooldownDuration, cooldownModRate
+            startTime = expirationTime - totemData.duration
+        end
+        if HasValue(totemData.duration) then
+            duration = totemData.duration
+        end
+        if HasValue(totemData.icon) then
+            icon = totemData.icon
+        end
+        if HasValue(totemData.modRate) then
+            modRate = totemData.modRate
         end
     end
 
-    if HasTotemSlotValue(totemSlot) and type(GetTotemInfo) == "function" then
-        local okTotem, _hasTotem, _name, startTime, duration, _icon, modRate = pcall(GetTotemInfo, totemSlot)
-        if okTotem and HasNumericValue(startTime) and HasPositiveNumericValue(duration) then
-            cooldownStartTime = startTime
-            cooldownDuration = duration
-            if IsNonSecretNumber(modRate) then
-                cooldownModRate = modRate
-            end
-            return cooldownStartTime, cooldownDuration, cooldownModRate
-        end
-    end
-
-    return nil, nil, nil
+    return slot, hasTotemData, startTime, duration, icon, modRate
 end
 
-local function ResolveCooldownWindowFromWidget(frame)
-    if not frame or not frame.Cooldown or type(frame.Cooldown.GetCooldownTimes) ~= "function" then
-        return nil, nil, nil
+local function ResolveCooldownWidgetActive(cooldownFrame)
+    if not cooldownFrame or type(cooldownFrame.GetCooldownTimes) ~= "function" then
+        return false, nil, nil
     end
 
-    local okTimes, startMS, durationMS = pcall(frame.Cooldown.GetCooldownTimes, frame.Cooldown)
+    local okTimes, startMS, durationMS = pcall(cooldownFrame.GetCooldownTimes, cooldownFrame)
     if not okTimes then
-        return nil, nil, nil
-    end
-    if not IsNonSecretNumber(startMS) or not IsNonSecretNumber(durationMS) or durationMS <= 0 then
-        return nil, nil, nil
+        return false, nil, nil
     end
 
-    return startMS / 1000, durationMS / 1000, nil
+    if IsSecret(startMS) or IsSecret(durationMS) then
+        return false, nil, nil
+    end
+
+    if type(startMS) == "number" and type(durationMS) == "number" then
+        local okActive, isActive = pcall(function()
+            return durationMS > 0 and (startMS + durationMS) > (GetTime() * 1000)
+        end)
+        if okActive and isActive then
+            return true, startMS / 1000, durationMS / 1000
+        end
+    end
+
+    return false, nil, nil
 end
 
-local function ResolveFrameIcon(frame, cooldownID)
+local function ResolveCooldownWidgetDurationObject(cooldownFrame)
+    if not cooldownFrame or type(cooldownFrame.GetCooldownDuration) ~= "function" then
+        return nil
+    end
+
+    local okDuration, durationObject = pcall(cooldownFrame.GetCooldownDuration, cooldownFrame)
+    if not okDuration or durationObject == nil then
+        return nil
+    end
+
+    return durationObject
+end
+
+local function ResolveFrameCooldownWindow(frame)
     if not frame then
-        return ResolveIconFromCooldownID(cooldownID)
+        return nil, nil, nil, false
     end
 
-    if type(frame.GetSpellTexture) == "function" then
-        local okTexture, texture = pcall(frame.GetSpellTexture, frame)
-        if okTexture and IsTextureLike(texture) then
-            return texture
-        end
+    local startTime = frame.cooldownStartTime
+    local duration = frame.cooldownDuration
+    local modRate = frame.cooldownModRate
+    local hasSecretWindow = IsSecret(startTime) or IsSecret(duration)
+
+    if hasSecretWindow then
+        return startTime, duration, modRate, true
     end
 
-    local iconRegion = frame.Icon
-    if iconRegion and type(iconRegion.GetTexture) == "function" then
-        local okIconTexture, iconTexture = pcall(iconRegion.GetTexture, iconRegion)
-        if okIconTexture and IsTextureLike(iconTexture) then
-            return iconTexture
-        end
+    if type(startTime) == "number" and type(duration) == "number" then
+        return startTime, duration, modRate, (startTime > 0 and duration > 0)
     end
 
-    return ResolveIconFromCooldownID(cooldownID)
-end
-
-local function GetActiveStateRank(payload)
-    if type(payload) ~= "table" then
-        return 0
-    end
-
-    local token = payload.activeStateToken
-    if type(token) ~= "string" then
-        return 0
-    end
-
-    if token == "viewer:aura" then
-        return 3
-    end
-    if string.find(token, "^viewer:totem", 1, false) then
-        return 2
-    end
-    if token == "viewer:active" then
-        return 1
-    end
-
-    return 0
+    return startTime, duration, modRate, false
 end
 
 local function BuildFramePayload(frame, cooldownID)
@@ -823,25 +431,29 @@ local function BuildFramePayload(frame, cooldownID)
         return nil
     end
 
-    local auraInstanceID = ResolveAuraInstanceID(frame)
-    local frameActive = ResolveFrameActive(frame)
-    if frameActive == false then
-        return nil
+    local cooldownFrame = frame.Cooldown
+    if type(frame.GetCooldownFrame) == "function" then
+        local okCooldownFrame, resolvedCooldownFrame = pcall(frame.GetCooldownFrame, frame)
+        if okCooldownFrame and resolvedCooldownFrame then
+            cooldownFrame = resolvedCooldownFrame
+        end
     end
 
+    local auraInstanceID = ResolveAuraInstanceID(frame)
     local totemData = ResolveTotemData(frame)
-    local hasTotemData = HasValue(totemData)
-    local totemSlot = ResolveTotemSlot(frame, totemData)
-
-    local activeStateToken = "viewer:pool"
-    if HasAuraInstanceID(auraInstanceID) then
-        activeStateToken = "viewer:aura"
-    elseif hasTotemData then
-        if IsNonSecretNumber(totemSlot) and totemSlot > 0 then
-            activeStateToken = "viewer:totem:" .. tostring(totemSlot)
-        else
-            activeStateToken = "viewer:totem"
-        end
+    local totemSlot, hasTotemData, totemStartTime, totemDuration, totemIcon, totemModRate = ResolveTotemState(frame, totemData)
+    local hasTotemWindow = hasTotemData and HasValue(totemStartTime) and HasValue(totemDuration)
+    local slotStartTime, slotDuration, slotModRate, slotExpirationTime = ResolveTotemWindowFromSlot(totemSlot)
+    local hasSlotTotemWindow = HasValue(slotDuration) and (HasValue(slotStartTime) or HasValue(slotExpirationTime))
+    local cooldownWidgetActive, cooldownWidgetStart, cooldownWidgetDuration = ResolveCooldownWidgetActive(cooldownFrame)
+    local frameStartTime, frameDuration, frameModRate, hasFrameCooldownWindow = ResolveFrameCooldownWindow(frame)
+    local active = HasAuraInstanceID(auraInstanceID)
+        or hasTotemData
+        or hasSlotTotemWindow
+        or cooldownWidgetActive
+        or hasFrameCooldownWindow
+    if not active then
+        return nil
     end
 
     local auraUnit = ResolveAuraUnit(frame)
@@ -858,43 +470,62 @@ local function BuildFramePayload(frame, cooldownID)
         end
     end
 
+    if not HasValue(durationObject) then
+        durationObject = ResolveCooldownWidgetDurationObject(cooldownFrame)
+    end
+
     local cooldownStartTime
+    local cooldownExpirationTime
     local cooldownDuration
     local cooldownModRate
+    local activeStateToken = "probe:viewer"
+    local source = "probe"
+    if hasSlotTotemWindow then
+        cooldownStartTime = slotStartTime
+        cooldownExpirationTime = slotExpirationTime
+        cooldownDuration = slotDuration
+        cooldownModRate = HasValue(slotModRate) and slotModRate or nil
+        activeStateToken = "probe:totem:" .. tostring(totemSlot or "unknown")
+        source = "probe-totem"
+    elseif hasTotemWindow then
+        cooldownStartTime = totemStartTime
+        cooldownDuration = totemDuration
+        cooldownModRate = HasValue(totemModRate) and totemModRate or nil
+        activeStateToken = "probe:totem:" .. tostring(totemSlot or "unknown")
+        source = "probe-totem"
+    elseif hasFrameCooldownWindow then
+        cooldownStartTime = frameStartTime
+        cooldownDuration = frameDuration
+        cooldownModRate = frameModRate
+        activeStateToken = "probe:frame"
+    elseif cooldownWidgetActive and cooldownWidgetStart and cooldownWidgetDuration then
+        cooldownStartTime = cooldownWidgetStart
+        cooldownDuration = cooldownWidgetDuration
+        activeStateToken = "probe:widget"
+    elseif HasAuraInstanceID(auraInstanceID) then
+        activeStateToken = "probe:aura"
+    end
 
-    if hasTotemData then
-        local totemCooldownStart, totemCooldownDuration, totemCooldownModRate = ResolveCooldownWindowFromTotemData(totemData, totemSlot)
-        if HasNumericValue(totemCooldownStart) and HasPositiveNumericValue(totemCooldownDuration) then
-            cooldownStartTime = totemCooldownStart
-            cooldownDuration = totemCooldownDuration
-            if IsNonSecretNumber(totemCooldownModRate) then
-                cooldownModRate = totemCooldownModRate
-            end
+    local icon
+    local iconTexture = frame.Icon
+    if type(frame.GetIconTexture) == "function" then
+        local okIconTexture, resolvedIconTexture = pcall(frame.GetIconTexture, frame)
+        if okIconTexture and resolvedIconTexture then
+            iconTexture = resolvedIconTexture
         end
     end
-
-    if not HasValue(cooldownStartTime) then
-        local widgetCooldownStart, widgetCooldownDuration, widgetCooldownModRate = ResolveCooldownWindowFromWidget(frame)
-        if IsNonSecretNumber(widgetCooldownStart) and IsNonSecretNumber(widgetCooldownDuration) and widgetCooldownDuration > 0 then
-            cooldownStartTime = widgetCooldownStart
-            cooldownDuration = widgetCooldownDuration
-            if IsNonSecretNumber(widgetCooldownModRate) then
-                cooldownModRate = widgetCooldownModRate
-            end
+    if iconTexture and type(iconTexture.GetTexture) == "function" then
+        local okIcon, texture = pcall(iconTexture.GetTexture, iconTexture)
+        if okIcon and HasValue(texture) then
+            icon = texture
         end
     end
-
-    local hasAuraDurationObject = HasValue(durationObject)
-    local hasCooldownWindow = HasValue(cooldownStartTime) and HasValue(cooldownDuration)
-    local hasTotemWindow = hasTotemData and hasCooldownWindow
-    if not HasAuraInstanceID(auraInstanceID)
-        and not hasTotemWindow
-        and not hasAuraDurationObject
-    then
-        return nil
+    if not HasValue(icon) and HasValue(totemIcon) then
+        icon = totemIcon
     end
-
-    local icon = ResolveFrameIcon(frame, cooldownID)
+    if not HasValue(icon) then
+        icon = ResolveIconFromCooldownID(cooldownID)
+    end
     if not HasValue(icon) then
         icon = DEFAULT_ICON_TEXTURE
     end
@@ -906,6 +537,8 @@ local function BuildFramePayload(frame, cooldownID)
         auraUnit = auraUnit,
         auraInstanceID = auraInstanceID,
         activeStateToken = activeStateToken,
+        source = source,
+        cooldownExpirationTime = cooldownExpirationTime,
         cooldownStartTime = cooldownStartTime,
         cooldownDuration = cooldownDuration,
         cooldownModRate = cooldownModRate,
@@ -938,24 +571,6 @@ local function ShouldReplacePayload(existing, candidate)
         return false
     end
 
-    local existingHasAuraInstance = HasAuraInstanceID(existing.auraInstanceID)
-    local candidateHasAuraInstance = HasAuraInstanceID(candidate.auraInstanceID)
-    if candidateHasAuraInstance and not existingHasAuraInstance then
-        return true
-    end
-    if existingHasAuraInstance and not candidateHasAuraInstance then
-        return false
-    end
-
-    local existingStateRank = GetActiveStateRank(existing)
-    local candidateStateRank = GetActiveStateRank(candidate)
-    if candidateStateRank > existingStateRank then
-        return true
-    end
-    if existingStateRank > candidateStateRank then
-        return false
-    end
-
     if existingHasDuration and candidateHasDuration then
         local existingStart = existing.cooldownStartTime
         local candidateStart = candidate.cooldownStartTime
@@ -976,68 +591,44 @@ local function ShouldReplacePayload(existing, candidate)
     return true
 end
 
-local function ReconcileViewerRegistry(cooldownIDs)
-    local reconcileStartTime = GetTime()
-    local trackedCooldownIDSet = BuildTrackedCooldownIDSet(cooldownIDs)
-    local spellLookup = GetAssignedSpellLookup()
-
-    ClearRegistryFrames()
-
-    for i = 1, #AURA_VIEWER_NAMES do
-        local viewerName = AURA_VIEWER_NAMES[i]
-        local viewer = _G[viewerName]
-        if viewer then
-            InstallViewerHooks(viewer, viewerName)
-            ForEachViewerItemFrame(viewer, function(frame)
-                InstallTrackedFrameHooks(frame)
-                RefreshRegisteredFrame(frame, trackedCooldownIDSet, spellLookup)
-            end)
-        end
-    end
-
-    registryDirty = false
-    CDM:IncrementPerfCounter("cdm_aura_probe_reconcile")
-    CDM:RecordPerfSample("cdm_aura_probe_reconcile", GetTime() - reconcileStartTime)
-end
-
 local function BuildActiveCooldownFrameMap(cooldownIDs)
-    local buildStartTime = GetTime()
     local map = {}
     if type(cooldownIDs) ~= "table" or #cooldownIDs == 0 then
         return map
     end
+    local buildStartTime = GetTime()
 
-    local assignedSnapshot = CDM.GetAssignedCooldownSnapshot and CDM:GetAssignedCooldownSnapshot() or nil
-    local validationCooldownIDs = cooldownIDs
-    if type(assignedSnapshot) == "table" and type(assignedSnapshot.allAssignedIDs) == "table" and #assignedSnapshot.allAssignedIDs > 0 then
-        validationCooldownIDs = assignedSnapshot.allAssignedIDs
-    end
-
-    if registryDirty then
-        ReconcileViewerRegistry(validationCooldownIDs)
-    end
-
-    local trackedCooldownIDSet = BuildTrackedCooldownIDSet(validationCooldownIDs)
-    local spellLookup = GetAssignedSpellLookup()
-    for frame in pairs(registeredFrameCooldownID) do
-        RefreshRegisteredFrame(frame, trackedCooldownIDSet, spellLookup)
+    if wipe then
+        wipe(cooldownIDSeenScratch)
+    else
+        for key in pairs(cooldownIDSeenScratch) do
+            cooldownIDSeenScratch[key] = nil
+        end
     end
 
     for i = 1, #cooldownIDs do
         local cooldownID = cooldownIDs[i]
-        local frameSet = registeredFramesByCooldownID[cooldownID]
-        if type(frameSet) == "table" then
-            for frame in pairs(frameSet) do
+        if IsNonSecretNumber(cooldownID) and cooldownID > 0 then
+            cooldownIDSeenScratch[cooldownID] = true
+        end
+    end
+
+    for i = 1, #AURA_VIEWER_NAMES do
+        local viewer = _G[AURA_VIEWER_NAMES[i]]
+        ForEachViewerItemFrame(viewer, function(frame)
+            local cooldownID = ResolveFrameCooldownID(frame)
+            if cooldownID and cooldownIDSeenScratch[cooldownID] then
                 local payload = BuildFramePayload(frame, cooldownID)
                 if payload and ShouldReplacePayload(map[cooldownID], payload) then
                     map[cooldownID] = payload
                 end
             end
-        end
+        end)
     end
 
-    CDM:IncrementPerfCounter("cdm_aura_probe_build")
-    CDM:RecordPerfSample("cdm_aura_probe_build", GetTime() - buildStartTime)
+    CDM:IncrementPerfCounter("cdm_aura_probe_scan")
+    CDM:RecordPerfSample("cdm_aura_probe_scan", GetTime() - buildStartTime)
+
     return map
 end
 
@@ -1052,6 +643,9 @@ local function TryRegisterDataChangedCallback()
     end
 
     eventRegistry:RegisterCallback("CooldownViewerSettings.OnDataChanged", function()
+        if not CDM.IsRefineRuntimeOwnerActive or not CDM:IsRefineRuntimeOwnerActive() then
+            return
+        end
         local settingsFrame = CDM.GetCooldownViewerSettingsFrame and CDM:GetCooldownViewerSettingsFrame()
         if settingsFrame and settingsFrame:IsShown() and CDM.MarkReloadRecommendationPending then
             CDM:MarkReloadRecommendationPending()
@@ -1059,8 +653,9 @@ local function TryRegisterDataChangedCallback()
         if CDM.MarkAssignmentsPruneDirty then
             CDM:MarkAssignmentsPruneDirty()
         end
-        MarkRegistryDirty()
-        QueueRegistryReconcile()
+        if CDM.RequestRefresh then
+            CDM:RequestRefresh(true)
+        end
     end, CDM)
 
     dataChangedCallbackRegistered = true
@@ -1070,31 +665,51 @@ end
 -- Public Methods
 ----------------------------------------------------------------------------------------
 function CDM:InvalidateAuraProbeCache()
-    MarkRegistryDirty()
     if wipe then
         wipe(cooldownIconCache)
+        wipe(ghostPayloadByCooldownID)
         return
     end
 
     for key in pairs(cooldownIconCache) do
         cooldownIconCache[key] = nil
     end
+    for key in pairs(ghostPayloadByCooldownID) do
+        ghostPayloadByCooldownID[key] = nil
+    end
 end
 
 function CDM:RequestAuraProbeReconcile()
-    MarkRegistryDirty()
-    QueueRegistryReconcile()
+    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
+        return
+    end
+    if not self.auraProbeInitialized then
+        return
+    end
+    if self.RequestRefresh then
+        self:RequestRefresh(true)
+    end
 end
 
 function CDM:InitializeAuraProbe()
+    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
+        return
+    end
     if self.auraProbeInitialized then
         return
     end
 
-    InstallKnownViewerHooks()
     TryRegisterDataChangedCallback()
-    MarkRegistryDirty()
-    QueueRegistryReconcile()
+
+    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_event, addonName)
+        if addonName == "Blizzard_CooldownViewer" then
+            TryRegisterDataChangedCallback()
+            CDM:InvalidateAuraProbeCache()
+            if CDM.RequestRefresh then
+                CDM:RequestRefresh(true)
+            end
+        end
+    end, "CDM:AuraProbe:AddonLoaded")
 
     self.auraProbeInitialized = true
 end
@@ -1122,7 +737,7 @@ function CDM:_GetActiveAuraMapInternal(cooldownIDs)
     local activeFrameMap = BuildActiveCooldownFrameMap(cooldownIDs)
     for i = 1, #cooldownIDs do
         local cooldownID = cooldownIDs[i]
-        local payload = self:ProbeCooldownAura(cooldownID, activeFrameMap)
+        local payload = self:_ProbeCooldownAuraInternal(cooldownID, activeFrameMap)
         if payload then
             if not HasValue(payload.icon) then
                 local resolvedIcon = ResolveIconFromCooldownID(cooldownID)
@@ -1139,3 +754,6 @@ function CDM:_GetActiveAuraMapInternal(cooldownIDs)
     PruneExpiredGhostPayloads()
     return activeMap
 end
+
+CDM._ProbeCooldownAuraProbeInternal = CDM._ProbeCooldownAuraInternal
+CDM._GetActiveAuraMapProbeInternal = CDM._GetActiveAuraMapInternal

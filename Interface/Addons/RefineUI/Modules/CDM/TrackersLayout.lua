@@ -39,13 +39,28 @@ local DIRECTION_RIGHT = "RIGHT"
 local DIRECTION_UP = "UP"
 local DIRECTION_DOWN = "DOWN"
 local DIRECTION_CENTERED = "CENTERED"
+local RADIAL_BUCKET = "Radial"
+local RADIAL_TEXT_POSITION_CENTER = "CENTER"
+local RADIAL_TEXT_POSITION_ABOVE = "ABOVE"
+local RADIAL_TEXT_POSITION_BELOW = "BELOW"
+local RADIAL_DEFAULT_SCALE = 0.7
+local RADIAL_MAX_SCALE = 2.0
 local DEFAULT_ICON_BASE_SIZE = 44
+local RADIAL_BASE_SIZE = 512
 
 local FRAME_LABELS = {
     Left = "Cooldown Tracker Left",
     Right = "Cooldown Tracker Right",
     Bottom = "Cooldown Tracker Bottom",
+    Radial = "Cooldown Tracker Radial",
 }
+
+local function GetBucketBaseSize(bucketName)
+    if bucketName == RADIAL_BUCKET then
+        return RADIAL_BASE_SIZE
+    end
+    return DEFAULT_ICON_BASE_SIZE
+end
 
 
 ----------------------------------------------------------------------------------------
@@ -79,6 +94,16 @@ local function ClampIconScale(value)
     return floor((scale * 100) + 0.5) / 100
 end
 
+local function ClampRadialScale(value)
+    local scale = tonumber(value) or RADIAL_DEFAULT_SCALE
+    if scale < 0.5 then
+        scale = 0.5
+    elseif scale > RADIAL_MAX_SCALE then
+        scale = RADIAL_MAX_SCALE
+    end
+    return floor((scale * 10) + 0.5) / 10
+end
+
 
 local function ClampSpacing(value)
     local spacing = floor((tonumber(value) or 6) + 0.5)
@@ -90,12 +115,29 @@ local function ClampSpacing(value)
     return spacing
 end
 
+local function ClampRadialTextSize(value)
+    local size = floor((tonumber(value) or 22) + 0.5)
+    if size < 10 then
+        size = 10
+    elseif size > 48 then
+        size = 48
+    end
+    return size
+end
+
 
 local function NormalizeOrientation(value)
     if value == ORIENTATION_VERTICAL then
         return ORIENTATION_VERTICAL
     end
     return ORIENTATION_HORIZONTAL
+end
+
+local function NormalizeRadialTextPosition(value)
+    if value == RADIAL_TEXT_POSITION_ABOVE or value == RADIAL_TEXT_POSITION_BELOW then
+        return value
+    end
+    return RADIAL_TEXT_POSITION_CENTER
 end
 
 
@@ -144,8 +186,7 @@ end
 
 
 local function SaveFramePosition(frameName, point, x, y)
-    RefineUI.Positions = RefineUI.Positions or {}
-    RefineUI.Positions[frameName] = { point, "UIParent", point, x, y }
+    RefineUI:SetPosition(frameName, { point, "UIParent", point, x, y })
 end
 
 
@@ -178,25 +219,40 @@ function CDM:GetTrackerVisualSettings(bucketName)
     cfg.BucketSettings[bucketName] = cfg.BucketSettings[bucketName] or {}
 
     local bucketCfg = cfg.BucketSettings[bucketName]
+    local baseSize = GetBucketBaseSize(bucketName)
     local iconScale = bucketCfg.IconScale
     if type(iconScale) ~= "number" then
         local legacyIconSize = bucketCfg.IconSize
         if type(legacyIconSize) == "number" and legacyIconSize > 0 then
-            iconScale = legacyIconSize / DEFAULT_ICON_BASE_SIZE
+            iconScale = legacyIconSize / baseSize
         else
-            iconScale = cfg.IconScale or 1
+            if bucketName == RADIAL_BUCKET then
+                iconScale = RADIAL_DEFAULT_SCALE
+            else
+                iconScale = cfg.IconScale or 1
+            end
         end
     end
-    iconScale = ClampIconScale(iconScale)
+    if bucketName == RADIAL_BUCKET then
+        iconScale = ClampRadialScale(iconScale)
+    else
+        iconScale = ClampIconScale(iconScale)
+    end
 
     local spacing = ClampSpacing(bucketCfg.Spacing or cfg.Spacing)
     local orientation = NormalizeOrientation(bucketCfg.Orientation)
     local direction = NormalizeDirection(bucketName, orientation, bucketCfg.Direction)
+    local showDurationText = bucketCfg.ShowDurationText ~= false
+    local textSize = ClampRadialTextSize(bucketCfg.TextSize)
+    local textPosition = NormalizeRadialTextPosition(bucketCfg.TextPosition)
 
     bucketCfg.IconScale = iconScale
     bucketCfg.Spacing = spacing
     bucketCfg.Orientation = orientation
     bucketCfg.Direction = direction
+    bucketCfg.ShowDurationText = showDurationText
+    bucketCfg.TextSize = textSize
+    bucketCfg.TextPosition = textPosition
     return iconScale, spacing, orientation, direction, bucketCfg
 end
 
@@ -212,6 +268,85 @@ function CDM:BuildEditModeSettings(bucketName)
     end
 
     local settings = {}
+    if bucketName == RADIAL_BUCKET then
+        settings[#settings + 1] = {
+            kind = RefineUI.LibEditMode.SettingType.Slider,
+            name = "Scale",
+            default = RADIAL_DEFAULT_SCALE,
+            minValue = 0.5,
+            maxValue = RADIAL_MAX_SCALE,
+            valueStep = 0.1,
+            formatter = function(value)
+                return ClampRadialScale(value)
+            end,
+            get = function()
+                local iconScale = CDM:GetTrackerVisualSettings(bucketName)
+                return iconScale
+            end,
+            set = function(_, value)
+                local _, _, _, _, bucketCfg = CDM:GetTrackerVisualSettings(bucketName)
+                bucketCfg.IconScale = ClampRadialScale(value)
+                CDM:RequestRefresh()
+            end,
+        }
+
+        settings[#settings + 1] = {
+            kind = RefineUI.LibEditMode.SettingType.Checkbox,
+            name = "Show Duration Text",
+            default = true,
+            get = function()
+                local _, _, _, _, bucketCfg = CDM:GetTrackerVisualSettings(bucketName)
+                return bucketCfg.ShowDurationText ~= false
+            end,
+            set = function(_, value)
+                local _, _, _, _, bucketCfg = CDM:GetTrackerVisualSettings(bucketName)
+                bucketCfg.ShowDurationText = value == true
+                CDM:RequestRefresh()
+            end,
+        }
+
+        settings[#settings + 1] = {
+            kind = RefineUI.LibEditMode.SettingType.Slider,
+            name = "Text Size",
+            default = 22,
+            minValue = 10,
+            maxValue = 48,
+            valueStep = 1,
+            get = function()
+                local _, _, _, _, bucketCfg = CDM:GetTrackerVisualSettings(bucketName)
+                return bucketCfg.TextSize
+            end,
+            set = function(_, value)
+                local _, _, _, _, bucketCfg = CDM:GetTrackerVisualSettings(bucketName)
+                bucketCfg.TextSize = ClampRadialTextSize(value)
+                CDM:RequestRefresh()
+            end,
+        }
+
+        settings[#settings + 1] = {
+            kind = RefineUI.LibEditMode.SettingType.Dropdown,
+            name = "Text Position",
+            default = RADIAL_TEXT_POSITION_CENTER,
+            values = {
+                { text = "Center", value = RADIAL_TEXT_POSITION_CENTER },
+                { text = "Above", value = RADIAL_TEXT_POSITION_ABOVE },
+                { text = "Below", value = RADIAL_TEXT_POSITION_BELOW },
+            },
+            get = function()
+                local _, _, _, _, bucketCfg = CDM:GetTrackerVisualSettings(bucketName)
+                return bucketCfg.TextPosition
+            end,
+            set = function(_, value)
+                local _, _, _, _, bucketCfg = CDM:GetTrackerVisualSettings(bucketName)
+                bucketCfg.TextPosition = NormalizeRadialTextPosition(value)
+                CDM:RequestRefresh()
+            end,
+        }
+
+        self.editModeSettingsByBucket[bucketName] = settings
+        return settings
+    end
+
     settings[#settings + 1] = {
         kind = RefineUI.LibEditMode.SettingType.Dropdown,
         name = "Orientation",
@@ -372,7 +507,8 @@ function CDM:EnsureTrackerFrame(bucketName)
     local point, relativeTo, relativePoint, x, y = ResolveAnchorPosition(frameName)
     frame:ClearAllPoints()
     frame:Point(point, relativeTo, relativePoint, x, y)
-    frame:Size(44, 44)
+    local baseSize = GetBucketBaseSize(bucketName)
+    frame:Size(baseSize, baseSize)
 
     self.trackerFrames[bucketName] = frame
     self:RegisterTrackerFrameEditMode(frame, bucketName)
@@ -404,3 +540,36 @@ function CDM:EnsureTrackerIcon(frame, index)
     return iconFrame
 end
 
+function CDM:EnsureRadialTrackerDisplay(frame)
+    if not frame then
+        return nil
+    end
+
+    local radialDisplay = frame.RadialDisplay
+    if radialDisplay then
+        return radialDisplay
+    end
+
+    radialDisplay = CreateFrame("Frame", nil, frame)
+    RefineUI.AddAPI(radialDisplay)
+    local parentLevel = GetSafeOwnedFrameLevel(frame)
+    radialDisplay:SetFrameLevel(parentLevel + 1)
+    radialDisplay:SetPoint("CENTER", frame, "CENTER", 0, 0)
+    radialDisplay:Size(RADIAL_BASE_SIZE, RADIAL_BASE_SIZE)
+    radialDisplay:Hide()
+
+    radialDisplay.Background = radialDisplay:CreateTexture(nil, "BACKGROUND")
+    radialDisplay.Background:SetAllPoints()
+
+    radialDisplay.Cooldown = CreateFrame("Cooldown", nil, radialDisplay, "CooldownFrameTemplate")
+    radialDisplay.Cooldown:SetAllPoints()
+
+    radialDisplay.CountdownText = radialDisplay:CreateFontString(nil, "OVERLAY")
+    radialDisplay.CountdownText:SetJustifyH("CENTER")
+    radialDisplay.CountdownText:SetJustifyV("MIDDLE")
+    radialDisplay.CountdownText:SetFont(RefineUI.Media.Fonts.Number, 22, "OUTLINE")
+    radialDisplay.CountdownText:SetText("")
+
+    frame.RadialDisplay = radialDisplay
+    return radialDisplay
+end

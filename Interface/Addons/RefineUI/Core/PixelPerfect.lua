@@ -90,14 +90,17 @@ function RefineUI:UpdatePixelConstants()
 end
 
 -- 4. Enforce Scale (DANGEROUS - Sets CVars, calls Recompute)
--- Only call this on Login or Config Change. NEVER on Display Change.
+-- Call on startup and explicit setup/reset flows. NEVER on Display Change.
 function RefineUI:SetUIScale()
     local general = (RefineUI.Config and RefineUI.Config.General) or {}
     if not general.UseUIScale then return end
     
     local idealScale = general.Scale or RefineUI:CalculateUIScale()
-    
-    if idealScale ~= tonumber(GetCVar("uiScale")) then
+
+    local currentScale = tonumber(GetCVar("uiScale"))
+    local useUiScaleEnabled = GetCVar("useUiScale") == "1"
+
+    if (not useUiScaleEnabled) or idealScale ~= currentScale then
         SetCVar("useUiScale", "1")
         SetCVar("uiScale", tostring(idealScale))
     end
@@ -186,4 +189,4 @@ RefineUI:RegisterEventCallback("UI_SCALE_CHANGED", function()
      RefineUI:UpdatePixelConstants()
 end)
 
--- Note: RefineUI:SetUIScale() is called in Engine.lua:PLAYER_LOGIN
+-- Note: RefineUI:SetUIScale() is used on startup plus explicit setup/reset flows.

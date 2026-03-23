@@ -108,7 +108,6 @@ local DEFAULT_PORTALS_CONFIG = {
     MenuWidth = 320,
     RowHeight = 24,
     MaxVisibleRows = 14,
-    CloseOnMove = true,
     CloseOnCastStart = true,
     PinnedActions = {},
 }
@@ -132,7 +131,6 @@ local EVENT_KEY = {
     SPELL_UPDATE_COOLDOWN = "Maps:Portals:SPELL_UPDATE_COOLDOWN",
     BAG_UPDATE_COOLDOWN = "Maps:Portals:BAG_UPDATE_COOLDOWN",
     PLAYER_REGEN_ENABLED = "Maps:Portals:PLAYER_REGEN_ENABLED",
-    PLAYER_STARTED_MOVING = "Maps:Portals:PLAYER_STARTED_MOVING",
     UNIT_SPELLCAST_START = "Maps:Portals:UNIT_SPELLCAST_START",
 }
 
@@ -140,14 +138,16 @@ local TIMER_KEY = {
     FULL_REFRESH = "Maps:Portals:FullRefresh",
 }
 
-local UPDATE_JOB_KEY = {
-    BUTTON_VISIBILITY = "Maps:Portals:ButtonVisibility",
+local HOOK_KEY = {
+    MINIMAP_ON_ENTER = "Maps:Portals:Minimap:OnEnter",
+    MINIMAP_ON_LEAVE = "Maps:Portals:Minimap:OnLeave",
 }
 
 local HEARTHSTONE_TOP_LEVEL = {
     { label = "Hearthstone", itemID = 6948, spellID = 8690 },
     { label = "Dalaran Hearthstone", itemID = 140192, spellID = 222695 },
     { label = "Garrison Hearthstone", itemID = 110560, spellID = 171253 },
+    { itemID = 253629 },
 }
 
 local TELEPORT_HOME_SPELL_ID = 1233637
@@ -250,7 +250,7 @@ local HEARTHSTONE_TOY_IDS = {
     190237, 166747, 265100, 93672, 208704, 188952, 210455, 190196,
     54452, 172179, 166746, 162973, 163045, 209035, 168907, 64488,
     184353, 257736, 165669, 182773, 180290, 165802, 228940, 200630,
-    206195, 165670, 212337, 193588, 142542, 183716,
+    206195, 165670, 212337, 193588, 142542, 183716, 253629,
 }
 local HEARTHSTONE_TOY_LOOKUP = {}
 for i = 1, #HEARTHSTONE_TOY_IDS do
@@ -333,6 +333,7 @@ local submenuScrollOffset = 0
 local pendingFullRefresh = false
 local portalsInitialized = false
 local portalsEventsRegistered = false
+local visibilityUpdateQueued = false
 
 local RowState = setmetatable({}, { __mode = "k" })
 
@@ -379,7 +380,6 @@ local function GetPortalsConfig()
         MenuWidth = floor(ClampNumber(ReadValue("MenuWidth"), 200, 480, DEFAULT_PORTALS_CONFIG.MenuWidth) + 0.5),
         RowHeight = floor(ClampNumber(ReadValue("RowHeight"), 18, 36, DEFAULT_PORTALS_CONFIG.RowHeight) + 0.5),
         MaxVisibleRows = floor(ClampNumber(ReadValue("MaxVisibleRows"), 6, 30, DEFAULT_PORTALS_CONFIG.MaxVisibleRows) + 0.5),
-        CloseOnMove = ReadValue("CloseOnMove") ~= false,
         CloseOnCastStart = ReadValue("CloseOnCastStart") ~= false,
     }
 end
@@ -1675,6 +1675,14 @@ local function ShouldShowPortalsButton()
         return false
     end
 
+    if portalsMenu and portalsMenu:IsShown() then
+        return true
+    end
+
+    if portalsSubmenu and portalsSubmenu:IsShown() then
+        return true
+    end
+
     if portalsButton:IsMouseOver() then
         return true
     end
@@ -1711,30 +1719,49 @@ local function UpdatePortalsButtonVisibility(force)
     end
 end
 
-local function EnsurePortalsButtonVisibilityUpdateJob()
-    if not RefineUI.RegisterUpdateJob then
+local function RequestPortalsButtonVisibilityUpdate(force)
+    if not portalsButton then
         return
     end
 
-    if RefineUI.IsUpdateJobRegistered and RefineUI:IsUpdateJobRegistered(UPDATE_JOB_KEY.BUTTON_VISIBILITY) then
-        if RefineUI.SetUpdateJobEnabled then
-            RefineUI:SetUpdateJobEnabled(UPDATE_JOB_KEY.BUTTON_VISIBILITY, true, true)
-        end
-        if RefineUI.RunUpdateJobNow then
-            RefineUI:RunUpdateJobNow(UPDATE_JOB_KEY.BUTTON_VISIBILITY)
-        end
+    if force then
+        UpdatePortalsButtonVisibility(true)
         return
     end
 
-    RefineUI:RegisterUpdateJob(UPDATE_JOB_KEY.BUTTON_VISIBILITY, 0.08, function()
-        UpdatePortalsButtonVisibility(false)
-    end, {
-        enabled = true,
-    })
-
-    if RefineUI.RunUpdateJobNow then
-        RefineUI:RunUpdateJobNow(UPDATE_JOB_KEY.BUTTON_VISIBILITY)
+    if visibilityUpdateQueued then
+        return
     end
+    visibilityUpdateQueued = true
+
+    if _G.C_Timer and _G.C_Timer.After then
+        _G.C_Timer.After(0, function()
+            visibilityUpdateQueued = false
+            UpdatePortalsButtonVisibility(false)
+        end)
+        return
+    end
+
+    visibilityUpdateQueued = false
+    UpdatePortalsButtonVisibility(false)
+end
+
+local function HookPortalsButtonVisibilityOwners()
+    if not Minimap then
+        return
+    end
+
+    RefineUI:HookScriptOnce(HOOK_KEY.MINIMAP_ON_ENTER, Minimap, "OnEnter", function()
+        RequestPortalsButtonVisibilityUpdate(false)
+    end)
+
+    RefineUI:HookScriptOnce(HOOK_KEY.MINIMAP_ON_LEAVE, Minimap, "OnLeave", function()
+        RequestPortalsButtonVisibilityUpdate(false)
+    end)
+end
+
+local function UpdatePortalsButtonVisibilityFromHover()
+    RequestPortalsButtonVisibilityUpdate(false)
 end
 
 local function UpdatePortalsButtonLayout()
@@ -2024,13 +2051,14 @@ local function CreatePortalsButton()
         GameTooltip:AddLine("Left-click to open.", 0.8, 0.8, 0.8)
         GameTooltip:Show()
         SetBorderColor(self, GOLD_R, GOLD_G, GOLD_B, 1)
+        UpdatePortalsButtonVisibilityFromHover()
     end)
 
     portalsButton:SetScript("OnLeave", function(self)
         GameTooltip:Hide()
         local r, g, b, a = GetDefaultBorderColor()
         SetBorderColor(self, r, g, b, a)
-        UpdatePortalsButtonVisibility(false)
+        UpdatePortalsButtonVisibilityFromHover()
     end)
 
     portalsButton:SetScript("OnClick", function(_, button)
@@ -2041,7 +2069,7 @@ local function CreatePortalsButton()
 
     portalsButton:Show()
     UpdatePortalsButtonLayout()
-    EnsurePortalsButtonVisibilityUpdateJob()
+    HookPortalsButtonVisibilityOwners()
     UpdatePortalsButtonVisibility(true)
 end
 
@@ -2083,6 +2111,11 @@ local function CreateMenus()
     RefineUI.SetTemplate(portalsMenu, "Transparent")
     RefineUI.CreateBorder(portalsMenu, 6, 6, 12)
     portalsMenu:Hide()
+    portalsMenu:SetScript("OnEnter", UpdatePortalsButtonVisibilityFromHover)
+    portalsMenu:SetScript("OnLeave", UpdatePortalsButtonVisibilityFromHover)
+    portalsMenu:SetScript("OnShow", function()
+        RequestPortalsButtonVisibilityUpdate(true)
+    end)
     portalsMenu:SetScript("OnHide", function()
         if portalsSubmenu then
             portalsSubmenu:Hide()
@@ -2090,7 +2123,7 @@ local function CreateMenus()
         if clickCatcher then
             clickCatcher:Hide()
         end
-        UpdatePortalsButtonVisibility(true)
+        RequestPortalsButtonVisibilityUpdate(true)
     end)
 
     portalsSubmenu = CreateFrame("Frame", PORTALS_SUBMENU_NAME, UIParent, "BackdropTemplate")
@@ -2103,6 +2136,14 @@ local function CreateMenus()
     RefineUI.SetTemplate(portalsSubmenu, "Transparent")
     RefineUI.CreateBorder(portalsSubmenu, 6, 6, 12)
     portalsSubmenu:Hide()
+    portalsSubmenu:SetScript("OnEnter", UpdatePortalsButtonVisibilityFromHover)
+    portalsSubmenu:SetScript("OnLeave", UpdatePortalsButtonVisibilityFromHover)
+    portalsSubmenu:SetScript("OnShow", function()
+        RequestPortalsButtonVisibilityUpdate(true)
+    end)
+    portalsSubmenu:SetScript("OnHide", function()
+        RequestPortalsButtonVisibilityUpdate(true)
+    end)
     portalsSubmenu:SetScript("OnMouseWheel", OnSubmenuMouseWheel)
 
     submenuScrollUpIndicator = portalsSubmenu:CreateFontString(nil, "OVERLAY")
@@ -2228,13 +2269,6 @@ local function RegisterPortalsEvents()
             RefreshVisibleCooldowns()
         end
     end, EVENT_KEY.PLAYER_REGEN_ENABLED)
-
-    RefineUI:RegisterEventCallback("PLAYER_STARTED_MOVING", function()
-        local cfg = GetPortalsConfig()
-        if cfg.CloseOnMove then
-            ClosePortalsMenus()
-        end
-    end, EVENT_KEY.PLAYER_STARTED_MOVING)
 
     RefineUI:RegisterEventCallback("UNIT_SPELLCAST_START", function(_, unitTarget)
         local cfg = GetPortalsConfig()

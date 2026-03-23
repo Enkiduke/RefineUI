@@ -31,6 +31,13 @@ end
 local MAX_GUILD_TOOLTIP_LIST = 30
 local MAX_FRIENDS_TOOLTIP_LIST = 20
 local GV_TOTAL_SLOTS = 9
+local UPDATE_JOB_KEY = {
+    GUILD_ROSTER = "MicroMenu:GuildRosterPoll",
+    LATENCY = "MicroMenu:LatencyPoll",
+}
+local TIMER_KEY = {
+    SUPPRESS_DEFAULT_BUTTONS = "MicroMenu:SuppressDefaultButtons",
+}
 
 -- Tooltip helper: consistent section spacing + header color
 local function AddSectionHeader(text, r, g, b)
@@ -757,7 +764,7 @@ end
 function MicroMenu:OnEnable()
     -- Guild Roster Events
     -- Guild Roster Events
-    local function UpdateGuildRoster(_, event)
+    local function UpdateGuildRoster(event)
         if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
             SafeRequestGuildRosterUpdate()
         end
@@ -768,7 +775,9 @@ function MicroMenu:OnEnable()
     RefineUI:RegisterEventCallback("GUILD_ROSTER_UPDATE", UpdateGuildRoster, "MicroMenu_GuildRoster")
     RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", UpdateGuildRoster, "MicroMenu_GuildRoster")
 
-    C_Timer.NewTicker(300, SafeRequestGuildRosterUpdate)
+    RefineUI:RegisterUpdateJob(UPDATE_JOB_KEY.GUILD_ROSTER, 300, function()
+        SafeRequestGuildRosterUpdate()
+    end)
     
     -- Guild Tooltip
     if _G.GuildMicroButton then
@@ -923,8 +932,10 @@ function MicroMenu:OnEnable()
     end
 
     -- Update Loops
-    C_Timer.NewTicker(5, UpdateLatency)
-    C_Timer.After(0.1, SuppressDefaultButtons)
+    RefineUI:RegisterUpdateJob(UPDATE_JOB_KEY.LATENCY, 5, function()
+        UpdateLatency()
+    end)
+    RefineUI:After(TIMER_KEY.SUPPRESS_DEFAULT_BUTTONS, 0.1, SuppressDefaultButtons)
     
     -- Hook update function
     RefineUI:HookOnce("MicroMenu:UpdateMicroButtons", "UpdateMicroButtons", OnUpdateMicroButtons)

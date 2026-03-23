@@ -30,6 +30,7 @@ end
 local _G = _G
 local unpack = unpack
 local math = math
+local pcall = pcall
 local UnitCastingInfo = UnitCastingInfo
 local UnitChannelInfo = UnitChannelInfo
 local UnitCastingDuration = UnitCastingDuration
@@ -40,6 +41,7 @@ local UnitClassFromGUID = C_PlayerInfo and C_PlayerInfo.UnitClassFromGUID or Uni
 local type = type
 local tonumber = tonumber
 local pairs = pairs
+local lower = string.lower
 local RAID_CLASS_COLORS = RAID_CLASS_COLORS
 
 ----------------------------------------------------------------------------------------
@@ -47,6 +49,7 @@ local RAID_CLASS_COLORS = RAID_CLASS_COLORS
 ----------------------------------------------------------------------------------------
 local MediaTextures = RefineUI.Media.Textures
 local TEX_BAR = MediaTextures.HealthBar
+local NORMALIZED_TEX_BAR = type(TEX_BAR) == "string" and lower(TEX_BAR) or nil
 local CASTBAR_BACKDROP_DARKEN = 0.5
 local NameplatesUtil = RefineUI.NameplatesUtil
 local IsSecret = NameplatesUtil.IsSecret
@@ -54,6 +57,7 @@ local HasValue = NameplatesUtil.HasValue
 local IsAccessibleValue = NameplatesUtil.IsAccessibleValue
 local ReadSafeBoolean = NameplatesUtil.ReadSafeBoolean
 local IsUsableUnitToken = NameplatesUtil.IsUsableUnitToken
+local IsCastBarActiveOnly = NameplatesUtil.IsCastBarActive
 local BuildHookKey = NameplatesUtil.BuildHookKey
 local BuildNameplateCastHookKey = function(owner, method)
     return BuildHookKey("NameplatesCastBars", owner, method)
@@ -103,6 +107,62 @@ local function ApplyBackdropDarken(texture, bgColor)
     texture:SetVertexColor(br, bg, bb, ba)
 end
 
+local function SetCastBarVisualAlpha(castBar, alpha)
+    if not castBar or type(alpha) ~= "number" then
+        return
+    end
+
+    castBar:SetAlpha(alpha)
+
+    local fadeWidgets = castBar.additionalFadeWidgets
+    if not fadeWidgets then
+        return
+    end
+
+    for widget in pairs(fadeWidgets) do
+        if widget and widget.SetAlpha then
+            widget:SetAlpha(alpha)
+        end
+    end
+end
+
+local function EnforceNameOnlyCastBarHidden(castBar)
+    if not castBar or not castBar.GetParent then
+        return false
+    end
+
+    local unitFrame = castBar:GetParent()
+    if not unitFrame then
+        return false
+    end
+
+    local frameData = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
+    local isHidden = (frameData and frameData.RefineHidden) == true or unitFrame.RefineHidden == true
+    if not isHidden then
+        return false
+    end
+
+    SetCastBarVisualAlpha(castBar, 0)
+    return true
+end
+
+local function IsRuntimeSuppressedNameplate(unitFrame)
+    if not unitFrame then
+        return false
+    end
+
+    if RefineUI.IsRuntimeSuppressedNameplate then
+        return RefineUI:IsRuntimeSuppressedNameplate(unitFrame)
+    end
+
+    local frameData = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
+    return frameData and frameData.RefineHidden == true or false
+end
+
+function Nameplates:SetCastBarVisualAlpha(castBar, alpha)
+    SetCastBarVisualAlpha(castBar, alpha)
+end
+
 local IsCastActive
 
 local function GetSafeBarType(castBar)
@@ -117,8 +177,17 @@ local function GetSafeBarType(castBar)
     return barType
 end
 
+local function NormalizeTextureToken(textureValue)
+    if not IsAccessibleValue(textureValue) or type(textureValue) ~= "string" then
+        return nil
+    end
+
+    return lower(textureValue)
+end
+
 local function GetInterruptibilityFromTexture(texturePath)
-    if not IsAccessibleValue(texturePath) or type(texturePath) ~= "string" then
+    texturePath = NormalizeTextureToken(texturePath)
+    if texturePath == nil then
         return nil
     end
 
@@ -139,29 +208,19 @@ local function GetInterruptibilityFromTexture(texturePath)
     return nil
 end
 
-local function ClearCastInterruptibilityState(data, preserveShieldSignal)
+local function ClearCachedCastInterruptibility(data, clearNativeStatusBarTexture)
     if not data then
         return
     end
 
-    data.notInterruptible = nil
-    data.nativeStatusBarTexture = nil
-    if not preserveShieldSignal then
-        data.shieldShownSignal = nil
+    data.cachedNotInterruptible = nil
+    if clearNativeStatusBarTexture == true then
+        data.nativeStatusBarTexture = nil
     end
 end
 
-local function UpdateInterruptibilityFromShieldSignal(data, shown, shownState)
-    if not data then
-        return
-    end
-
-    data.shieldShownSignal = shown
-    if shownState ~= nil then
-        data.notInterruptible = shownState
-    else
-        data.notInterruptible = ReadSafeBoolean(shown)
-    end
+local function ClearCastInterruptibilityState(data)
+    ClearCachedCastInterruptibility(data, true)
 end
 
 local function IsSafeBarType(castBar, expectedType)
@@ -205,6 +264,51 @@ local function GetCastBarStatusTexture(castBar)
     end
 
     return castBar:GetStatusBarTexture()
+end
+
+local function CacheNativeStatusBarTextureValue(data, textureValue)
+    if not data then
+        return
+    end
+
+    local normalizedTexture = NormalizeTextureToken(textureValue)
+    if normalizedTexture == nil then
+        return
+    end
+    if NORMALIZED_TEX_BAR ~= nil and normalizedTexture == NORMALIZED_TEX_BAR then
+        return
+    end
+
+    data.nativeStatusBarTexture = textureValue
+end
+
+local function SnapshotNativeStatusBarTexture(castBar, data)
+    if not castBar or not data then
+        return
+    end
+
+    local statusTexture = GetCastBarStatusTexture(castBar)
+    if not statusTexture then
+        return
+    end
+
+    if statusTexture.GetAtlas then
+        local ok, atlas = pcall(statusTexture.GetAtlas, statusTexture)
+        if ok and atlas ~= nil then
+            CacheNativeStatusBarTextureValue(data, atlas)
+        end
+    end
+
+    if data.nativeStatusBarTexture ~= nil then
+        return
+    end
+
+    if statusTexture.GetTexture then
+        local ok, textureValue = pcall(statusTexture.GetTexture, statusTexture)
+        if ok and textureValue ~= nil then
+            CacheNativeStatusBarTextureValue(data, textureValue)
+        end
+    end
 end
 
 local function EnsureCastBarTextureDesaturation(castBar)
@@ -339,6 +443,16 @@ local function SyncNameplateCastAlphaState(castBar, unitFrame, unit, forceRefres
         RefineUI.NameplateData[unitFrame] = frameData
     end
 
+    if IsRuntimeSuppressedNameplate(unitFrame) then
+        if frameData.isCasting ~= false or forceRefresh == true then
+            frameData.isCasting = false
+            if RefineUI.UpdateTarget then
+                RefineUI:UpdateTarget(unitFrame)
+            end
+        end
+        return
+    end
+
     local resolvedUnit = unit
     if not IsUsableUnitToken(resolvedUnit) then
         resolvedUnit = unitFrame.unit
@@ -359,6 +473,7 @@ end
 local UpdateCastColor
 local HandleCastBarEvent
 local GetCastInterruptibilitySignal
+local GetResolvedCastBarInterruptibility
 
 local CAST_STATE_REFRESH_EVENTS = {
     UNIT_SPELLCAST_START = true,
@@ -376,6 +491,35 @@ local CAST_BORDER_REFRESH_EVENTS = {
     UNIT_SPELLCAST_INTERRUPTIBLE = true,
     UNIT_SPELLCAST_NOT_INTERRUPTIBLE = true,
 }
+
+local CAST_FORCE_BORDER_RESET_EVENTS = {
+    UNIT_SPELLCAST_STOP = true,
+    UNIT_SPELLCAST_FAILED = true,
+    UNIT_SPELLCAST_INTERRUPTED = true,
+    UNIT_SPELLCAST_SUCCEEDED = true,
+    UNIT_SPELLCAST_CHANNEL_STOP = true,
+    UNIT_SPELLCAST_EMPOWER_STOP = true,
+}
+
+local function ShouldRefreshCrowdControlForCastState(unitFrame)
+    if not unitFrame then
+        return false
+    end
+
+    local frameData = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
+    if not frameData or (frameData.CrowdControlActive ~= true and frameData.CrowdControlSuppressed ~= true) then
+        return false
+    end
+
+    local crowdControlConfig = Config
+        and Config.Nameplates
+        and (Config.Nameplates.CrowdControl or Config.Nameplates.CrowdControlTest)
+    if not crowdControlConfig or crowdControlConfig.Enable == false then
+        return false
+    end
+
+    return crowdControlConfig.HideWhileCasting ~= false
+end
 
 function RefineUI:RefreshNameplateCastColors(refreshExisting)
     self.Colors = self.Colors or {}
@@ -446,16 +590,21 @@ function RefineUI:GetCastColor(unit, castBar)
     end
 
     local notInt = ReadSafeBoolean(interruptSignal)
+    if notInt == nil then
+        notInt = GetResolvedCastBarInterruptibility(castBar)
+    end
+    if notInt == nil then
+        return nil
+    end
+
     local colors = RefineUI.Colors.Cast
     local bgColors = RefineUI.Colors.CastBG
 
-    if IsSecret(notInt) or notInt == nil then
-        return colors.Interruptible, bgColors.Interruptible
-    elseif notInt then
+    if notInt then
         return colors.NonInterruptible, bgColors.NonInterruptible
-    else
-        return colors.Interruptible, bgColors.Interruptible
     end
+
+    return colors.Interruptible, bgColors.Interruptible
 end
 
 function RefineUI:GetNameplateCastInterruptibilitySignal(unit, castBar)
@@ -470,93 +619,57 @@ local function ResetCastStyle(self)
      local data = GetCastBarData(self)
      if data then
         data.castR, data.castG, data.castB = nil, nil, nil
-        ClearCastInterruptibilityState(data, false)
+        ClearCastInterruptibilityState(data)
      end
      
      -- Reset Portrait Border using centralized logic
      local unitFrame = self:GetParent()
+     if unitFrame and IsRuntimeSuppressedNameplate(unitFrame) then
+         return
+     end
      if unitFrame then
          RefineUI:RefreshNameplateVisualState(unitFrame, unitFrame.unit, "CAST_RESET", {
+             refreshCrowdControl = ShouldRefreshCrowdControlForCastState(unitFrame),
+             refreshPortrait = true,
              refreshBorders = true,
              forceCastCheck = false,
          })
      end
 end
 
-local function GetCastBarInterruptibilitySignal(castBar)
+local function GetLiveUnitCastInterruptibilitySignal(unit)
+    if not IsUsableUnitToken(unit) then
+        return nil, false
+    end
+
+    local castName, _, _, _, _, _, _, notInterruptible = UnitCastingInfo(unit)
+    if HasValue(castName) then
+        return notInterruptible, true
+    end
+
+    local channelName
+    channelName, _, _, _, _, _, notInterruptible = UnitChannelInfo(unit)
+    if HasValue(channelName) then
+        return notInterruptible, true
+    end
+
+    return nil, false
+end
+
+GetResolvedCastBarInterruptibility = function(castBar)
     if not castBar then
         return nil
     end
 
-    -- Avoid castBar:IsInterruptable() here; Blizzard resolves it through a protected
-    -- secret-value path on nameplate cast bars and taints later texture updates.
-    local rawNotInterruptible = castBar.notInterruptible
-    if HasValue(rawNotInterruptible) then
-        return rawNotInterruptible
-    end
-
     local data = GetCastBarData(castBar)
-    -- A secret shield argument is the best live signal we can safely preserve for rendering.
-    if data and HasValue(data.shieldShownSignal) then
-        return data.shieldShownSignal
-    end
-
-    if data and data.notInterruptible ~= nil then
-        return data.notInterruptible
-    end
-
-    if data and data.nativeStatusBarTexture ~= nil then
-        local textureNotInterruptible = GetInterruptibilityFromTexture(data.nativeStatusBarTexture)
-        if textureNotInterruptible ~= nil then
-            return textureNotInterruptible
-        end
+    if data and data.cachedNotInterruptible ~= nil then
+        return data.cachedNotInterruptible
     end
 
     if castBar.BorderShield and castBar.BorderShield.IsShown then
         local shieldShown = ReadSafeBoolean(castBar.BorderShield:IsShown())
         if shieldShown ~= nil then
             return shieldShown
-        end
-    end
-
-    local barType = GetSafeBarType(castBar)
-    if barType == "uninterruptable" or barType == "uninterruptible" then
-        return true
-    end
-
-    return nil
-end
-
-local function GetResolvedCastBarInterruptibility(castBar)
-    if not castBar then
-        return nil
-    end
-
-    local castBarNotInterruptible = ReadSafeBoolean(castBar.notInterruptible)
-    if castBarNotInterruptible ~= nil then
-        return castBarNotInterruptible
-    end
-    if HasValue(castBar.notInterruptible) then
-        return nil
-    end
-
-    local data = GetCastBarData(castBar)
-    if data and HasValue(data.shieldShownSignal) then
-        local shieldSignal = ReadSafeBoolean(data.shieldShownSignal)
-        if shieldSignal ~= nil then
-            return shieldSignal
-        end
-        return nil
-    end
-
-    if data and data.notInterruptible ~= nil then
-        return data.notInterruptible
-    end
-
-    if data and data.nativeStatusBarTexture ~= nil then
-        local textureNotInterruptible = GetInterruptibilityFromTexture(data.nativeStatusBarTexture)
-        if textureNotInterruptible ~= nil then
-            return textureNotInterruptible
         end
     end
 
@@ -571,10 +684,10 @@ local function GetResolvedCastBarInterruptibility(castBar)
         return false
     end
 
-    if castBar.BorderShield and castBar.BorderShield.IsShown then
-        local shieldShown = ReadSafeBoolean(castBar.BorderShield:IsShown())
-        if shieldShown ~= nil then
-            return shieldShown
+    if data and data.nativeStatusBarTexture ~= nil then
+        local textureNotInterruptible = GetInterruptibilityFromTexture(data.nativeStatusBarTexture)
+        if textureNotInterruptible ~= nil then
+            return textureNotInterruptible
         end
     end
 
@@ -582,14 +695,32 @@ local function GetResolvedCastBarInterruptibility(castBar)
 end
 
 GetCastInterruptibilitySignal = function(unit, castBar)
-    local hasCast = IsCastActive(unit, castBar)
+    local castBarActive = IsCastBarActiveOnly and IsCastBarActiveOnly(castBar) or false
+    local liveSignal, liveHasCast = nil, false
+    if castBarActive and IsUsableUnitToken(unit) then
+        liveSignal, liveHasCast = GetLiveUnitCastInterruptibilitySignal(unit)
+        if liveHasCast and liveSignal ~= nil then
+            return liveSignal, true
+        end
+    end
+
+    local hasCast = castBarActive or IsCastActive(unit, castBar)
     if not hasCast then
         return nil, false
     end
 
-    local castBarSignal = GetCastBarInterruptibilitySignal(castBar)
-    if castBarSignal ~= nil then
-        return castBarSignal, true
+    local resolvedNotInterruptible = GetResolvedCastBarInterruptibility(castBar)
+    if resolvedNotInterruptible ~= nil then
+        return resolvedNotInterruptible, true
+    end
+
+    if IsUsableUnitToken(unit) and (not castBarActive or liveHasCast) then
+        if not castBarActive then
+            liveSignal, liveHasCast = GetLiveUnitCastInterruptibilitySignal(unit)
+        end
+        if liveHasCast then
+            return liveSignal, true
+        end
     end
 
     return nil, true
@@ -597,6 +728,9 @@ end
 
 local function RefreshCastVisualState(self, event, unitFrame, unit)
     if not unitFrame or not RefineUI.RefreshNameplateVisualState then
+        return
+    end
+    if IsRuntimeSuppressedNameplate(unitFrame) then
         return
     end
 
@@ -607,9 +741,10 @@ local function RefreshCastVisualState(self, event, unitFrame, unit)
     end
 
     RefineUI:RefreshNameplateVisualState(unitFrame, unit, event, {
-        refreshCrowdControl = refreshState,
+        refreshCrowdControl = refreshState and ShouldRefreshCrowdControlForCastState(unitFrame),
         refreshPortrait = refreshState,
         refreshBorders = refreshBorders,
+        forceCastCheck = CAST_FORCE_BORDER_RESET_EVENTS[event] == true and false or nil,
     })
 end
 
@@ -620,6 +755,13 @@ UpdateCastColor = function(self, refreshBorders)
      data.refineColoring = true
      
      local unitFrame = self:GetParent()
+     if IsRuntimeSuppressedNameplate(unitFrame) then
+         data.castR, data.castG, data.castB = nil, nil, nil
+         ClearCastInterruptibilityState(data)
+         data.refineColoring = false
+         return
+     end
+
      local unit = (unitFrame and unitFrame.unit) or self.unit
      
      if unit or IsCastActive(nil, self) then
@@ -630,69 +772,55 @@ UpdateCastColor = function(self, refreshBorders)
                  ResetCastStyle(self)
              else
                  data.castR, data.castG, data.castB = nil, nil, nil
-                 ClearCastInterruptibilityState(data, false)
+                 ClearCastInterruptibilityState(data)
              end
              return
          end
 
          local resolvedNotInterruptible = GetResolvedCastBarInterruptibility(self)
-         if resolvedNotInterruptible ~= nil then
-             data.notInterruptible = resolvedNotInterruptible
-         end
-
          local signalApplied = ApplyCastStatusColorFromSignal(self, interruptSignal, resolvedNotInterruptible)
          local castColor, bgColor = RefineUI:GetCastColor(unit, self)
-         if not castColor then
-             if resolvedNotInterruptible ~= nil then
-                 local colors = RefineUI.Colors.Cast
-                 local bgColors = RefineUI.Colors.CastBG
-                 castColor = resolvedNotInterruptible and colors.NonInterruptible or colors.Interruptible
-                 bgColor = resolvedNotInterruptible and bgColors.NonInterruptible or bgColors.Interruptible
-             else
-                 castColor = RefineUI.Colors.Cast.Interruptible
-                 bgColor = RefineUI.Colors.CastBG.Interruptible
+
+         if castColor and not signalApplied then
+             signalApplied = ApplyCastStatusColorDirect(self, castColor)
+         end
+
+         local r, g, b = GetCastBarRenderedColor(self)
+         if (r == nil or g == nil or b == nil) and type(castColor) == "table" then
+             r, g, b = unpack(castColor)
+         end
+         if (r == nil or g == nil or b == nil)
+             and type(data.castR) == "number"
+             and type(data.castG) == "number"
+             and type(data.castB) == "number" then
+             r, g, b = data.castR, data.castG, data.castB
+         end
+
+         if r ~= nil and g ~= nil and b ~= nil then
+             data.castR, data.castG, data.castB = r, g, b
+         else
+             data.castR, data.castG, data.castB = nil, nil, nil
+         end
+
+         local borderApplied = false
+         if self.border then
+             borderApplied = ApplyBorderColorFromSignal(self.border, interruptSignal, resolvedNotInterruptible)
+             if (not borderApplied) and r ~= nil and g ~= nil and b ~= nil then
+                 self.border:SetBackdropBorderColor(r, g, b)
              end
          end
-         
-         if castColor then
-             local effectiveColor = castColor
-             if resolvedNotInterruptible ~= nil then
-                 effectiveColor = resolvedNotInterruptible and RefineUI.Colors.Cast.NonInterruptible or RefineUI.Colors.Cast.Interruptible
-             end
-             local r, g, b = unpack(effectiveColor)
-             
-             -- Cache the intended cast color for other nameplate visuals.
-             data.castR, data.castG, data.castB = r, g, b
-             
-             EnsureCastBarTextureDesaturation(self)
 
-             -- 1. Color CastBar (Status Texture / Status Bar)
-             if not signalApplied then
-                 ApplyCastStatusColorDirect(self, effectiveColor)
-             end
-             
-             -- 2. Color CastBar Border (Backdrop)
-              if self.border then
-                local borderApplied = ApplyBorderColorFromSignal(self.border, interruptSignal, resolvedNotInterruptible)
-                if not borderApplied then
-                    self.border:SetBackdropBorderColor(r, g, b)
-                end
-              end
-             
-             -- 3. Update Border Colors (Centralized logic handles portrait & nameplate)
-             if refreshBorders and unitFrame and RefineUI.UpdateBorderColors then
-                 RefineUI:UpdateBorderColors(unitFrame)
-             end
-  
-             -- 4. Color Background (Using bgColor)
-             if bgColor and not signalApplied then
-                  -- Darken both our custom layer and Blizzard's visible Background layer.
-                  ApplyBackdropDarken(data.Background, bgColor)
-                  ApplyBackdropDarken(self.Background, bgColor)
-              end
-         else
-             -- No active cast, trigger reset immediately if we were coloring
-             ResetCastStyle(self)
+         if refreshBorders and unitFrame and RefineUI.UpdateBorderColors then
+             RefineUI:UpdateBorderColors(unitFrame)
+         end
+
+         if (not signalApplied) and bgColor == nil and r ~= nil and g ~= nil and b ~= nil then
+             bgColor = BuildBackgroundColor({ r, g, b })
+         end
+         if bgColor and not signalApplied then
+             -- Darken both our custom layer and Blizzard's visible Background layer.
+             ApplyBackdropDarken(data.Background, bgColor)
+             ApplyBackdropDarken(self.Background, bgColor)
          end
      end
      data.refineColoring = false
@@ -754,25 +882,45 @@ local CAST_END_EVENTS = {
 
 HandleCastBarEvent = function(self, event, ...)
     local data = GetCastBarData(self)
+    local unitFrame = self:GetParent()
+    local unit = unitFrame and unitFrame.unit
+    if unitFrame and IsRuntimeSuppressedNameplate(unitFrame) then
+        if data then
+            data.castR, data.castG, data.castB = nil, nil, nil
+            ClearCastInterruptibilityState(data)
+            local castTimeText = data.castTimeText
+            if castTimeText then
+                ClearCastTimeText(castTimeText)
+            end
+        end
+
+        EnforceNameOnlyCastBarHidden(self)
+        SyncNameplateCastAlphaState(self, unitFrame, unit, true)
+        return
+    end
+
     if data then
         if event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" then
-            data.notInterruptible = true
+            data.cachedNotInterruptible = true
         elseif event == "UNIT_SPELLCAST_INTERRUPTIBLE" then
-            data.notInterruptible = false
+            data.cachedNotInterruptible = false
         elseif event == "UNIT_SPELLCAST_START"
             or event == "UNIT_SPELLCAST_CHANNEL_START"
             or event == "UNIT_SPELLCAST_EMPOWER_START" then
-            ClearCastInterruptibilityState(data, true)
+            ClearCachedCastInterruptibility(data, false)
+            data.castR, data.castG, data.castB = nil, nil, nil
         end
     end
 
     UpdateCastColor(self, false)
 
-    local unitFrame = self:GetParent()
-    local unit = unitFrame and unitFrame.unit
     if unitFrame then
         RefreshCastVisualState(self, event, unitFrame, unit)
         SyncNameplateCastAlphaState(self, unitFrame, unit)
+
+        if CAST_END_EVENTS[event] and RefineUI.UpdateBorderColors then
+            RefineUI:UpdateBorderColors(unitFrame, false)
+        end
 
         -- Instant-hide cast bar when a cast ends and CC is active on this unit
         if CAST_END_EVENTS[event] then
@@ -855,6 +1003,12 @@ local function UpdateCustomCastTimeText(castBar)
         return
     end
 
+    local unitFrame = castBar:GetParent()
+    if IsRuntimeSuppressedNameplate(unitFrame) then
+        ClearCastTimeText(castTimeText)
+        return
+    end
+
     local isCasting = ReadSafeBoolean(castBar.casting) == true
     local isChanneling = ReadSafeBoolean(castBar.channeling) == true
     local isReverseChanneling = ReadSafeBoolean(castBar.reverseChanneling) == true
@@ -864,7 +1018,6 @@ local function UpdateCustomCastTimeText(castBar)
     end
 
     -- Path 1: Duration object from UnitCastingDuration / UnitChannelDuration
-    local unitFrame = castBar:GetParent()
     local unit = (unitFrame and unitFrame.unit) or castBar.unit
     if IsUsableUnitToken(unit) then
         local duration
@@ -909,6 +1062,12 @@ local function ApplyCastBarLayout(self)
     if data then data.adjusting = true end
     
     local unitFrame = self:GetParent()
+    if unitFrame and IsRuntimeSuppressedNameplate(unitFrame) then
+        EnforceNameOnlyCastBarHidden(self)
+        if data then data.adjusting = false end
+        return
+    end
+
     if unitFrame then
         local cfg = Config.Nameplates.CastBar
         local hpHeight = unitFrame.HealthBarsContainer and unitFrame.HealthBarsContainer:GetHeight()
@@ -940,14 +1099,9 @@ local function ApplyCastBarLayout(self)
             RefineUI.Font(castTimeText, 12, nil, "OUTLINE")
         end
         
-        -- Check RefineHidden on frame data
-        local frameData = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
-        local isHidden = (frameData and frameData.RefineHidden) or unitFrame.RefineHidden
-
-        if isHidden then
-            self:SetAlpha(0)
-            self:Hide()
-        end
+        -- Name-only suppression is visual-only. Hiding the Blizzard cast bar
+        -- forces later addon-driven reshow paths back through secret cast logic.
+        EnforceNameOnlyCastBarHidden(self)
 
         local baseLevel = unitFrame:GetFrameLevel()
         self:SetFrameLevel(baseLevel - 2)
@@ -990,6 +1144,45 @@ local function ApplyHealthBarLayout(self)
     data.adjusting = false
 end
 
+function Nameplates:SuppressCastBarForNameOnly(castBar)
+    if not castBar then
+        return
+    end
+
+    local data = GetCastBarData(castBar)
+    if data then
+        data.castR, data.castG, data.castB = nil, nil, nil
+        ClearCastInterruptibilityState(data)
+        local castTimeText = data.castTimeText
+        if castTimeText then
+            ClearCastTimeText(castTimeText)
+        end
+    end
+
+    EnforceNameOnlyCastBarHidden(castBar)
+
+    local unitFrame = castBar:GetParent()
+    SyncNameplateCastAlphaState(castBar, unitFrame, unitFrame and unitFrame.unit, true)
+end
+
+function Nameplates:RefreshCastBarForRuntimeMode(castBar)
+    if not castBar then
+        return
+    end
+
+    local unitFrame = castBar:GetParent()
+    if IsRuntimeSuppressedNameplate(unitFrame) then
+        self:SuppressCastBarForNameOnly(castBar)
+        return
+    end
+
+    SetCastBarVisualAlpha(castBar, 1)
+    ApplyCastBarLayout(castBar)
+    UpdateCastColor(castBar, true)
+    UpdateCustomCastTimeText(castBar)
+    SyncNameplateCastAlphaState(castBar, unitFrame, unitFrame and unitFrame.unit, true)
+end
+
 function RefineUI:StyleNameplateCastBar(castBar)
     local data = GetCastBarData(castBar)
     if not castBar or data.isStyled then return end
@@ -1002,15 +1195,20 @@ function RefineUI:StyleNameplateCastBar(castBar)
     if castBar.TextBorder then castBar.TextBorder:SetAlpha(0) end
 
     -- Texture
+    SnapshotNativeStatusBarTexture(castBar, data)
     castBar:SetStatusBarTexture(TEX_BAR)
     EnsureCastBarTextureDesaturation(castBar)
 
     RefineUI:HookOnce(BuildNameplateCastHookKey(castBar, "SetStatusBarTexture"), castBar, "SetStatusBarTexture", function(self, tex)
         local data = GetCastBarData(self)
         if data then
-            if IsAccessibleValue(tex) and type(tex) == "string" and tex ~= TEX_BAR then
-                data.nativeStatusBarTexture = tex
+            local normalizedTexture = NormalizeTextureToken(tex)
+            if normalizedTexture ~= nil and normalizedTexture ~= NORMALIZED_TEX_BAR then
+                ClearCachedCastInterruptibility(data, false)
+                data.castR, data.castG, data.castB = nil, nil, nil
             end
+            CacheNativeStatusBarTextureValue(data, tex)
+            SnapshotNativeStatusBarTexture(self, data)
         end
         if (not IsAccessibleValue(tex)) or tex ~= TEX_BAR then
             self:SetStatusBarTexture(TEX_BAR)
@@ -1032,25 +1230,15 @@ function RefineUI:StyleNameplateCastBar(castBar)
             BuildNameplateCastHookKey(castBar.BorderShield, "SetShown"),
             castBar.BorderShield,
             "SetShown",
-            function(shield, shown)
+            function(shield)
                 local shieldShown = ReadSafeBoolean(shield:IsShown())
-                UpdateInterruptibilityFromShieldSignal(data, shown, shieldShown)
+                if shieldShown ~= nil then
+                    data.cachedNotInterruptible = shieldShown
+                end
                 UpdateCastColor(castBar, true)
             end
         )
     end
-    RefineUI:HookOnce(
-        BuildNameplateCastHookKey(castBar, "UpdateInterruptibleState"),
-        castBar,
-        "UpdateInterruptibleState",
-        function(self, notInterruptible)
-            local data = GetCastBarData(self)
-            if data then
-                data.notInterruptible = ReadSafeBoolean(notInterruptible)
-            end
-            UpdateCastColor(self, true)
-        end
-    )
 
     -- Background
     if not data.Background then
@@ -1073,6 +1261,14 @@ function RefineUI:StyleNameplateCastBar(castBar)
         "UpdateCastTimeTextShown",
         UpdateCustomCastTimeText
     )
+    RefineUI:HookOnce(
+        BuildNameplateCastHookKey(castBar, "ApplyAlpha"),
+        castBar,
+        "ApplyAlpha",
+        function(self)
+            EnforceNameOnlyCastBarHidden(self)
+        end
+    )
     RefineUI:HookScriptOnce(
         BuildNameplateCastHookKey(castBar, "OnEvent"),
         castBar,
@@ -1088,6 +1284,7 @@ function RefineUI:StyleNameplateCastBar(castBar)
         UpdateCustomCastTimeText(self)
         local parentFrame = self:GetParent()
         SyncNameplateCastAlphaState(self, parentFrame, parentFrame and parentFrame.unit, true)
+        EnforceNameOnlyCastBarHidden(self)
         end
     )
     RefineUI:HookScriptOnce(

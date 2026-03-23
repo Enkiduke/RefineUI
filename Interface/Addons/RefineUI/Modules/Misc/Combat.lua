@@ -12,6 +12,7 @@ local select = select
 local unpack = unpack
 local floor = math.floor
 local format = string.format
+local tonumber = tonumber
 
 -- WoW Globals
 local CreateFrame = CreateFrame
@@ -33,6 +34,7 @@ local MouselookStop = MouselookStop
 local ResetCursor = ResetCursor
 local WorldFrame = WorldFrame
 local C_Timer = C_Timer
+local IsInInstance = IsInInstance
 
 -- Locals
 local crosshairFrame
@@ -40,6 +42,8 @@ local cursorFrame
 local cachedUIParentScale
 local targetingHooksInstalled = false
 local disableRightClickNoticePrinted = false
+
+local CURSOR_UPDATE_JOB_KEY = "Combat:CursorUpdate"
 
 -- Helper: Set deselectOnClick
 local function NormalizeCVarBool(value)
@@ -140,6 +144,62 @@ end
 ----------------------------------------------------------------------------------------
 --	Cursor Feature
 ----------------------------------------------------------------------------------------
+local function GetCursorUpdateInterval()
+    local config = RefineUI.Config and RefineUI.Config.Combat
+    local interval = config and tonumber(config.CursorUpdateInterval)
+    if not interval or interval <= 0 then
+        return 1 / 30
+    end
+    return interval
+end
+
+local function ShouldDisableCursorInInstances()
+    local config = RefineUI.Config and RefineUI.Config.Combat
+    return not not (config and config.CursorDisableInInstances)
+end
+
+local function IsCursorSuppressedInContext()
+    if not cursorFrame then
+        return true
+    end
+
+    if ShouldDisableCursorInInstances() and IsInInstance then
+        local inInstance = IsInInstance()
+        if inInstance then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function UpdateCursorFramePosition()
+    if not cursorFrame or not cursorFrame:IsShown() or IsCursorSuppressedInContext() then
+        return
+    end
+
+    cachedUIParentScale = cachedUIParentScale or UIParent:GetEffectiveScale()
+    local x, y = GetCursorPosition()
+    cursorFrame:ClearAllPoints()
+    RefineUI.Point(cursorFrame, "CENTER", UIParent, "BOTTOMLEFT", x / cachedUIParentScale, y / cachedUIParentScale)
+end
+
+local function SetCombatCursorActive(active)
+    if not cursorFrame then
+        return
+    end
+
+    local shouldShow = active == true and not IsCursorSuppressedInContext()
+    cursorFrame:SetShown(shouldShow)
+
+    if RefineUI.SetUpdateJobEnabled and RefineUI.IsUpdateJobRegistered and RefineUI:IsUpdateJobRegistered(CURSOR_UPDATE_JOB_KEY) then
+        RefineUI:SetUpdateJobEnabled(CURSOR_UPDATE_JOB_KEY, shouldShow, true)
+        if shouldShow and RefineUI.RunUpdateJobNow then
+            RefineUI:RunUpdateJobNow(CURSOR_UPDATE_JOB_KEY)
+        end
+    end
+end
+
 function Combat:SetupCursor()
 	if not RefineUI.Config.Combat.CursorEnable then return end
 
@@ -156,22 +216,23 @@ function Combat:SetupCursor()
 	texture:SetAllPoints(frame)
 	texture:SetVertexColor(1, 1, 1, 0.9)
 	frame.texture = texture
-	frame.elapsed = 0
-
-	frame:SetScript("OnUpdate", function(self, elapsed)
-		self.elapsed = self.elapsed + elapsed
-		if self.elapsed < 0.016 then return end
-		self.elapsed = 0
-
-		cachedUIParentScale = cachedUIParentScale or UIParent:GetEffectiveScale()
-		local x, y = GetCursorPosition()
-		self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / cachedUIParentScale, y / cachedUIParentScale)
-	end)
 
     -- Update cached scale when UI scale changes
     RefineUI:RegisterEventCallback("UI_SCALE_CHANGED", function()
         cachedUIParentScale = UIParent:GetEffectiveScale()
     end, "Combat:ScaleChanged")
+
+    if RefineUI.RegisterUpdateJob then
+        RefineUI:RegisterUpdateJob(CURSOR_UPDATE_JOB_KEY, GetCursorUpdateInterval(), function()
+            UpdateCursorFramePosition()
+        end, {
+            enabled = false,
+            combatOnly = true,
+            predicate = function()
+                return cursorFrame and cursorFrame:IsShown() and not IsCursorSuppressedInContext()
+            end,
+        })
+    end
 
 	cursorFrame = frame
 end
@@ -274,11 +335,28 @@ function Combat:OnEnable()
     -- Centralized Combat State Handling
     RefineUI:RegisterEventCallback("PLAYER_REGEN_DISABLED", function()
         if crosshairFrame then crosshairFrame:Show() end
-        if cursorFrame then cursorFrame:Show() end
+        SetCombatCursorActive(true)
     end, "Combat:Enter")
 
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
         if crosshairFrame then crosshairFrame:Hide() end
-        if cursorFrame then cursorFrame:Hide() end
+        SetCombatCursorActive(false)
     end, "Combat:Leave")
+
+    RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
+        cachedUIParentScale = UIParent:GetEffectiveScale()
+        if InCombatLockdown() then
+            SetCombatCursorActive(true)
+        else
+            SetCombatCursorActive(false)
+        end
+    end, "Combat:WorldState")
+
+    if InCombatLockdown() then
+        if crosshairFrame then crosshairFrame:Show() end
+        SetCombatCursorActive(true)
+    else
+        if crosshairFrame then crosshairFrame:Hide() end
+        SetCombatCursorActive(false)
+    end
 end

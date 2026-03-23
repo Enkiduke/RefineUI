@@ -15,6 +15,7 @@ local gsub = string.gsub
 local strfind = string.find
 local type = type
 local pairs = pairs
+local select = select
 local floor = math.floor
 local issecretvalue = _G.issecretvalue
 local canaccessvalue = _G.canaccessvalue
@@ -52,6 +53,8 @@ local roleByName = {}
 local classByName = {}
 local _roleEventsRegistered = false
 local ALLOWED_CHANNEL_REFS = {
+    "|Hchannel:GUILD|h",
+    "|Hchannel:OFFICER|h",
     "|Hchannel:PARTY|h",
     "|Hchannel:PARTY_LEADER|h",
     "|Hchannel:PARTY_GUIDE|h",
@@ -316,11 +319,6 @@ local function ResolveRoleAndClass(author, ...)
     return nil, nil
 end
 
-function Chat:TransformMessageRoleIcons(message, event, author, ...)
-
-    return message
-end
-
 local function ExtractAuthorFromRenderedPlayerLink(link)
     if type(link) ~= "string" then
         return nil
@@ -386,6 +384,10 @@ function Chat:SetupRoleIcons()
         enabled = RefineUI.Config.Chat.RoleIcons
     end
     self._chatRoleIconsEnabled = enabled ~= false
+
+    if not self:HasRenderedMessageEnhancements() then
+        return
+    end
 
     if not _roleEventsRegistered then
         _roleEventsRegistered = true

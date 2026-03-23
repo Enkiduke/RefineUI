@@ -13,10 +13,13 @@ end
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
+local AnchorUtil = _G.AnchorUtil
 local CreateFrame = CreateFrame
+local GridLayoutMixin = _G.GridLayoutMixin
 local math_max = math.max
 local math_min = math.min
 local pcall = pcall
+local C_Spell = _G.C_Spell
 local tostring = tostring
 local type = type
 local issecretvalue = _G.issecretvalue
@@ -40,8 +43,6 @@ local PIP_TEXT_FONT_SIZE = 14
 local TRACK_TEXT_ANCHOR_OFFSET = 10
 local SPELL_TYPE_ICON_ANCHOR_OFFSET_Y = -6
 local SPELL_TYPE_ICON_SPACING = 2
-local SPELL_NAME_UNDER_ICON_OFFSET_Y = -2
-local SPELL_STATUS_UNDER_NAME_OFFSET_Y = -1
 
 ----------------------------------------------------------------------------------------
 -- Helpers
@@ -149,10 +150,6 @@ local function GetSafeFrameStrata(frame, fallback)
     return frameStrata
 end
 
-local function IsSafeColorChannel(value)
-    return type(value) == "number" and not IsUnreadableValue(value)
-end
-
 local function GetCountdownSwipeTexture()
     local media = RefineUI.Media
     local textures = media and media.Textures
@@ -241,8 +238,8 @@ local function ApplyTrackTextStyle(fontString, fontSize)
     end
 
     if IsBlizzardAutoScalingTextElement(fontString) then
-        -- Do not mutate font/scale for AutoScalingFontStringMixin text;
-        -- this can taint secret-value math in Blizzard's ScaleTextToFit path.
+        -- Do not mutate AutoScalingFontStringMixin font objects or scale.
+        -- Blizzard's ScaleTextToFit math can receive secret values here.
     else
         RefineUI.Font(fontString, fontSize, RefineUI.Media.Fonts.Medium, "OUTLINE", true)
     end
@@ -256,12 +253,12 @@ local function ApplyTrackTextStyle(fontString, fontSize)
     end
 end
 
-local function CreateTrackReplacementText(eventFrame, drawLayerSubLevel)
-    if not eventFrame or type(eventFrame.CreateFontString) ~= "function" then
+local function CreateTrackReplacementText(parentFrame, drawLayerSubLevel)
+    if not parentFrame or type(parentFrame.CreateFontString) ~= "function" then
         return nil
     end
 
-    local text = eventFrame:CreateFontString(nil, "OVERLAY")
+    local text = parentFrame:CreateFontString(nil, "OVERLAY")
     if not text then
         return nil
     end
@@ -275,6 +272,9 @@ local function CreateTrackReplacementText(eventFrame, drawLayerSubLevel)
     if type(text.SetWordWrap) == "function" then
         pcall(text.SetWordWrap, text, false)
     end
+    if type(text.SetWidth) == "function" then
+        pcall(text.SetWidth, text, 200)
+    end
     if type(text.Hide) == "function" then
         text:Hide()
     end
@@ -282,30 +282,84 @@ local function CreateTrackReplacementText(eventFrame, drawLayerSubLevel)
     return text
 end
 
+local function EnsureTrackTextOverlayFrame(eventFrame, parentFrame, state)
+    if not eventFrame or not parentFrame then
+        return nil
+    end
+
+    local overlayFrame = state.TextOverlayFrame
+    if not overlayFrame or type(overlayFrame.GetParent) ~= "function" or overlayFrame:GetParent() ~= parentFrame then
+        overlayFrame = CreateFrame("Frame", nil, parentFrame)
+        overlayFrame:SetAllPoints(parentFrame)
+        overlayFrame:EnableMouse(false)
+        state.TextOverlayFrame = overlayFrame
+    end
+
+    local anchorFrame = eventFrame.IconContainer or eventFrame
+    local frameStrata = GetSafeFrameStrata(anchorFrame, "MEDIUM")
+    local frameLevel = math_max(0, GetSafeFrameLevel(anchorFrame, 0) + 20)
+
+    if type(overlayFrame.SetFrameStrata) == "function" then
+        pcall(overlayFrame.SetFrameStrata, overlayFrame, frameStrata)
+    end
+    if type(overlayFrame.SetFrameLevel) == "function" then
+        pcall(overlayFrame.SetFrameLevel, overlayFrame, frameLevel)
+    end
+
+    return overlayFrame
+end
+
 function EncounterTimeline:EnsureTrackReplacementTextState(eventFrame)
     if not eventFrame or not IsTrackEventFrame(eventFrame) then
         return nil, nil
     end
 
+    local textParent = eventFrame:GetParent() or eventFrame
     local state = self:StateGet(eventFrame, "trackReplacementTextState")
     if type(state) ~= "table" then
         state = {}
         self:StateSet(eventFrame, "trackReplacementTextState", state)
     end
 
+    local overlayParent = EnsureTrackTextOverlayFrame(eventFrame, textParent, state)
+    if not overlayParent then
+        return nil, nil
+    end
+
     local nameText = state.NameText
-    if not nameText or type(nameText.GetParent) ~= "function" or nameText:GetParent() ~= eventFrame then
-        nameText = CreateTrackReplacementText(eventFrame, 7)
+    if not nameText or type(nameText.GetParent) ~= "function" or nameText:GetParent() ~= overlayParent then
+        nameText = CreateTrackReplacementText(overlayParent, 7)
         state.NameText = nameText
+        ApplyTrackTextStyle(nameText, TRACK_NAME_FONT_SIZE)
     end
 
     local statusText = state.StatusText
-    if not statusText or type(statusText.GetParent) ~= "function" or statusText:GetParent() ~= eventFrame then
-        statusText = CreateTrackReplacementText(eventFrame, 7)
+    if not statusText or type(statusText.GetParent) ~= "function" or statusText:GetParent() ~= overlayParent then
+        statusText = CreateTrackReplacementText(overlayParent, 7)
         state.StatusText = statusText
+        ApplyTrackTextStyle(statusText, TRACK_STATUS_FONT_SIZE)
     end
 
     return nameText, statusText
+end
+
+local function RestoreBlizzardTrackText(fontString)
+    if not fontString then
+        return
+    end
+
+    if type(fontString.SetAlpha) == "function" then
+        pcall(fontString.SetAlpha, fontString, 1)
+    end
+end
+
+function EncounterTimeline:RestoreBlizzardTrackText(eventFrame)
+    if not eventFrame then
+        return
+    end
+
+    RestoreBlizzardTrackText(eventFrame.NameText)
+    RestoreBlizzardTrackText(eventFrame.StatusText)
 end
 
 local function SuppressBlizzardTrackText(fontString)
@@ -318,61 +372,6 @@ local function SuppressBlizzardTrackText(fontString)
     end
 end
 
-local function GetTrackDisplayTextElements(eventFrame)
-    if not eventFrame then
-        return nil, nil
-    end
-
-    local state = EncounterTimeline:StateGet(eventFrame, "trackReplacementTextState")
-    if type(state) == "table" and state.NameText and state.StatusText then
-        return state.NameText, state.StatusText
-    end
-
-    return eventFrame.NameText, eventFrame.StatusText
-end
-
-local function SyncTrackReplacementFontString(sourceText, replacementText)
-    if not sourceText or not replacementText then
-        return
-    end
-
-    local shown = GetShownState(sourceText)
-    local textValue = ""
-    if type(sourceText.GetText) == "function" then
-        local ok, value = pcall(sourceText.GetText, sourceText)
-        if ok and not IsUnreadableValue(value) and type(value) == "string" then
-            textValue = value
-        end
-    end
-
-    if type(replacementText.SetText) == "function" then
-        pcall(replacementText.SetText, replacementText, textValue)
-    end
-
-    if type(sourceText.GetTextColor) == "function" and type(replacementText.SetTextColor) == "function" then
-        local ok, red, green, blue, alpha = pcall(sourceText.GetTextColor, sourceText)
-        if ok and IsSafeColorChannel(red) and IsSafeColorChannel(green) and IsSafeColorChannel(blue) then
-            if not IsSafeColorChannel(alpha) then
-                alpha = 1
-            end
-            pcall(replacementText.SetTextColor, replacementText, red, green, blue, alpha)
-        end
-    end
-
-    if shown == false then
-        if type(replacementText.Hide) == "function" then
-            replacementText:Hide()
-        end
-    else
-        if type(replacementText.Show) == "function" then
-            replacementText:Show()
-        end
-        if type(replacementText.SetAlpha) == "function" then
-            pcall(replacementText.SetAlpha, replacementText, 1)
-        end
-    end
-end
-
 function EncounterTimeline:HideBlizzardTrackText(eventFrame)
     if not eventFrame then
         return
@@ -380,6 +379,161 @@ function EncounterTimeline:HideBlizzardTrackText(eventFrame)
 
     SuppressBlizzardTrackText(eventFrame.NameText)
     SuppressBlizzardTrackText(eventFrame.StatusText)
+end
+
+local function GetTrackDisplayTextElements(eventFrame)
+    if not eventFrame then
+        return nil, nil
+    end
+
+    if IsTrackEventFrame(eventFrame) then
+        local config = EncounterTimeline:GetConfig()
+        if config.SkinEnabled == true and config.SkinTrackView == true then
+            local nameText, statusText = EncounterTimeline:EnsureTrackReplacementTextState(eventFrame)
+            if nameText and statusText then
+                return nameText, statusText
+            end
+        end
+    end
+
+    return eventFrame.NameText, eventFrame.StatusText
+end
+
+local function ResolveSpellNameFromSpellID(spellID)
+    if not EncounterTimeline:IsNonSecretNumber(spellID) then
+        return nil
+    end
+    if not C_Spell or type(C_Spell.GetSpellName) ~= "function" then
+        return nil
+    end
+
+    local okResolvedName, resolvedName = pcall(C_Spell.GetSpellName, spellID)
+    if not okResolvedName or IsUnreadableValue(resolvedName) or type(resolvedName) ~= "string" or resolvedName == "" then
+        return nil
+    end
+
+    return resolvedName
+end
+
+local function ResolveTrackSpellName(eventID)
+    local metadata = EncounterTimeline:IsValidEventID(eventID) and EncounterTimeline:GetEventMetadata(eventID) or nil
+    if type(metadata) ~= "table" then
+        return nil
+    end
+
+    if metadata.trackDisplayName ~= nil then
+        return metadata.trackDisplayName
+    end
+    if type(metadata.overrideName) == "string" and metadata.overrideName ~= "" then
+        return metadata.overrideName
+    end
+
+    local resolved = ResolveSpellNameFromSpellID(metadata.spellID)
+    if resolved then
+        return resolved
+    end
+
+    return nil
+end
+
+local function ApplyTrackReplacementTextColor(nameText, eventFrame, eventID)
+    if not nameText or type(nameText.SetTextColor) ~= "function" then
+        return
+    end
+
+    local metadata = EncounterTimeline:IsValidEventID(eventID) and EncounterTimeline:GetEventMetadata(eventID) or nil
+    if type(metadata) ~= "table" then
+        pcall(nameText.SetTextColor, nameText, 1, 1, 1)
+        return
+    end
+
+    local r = metadata.trackTextColorR
+    local g = metadata.trackTextColorG
+    local b = metadata.trackTextColorB
+    if type(r) == "number" and type(g) == "number" and type(b) == "number"
+        and not IsUnreadableValue(r) and not IsUnreadableValue(g) and not IsUnreadableValue(b) then
+        pcall(nameText.SetTextColor, nameText, r, g, b)
+    else
+        pcall(nameText.SetTextColor, nameText, 1, 1, 1)
+    end
+end
+
+local function ShouldShowMirroredTrackText(eventFrame)
+    if not eventFrame or not IsTrackEventFrame(eventFrame) then
+        return false
+    end
+
+    local showText = true
+    if type(eventFrame.ShouldShowText) == "function" then
+        local okShowText, value = pcall(eventFrame.ShouldShowText, eventFrame)
+        if okShowText and not IsUnreadableValue(value) and type(value) == "boolean" then
+            showText = value
+        end
+    end
+    if not showText then
+        return false
+    end
+
+    local orientation = type(eventFrame.GetTrackOrientation) == "function" and eventFrame:GetTrackOrientation() or nil
+    if not orientation or type(orientation.IsVertical) ~= "function" or not orientation:IsVertical() then
+        return false
+    end
+
+    return true
+end
+
+local function BuildTrackStatusText(eventFrame)
+    if not eventFrame then
+        return ""
+    end
+
+    local okState, eventState = pcall(eventFrame.GetEventState, eventFrame)
+    if not okState or IsUnreadableValue(eventState) then
+        eventState = nil
+    end
+
+    local okBlocked, blocked = pcall(eventFrame.IsEventBlocked, eventFrame)
+    if not okBlocked or IsUnreadableValue(blocked) then
+        blocked = false
+    end
+
+    local track = nil
+    local okTrack, eventTrack = pcall(eventFrame.GetEventTrack, eventFrame)
+    if okTrack and not IsUnreadableValue(eventTrack) then
+        track = eventTrack
+    end
+
+    if eventState == Enum.EncounterTimelineEventState.Paused then
+        return COMBAT_WARNINGS_EVENT_STATUS_PAUSED or ""
+    end
+    if blocked == true then
+        return COMBAT_WARNINGS_EVENT_STATUS_BLOCKED or ""
+    end
+    if track == Enum.EncounterTimelineTrack.Queued then
+        return COMBAT_WARNINGS_EVENT_STATUS_QUEUED or ""
+    end
+
+    return ""
+end
+
+local function ResolveTrackReplacementPresentation(eventFrame)
+    local eventID = type(eventFrame.GetEventID) == "function" and eventFrame:GetEventID() or nil
+    local showMirroredText = ShouldShowMirroredTrackText(eventFrame)
+    local nameValue = ResolveTrackSpellName(eventID)
+    local statusValue = BuildTrackStatusText(eventFrame)
+
+    local showName = showMirroredText
+    local showStatus = showMirroredText and statusValue ~= ""
+
+    return eventID, nameValue, statusValue, showName, showStatus, showMirroredText
+end
+
+function EncounterTimeline:UpdateTrackNativeTextVisibility(eventFrame, replacementActive)
+    if replacementActive == true then
+        self:HideBlizzardTrackText(eventFrame)
+    else
+        self:RestoreBlizzardTrackText(eventFrame)
+    end
 end
 
 function EncounterTimeline:SyncTrackReplacementText(eventFrame)
@@ -392,10 +546,59 @@ function EncounterTimeline:SyncTrackReplacementText(eventFrame)
         return
     end
 
-    SyncTrackReplacementFontString(eventFrame.NameText, nameReplacement)
-    SyncTrackReplacementFontString(eventFrame.StatusText, statusReplacement)
+    local eventID, nameValue, statusValue, showName, showStatus, showMirroredText = ResolveTrackReplacementPresentation(eventFrame)
+    local state = self:StateGet(eventFrame, "trackReplacementTextState")
+    local replacementActive = showMirroredText
+
+    if type(state) == "table" then
+        state.Active = replacementActive
+        if state.TextOverlayFrame and type(state.TextOverlayFrame.SetShown) == "function" then
+            pcall(state.TextOverlayFrame.SetShown, state.TextOverlayFrame, replacementActive)
+        end
+    end
+
+    self:UpdateTrackNativeTextVisibility(eventFrame, replacementActive)
+
+    if showName then
+        RefineUI:SetFontStringValue(nameReplacement, nameValue, { emptyText = "" })
+        ApplyTrackReplacementTextColor(nameReplacement, eventFrame, eventID)
+        pcall(nameReplacement.SetAlpha, nameReplacement, 1)
+        nameReplacement:Show()
+    else
+        nameReplacement:Hide()
+    end
+
+    if showStatus then
+        RefineUI:SetFontStringValue(statusReplacement, statusValue, { emptyText = "" })
+        ApplyTrackReplacementTextColor(statusReplacement, eventFrame, eventID)
+        pcall(statusReplacement.SetAlpha, statusReplacement, 1)
+        statusReplacement:Show()
+    else
+        statusReplacement:Hide()
+    end
 end
 
+function EncounterTimeline:CleanupTrackReplacementText(eventFrame)
+    if not eventFrame then
+        return
+    end
+
+    local state = self:StateGet(eventFrame, "trackReplacementTextState")
+    if type(state) ~= "table" then
+        return
+    end
+
+    if state.NameText and type(state.NameText.Hide) == "function" then
+        state.NameText:Hide()
+    end
+    if state.StatusText and type(state.StatusText.Hide) == "function" then
+        state.StatusText:Hide()
+    end
+    if state.TextOverlayFrame and type(state.TextOverlayFrame.Hide) == "function" then
+        state.TextOverlayFrame:Hide()
+    end
+    state.Active = false
+end
 local function ApplyIconContainerSkin(iconContainer)
     if not iconContainer then
         return
@@ -450,6 +653,23 @@ function EncounterTimeline:ApplyEventIconVisualStyling(eventFrame, _eventID)
     end
 end
 
+local function SetTrackNativeIndicatorAlpha(indicatorContainer, alphaValue)
+    if not indicatorContainer or type(indicatorContainer.SetAlpha) ~= "function" then
+        return
+    end
+
+    pcall(indicatorContainer.SetAlpha, indicatorContainer, alphaValue)
+end
+
+function EncounterTimeline:RestoreTrackNativeIndicators(eventFrame)
+    if not eventFrame then
+        return
+    end
+
+    local indicatorContainer = eventFrame.Indicators or eventFrame.IndicatorContainer
+    SetTrackNativeIndicatorAlpha(indicatorContainer, 1)
+end
+
 local function CollectVisibleIndicatorTextures(indicatorContainer)
     local visibleIndicators = {}
     if not indicatorContainer then
@@ -487,48 +707,6 @@ local function CollectVisibleIndicatorTextures(indicatorContainer)
     return visibleIndicators
 end
 
-local function CollectVisibleEffectIndicatorTextures(indicatorContainer)
-    local visibleIndicators = {}
-    if not indicatorContainer then
-        return visibleIndicators
-    end
-
-    local otherIndicators = indicatorContainer.OtherIndicators
-    if type(otherIndicators) ~= "table" then
-        return visibleIndicators
-    end
-
-    for index = 1, #otherIndicators do
-        local indicatorTexture = otherIndicators[index]
-        if indicatorTexture and GetShownState(indicatorTexture) ~= false and HasProbeTextureResult(indicatorTexture, false) then
-            visibleIndicators[#visibleIndicators + 1] = indicatorTexture
-        end
-    end
-
-    return visibleIndicators
-end
-
-local function CollectVisibleRoleIndicatorTextures(indicatorContainer)
-    local visibleIndicators = {}
-    if not indicatorContainer then
-        return visibleIndicators
-    end
-
-    local roleIndicators = indicatorContainer.RoleIndicators
-    if type(roleIndicators) ~= "table" then
-        return visibleIndicators
-    end
-
-    for index = 1, #roleIndicators do
-        local indicatorTexture = roleIndicators[index]
-        if indicatorTexture and GetShownState(indicatorTexture) ~= false and HasProbeTextureResult(indicatorTexture, false) then
-            visibleIndicators[#visibleIndicators + 1] = indicatorTexture
-        end
-    end
-
-    return visibleIndicators
-end
-
 local function ElevateIndicatorLayer(eventFrame, indicatorContainer)
     if not eventFrame or not indicatorContainer then
         return
@@ -561,60 +739,6 @@ local function ElevateIndicatorLayer(eventFrame, indicatorContainer)
     ElevateTextureList(indicatorContainer.OtherIndicators)
 end
 
-local function GetVisibleFontStringHeight(fontString)
-    if not fontString then
-        return 0
-    end
-
-    local shown = GetShownState(fontString)
-    if shown == false then
-        return 0
-    end
-
-    if type(fontString.GetStringHeight) == "function" then
-        local ok, stringHeight = pcall(fontString.GetStringHeight, fontString)
-        if ok and not IsUnreadableValue(stringHeight) and type(stringHeight) == "number" and stringHeight > 0 then
-            return stringHeight
-        end
-    end
-
-    if type(fontString.GetHeight) == "function" then
-        local ok, regionHeight = pcall(fontString.GetHeight, fontString)
-        if ok and not IsUnreadableValue(regionHeight) and type(regionHeight) == "number" and regionHeight > 0 then
-            return regionHeight
-        end
-    end
-
-    return 0
-end
-
-local function ComputeTrackIconRowCenterOffsetY(eventFrame, nameText, statusText)
-    if not eventFrame then
-        return SPELL_TYPE_ICON_ANCHOR_OFFSET_Y
-    end
-
-    local displayNameText = nameText or eventFrame.NameText
-    local displayStatusText = statusText or eventFrame.StatusText
-    local nameHeight = GetVisibleFontStringHeight(displayNameText)
-    local statusHeight = GetVisibleFontStringHeight(displayStatusText)
-    local hasName = nameHeight > 0
-    local hasStatus = statusHeight > 0
-
-    if hasName and hasStatus then
-        return (nameHeight + statusHeight - SPELL_NAME_UNDER_ICON_OFFSET_Y - SPELL_STATUS_UNDER_NAME_OFFSET_Y) * 0.5
-    end
-
-    if hasName then
-        return (nameHeight - SPELL_NAME_UNDER_ICON_OFFSET_Y) * 0.5
-    end
-
-    if hasStatus then
-        return (statusHeight - SPELL_NAME_UNDER_ICON_OFFSET_Y) * 0.5
-    end
-
-    return SPELL_TYPE_ICON_ANCHOR_OFFSET_Y
-end
-
 function EncounterTimeline:ApplyTrackTextAnchorOverride(eventFrame)
     if not eventFrame or not IsTrackEventFrame(eventFrame) then
         return
@@ -626,7 +750,8 @@ function EncounterTimeline:ApplyTrackTextAnchorOverride(eventFrame)
     end
 
     local config = self:GetConfig()
-    local desiredAnchor = config.TrackTextAnchor or self.TRACK_TEXT_ANCHOR.LEFT
+    local desiredAnchor = config.TrackTextAnchor or self.TRACK_TEXT_ANCHOR.RIGHT
+
     local iconScale = (type(eventFrame.GetIconScale) == "function" and eventFrame:GetIconScale()) or 1
     if IsUnreadableValue(iconScale) or type(iconScale) ~= "number" then
         iconScale = 1
@@ -636,76 +761,77 @@ function EncounterTimeline:ApplyTrackTextAnchorOverride(eventFrame)
         return TRACK_TEXT_ANCHOR_OFFSET * iconScale
     end)
     local offset = (okOffset and type(scaledOffset) == "number") and scaledOffset or TRACK_TEXT_ANCHOR_OFFSET
-    local pointName = "LEFT"
-    local relativePointName = "RIGHT"
     local offsetX = offset
-    local nameTopPoint = "BOTTOMLEFT"
-    local statusTopPoint = "TOPLEFT"
-    local textJustify = "LEFT"
+    local justify = "LEFT"
+    local namePoint = "BOTTOMLEFT"
+    local statusPoint = "TOPLEFT"
+    local framePoint = "RIGHT"
+    local relativePoint = "LEFT"
 
     if desiredAnchor == self.TRACK_TEXT_ANCHOR.LEFT then
-        pointName = "RIGHT"
-        relativePointName = "LEFT"
         offsetX = -offset
-        nameTopPoint = "BOTTOMRIGHT"
-        statusTopPoint = "TOPRIGHT"
-        textJustify = "RIGHT"
+        justify = "RIGHT"
+        namePoint = "BOTTOMRIGHT"
+        statusPoint = "TOPRIGHT"
+        framePoint = "LEFT"
+        relativePoint = "RIGHT"
     end
 
     if type(nameText.SetJustifyH) == "function" then
-        nameText:SetJustifyH(textJustify)
+        nameText:SetJustifyH(justify)
     end
     if type(statusText.SetJustifyH) == "function" then
-        statusText:SetJustifyH(textJustify)
+        statusText:SetJustifyH(justify)
     end
-
-    local indicatorContainer = eventFrame.Indicators or eventFrame.IndicatorContainer
-    local visibleIndicators = CollectVisibleIndicatorTextures(indicatorContainer)
-    local visibleRoleIndicators = CollectVisibleRoleIndicatorTextures(indicatorContainer)
 
     nameText:ClearAllPoints()
     statusText:ClearAllPoints()
 
-    if #visibleRoleIndicators == 0 then
-        local iconFrame = eventFrame.IconContainer or eventFrame
+    if GetShownState(nameText) ~= false and GetShownState(statusText) ~= false then
+        nameText:SetPoint(namePoint, eventFrame, framePoint, offsetX, 2)
+        statusText:SetPoint(statusPoint, eventFrame, framePoint, offsetX, -2)
+    elseif GetShownState(nameText) ~= false then
+        nameText:SetPoint(relativePoint, eventFrame, framePoint, offsetX, 0)
+    elseif GetShownState(statusText) ~= false then
+        statusText:SetPoint(relativePoint, eventFrame, framePoint, offsetX, 0)
+    end
+end
 
-        if type(nameText.SetJustifyH) == "function" then
-            nameText:SetJustifyH("LEFT")
-        end
-        if type(statusText.SetJustifyH) == "function" then
-            statusText:SetJustifyH("LEFT")
-        end
-
-        local rightOffset = math.abs(offset)
-        local splitOffset = 1
-        local nameShown = GetShownState(nameText) ~= false
-        local statusShown = GetShownState(statusText) ~= false
-
-        if nameShown and statusShown then
-            nameText:SetPoint("BOTTOMLEFT", iconFrame, "RIGHT", rightOffset, splitOffset)
-            statusText:SetPoint("TOPLEFT", iconFrame, "RIGHT", rightOffset, -splitOffset)
-        elseif nameShown then
-            nameText:SetPoint("LEFT", iconFrame, "RIGHT", rightOffset, 0)
-        else
-            statusText:SetPoint("LEFT", iconFrame, "RIGHT", rightOffset, 0)
-        end
+function EncounterTimeline:ApplyTrackIndicatorAnchorOverride(eventFrame)
+    if not eventFrame or not IsTrackEventFrame(eventFrame) then
         return
     end
 
-    if #visibleIndicators > 0 then
-        local anchorIndicator = visibleIndicators[1]
-        if desiredAnchor == self.TRACK_TEXT_ANCHOR.LEFT then
-            nameText:SetPoint("TOPRIGHT", anchorIndicator, "BOTTOMRIGHT", 0, SPELL_NAME_UNDER_ICON_OFFSET_Y)
-            statusText:SetPoint("TOPRIGHT", nameText, "BOTTOMRIGHT", 0, SPELL_STATUS_UNDER_NAME_OFFSET_Y)
-        else
-            nameText:SetPoint("TOPLEFT", anchorIndicator, "BOTTOMLEFT", 0, SPELL_NAME_UNDER_ICON_OFFSET_Y)
-            statusText:SetPoint("TOPLEFT", nameText, "BOTTOMLEFT", 0, SPELL_STATUS_UNDER_NAME_OFFSET_Y)
-        end
+    local iconFrame = eventFrame.IconContainer
+    local indicatorContainer = eventFrame.Indicators or eventFrame.IndicatorContainer
+    if not iconFrame or not indicatorContainer then
         return
     end
 
-    nameText:SetPoint(pointName, eventFrame, relativePointName, offsetX, 0)
-    statusText:SetPoint(statusTopPoint, nameText, nameTopPoint, 0, SPELL_STATUS_UNDER_NAME_OFFSET_Y)
+    local trackOrientation = type(eventFrame.GetTrackOrientation) == "function" and eventFrame:GetTrackOrientation() or nil
+    if not trackOrientation or type(trackOrientation.IsVertical) ~= "function" or not trackOrientation:IsVertical() then
+        self:RestoreTrackNativeIndicators(eventFrame)
+        return
+    end
+
+    local config = self:GetConfig()
+    local desiredAnchor = config.TrackTextAnchor or self.TRACK_TEXT_ANCHOR.RIGHT
+    if desiredAnchor ~= self.TRACK_TEXT_ANCHOR.RIGHT then
+        self:RestoreTrackNativeIndicators(eventFrame)
+        return
+    end
+
+    SetTrackNativeIndicatorAlpha(indicatorContainer, 1)
+    ElevateIndicatorLayer(eventFrame, indicatorContainer)
+
+    indicatorContainer:ClearAllPoints()
+    indicatorContainer:SetPoint("RIGHT", iconFrame, "LEFT")
+
+    if AnchorUtil and GridLayoutMixin and type(indicatorContainer.ApplyLayout) == "function" then
+        local initialAnchor = AnchorUtil.CreateAnchor("TOPRIGHT", indicatorContainer, "TOPRIGHT", 0, 2)
+        local layoutDirection = GridLayoutMixin.Direction.TopRightToBottomLeft
+        indicatorContainer:ApplyLayout(initialAnchor, layoutDirection, 0, 2, 19, 16)
+    end
 end
 
 function EncounterTimeline:ApplySpellTypeIndicatorAnchorOverride(eventFrame)
@@ -719,13 +845,15 @@ function EncounterTimeline:ApplySpellTypeIndicatorAnchorOverride(eventFrame)
         return
     end
 
+    if IsTrackEventFrame(eventFrame) then
+        self:ApplyTrackIndicatorAnchorOverride(eventFrame)
+        return
+    end
+
     ElevateIndicatorLayer(eventFrame, indicatorContainer)
 
     local visibleIndicators = CollectVisibleIndicatorTextures(indicatorContainer)
     if #visibleIndicators == 0 then
-        if IsTrackEventFrame(eventFrame) then
-            self:ApplyTrackTextAnchorOverride(eventFrame)
-        end
         return
     end
 
@@ -736,59 +864,7 @@ function EncounterTimeline:ApplySpellTypeIndicatorAnchorOverride(eventFrame)
     local firstOffsetX = 0
     local firstOffsetY = SPELL_TYPE_ICON_ANCHOR_OFFSET_Y
 
-    if IsTrackEventFrame(eventFrame) then
-        local displayNameText, displayStatusText = GetTrackDisplayTextElements(eventFrame)
-        local hasAutoScalingTrackText = IsBlizzardAutoScalingTextElement(displayNameText)
-            or IsBlizzardAutoScalingTextElement(displayStatusText)
-        local config = self:GetConfig()
-        local desiredAnchor = config.TrackTextAnchor or self.TRACK_TEXT_ANCHOR.LEFT
-        local iconScale = (type(eventFrame.GetIconScale) == "function" and eventFrame:GetIconScale()) or 1
-        if IsUnreadableValue(iconScale) or type(iconScale) ~= "number" then
-            iconScale = 1
-        end
-
-        local okSideOffset, sideOffsetValue = pcall(function()
-            return math.abs(TRACK_TEXT_ANCHOR_OFFSET * iconScale)
-        end)
-        local sideOffset = (okSideOffset and type(sideOffsetValue) == "number") and sideOffsetValue or TRACK_TEXT_ANCHOR_OFFSET
-        local iconWidth = (type(iconFrame.GetWidth) == "function" and iconFrame:GetWidth()) or 0
-        if IsUnreadableValue(iconWidth) or type(iconWidth) ~= "number" then
-            iconWidth = 0
-        end
-
-        local indicatorWidth = (type(firstIndicator.GetWidth) == "function" and firstIndicator:GetWidth()) or 0
-        if IsUnreadableValue(indicatorWidth) or type(indicatorWidth) ~= "number" then
-            indicatorWidth = 0
-        end
-
-        if not hasAutoScalingTrackText then
-            firstOffsetY = ComputeTrackIconRowCenterOffsetY(eventFrame, displayNameText, displayStatusText)
-        end
-        firstPoint = "CENTER"
-        firstRelativePoint = "CENTER"
-
-        if desiredAnchor == self.TRACK_TEXT_ANCHOR.LEFT then
-            growRightToLeft = true
-            local okOffsetX, offsetX = pcall(function()
-                return -((iconWidth * 0.5) + sideOffset + (indicatorWidth * 0.5))
-            end)
-            if okOffsetX and type(offsetX) == "number" then
-                firstOffsetX = offsetX
-            else
-                firstOffsetX = -sideOffset
-            end
-        else
-            growRightToLeft = false
-            local okOffsetX, offsetX = pcall(function()
-                return (iconWidth * 0.5) + sideOffset + (indicatorWidth * 0.5)
-            end)
-            if okOffsetX and type(offsetX) == "number" then
-                firstOffsetX = offsetX
-            else
-                firstOffsetX = sideOffset
-            end
-        end
-    elseif type(eventFrame.ShouldFlipHorizontally) == "function" then
+    if type(eventFrame.ShouldFlipHorizontally) == "function" then
         local ok, flipped = pcall(eventFrame.ShouldFlipHorizontally, eventFrame)
         if ok and not IsUnreadableValue(flipped) and type(flipped) == "boolean" then
             growRightToLeft = flipped
@@ -815,18 +891,6 @@ function EncounterTimeline:ApplySpellTypeIndicatorAnchorOverride(eventFrame)
         else
             indicatorTexture:SetPoint("LEFT", previousTexture, "RIGHT", SPELL_TYPE_ICON_SPACING, 0)
         end
-    end
-
-    -- Keep the primary effect indicator pinned to the icon's top-center edge.
-    local effectIndicators = CollectVisibleEffectIndicatorTextures(indicatorContainer)
-    if #effectIndicators > 0 then
-        local effectIndicator = effectIndicators[1]
-        effectIndicator:ClearAllPoints()
-        effectIndicator:SetPoint("BOTTOM", iconFrame, "TOP", 0, SPELL_TYPE_ICON_ANCHOR_OFFSET_Y)
-    end
-
-    if IsTrackEventFrame(eventFrame) then
-        self:ApplyTrackTextAnchorOverride(eventFrame)
     end
 end
 
@@ -1087,12 +1151,13 @@ function EncounterTimeline:ApplyTrackEventSkin(eventFrame, eventID, force)
         return
     end
 
+    self:EnsureTrackReplacementTextState(eventFrame)
+    self:SyncTrackReplacementText(eventFrame)
+
     local token = "Track:" .. tostring(GetCountdownSwipeTexture())
     if not force and self:StateGet(eventFrame, "trackSkinToken") == token then
-        self:EnsureTrackReplacementTextState(eventFrame)
-        self:HideBlizzardTrackText(eventFrame)
-        self:SyncTrackReplacementText(eventFrame)
         self:ApplyTrackTextAnchorOverride(eventFrame)
+        self:ApplyTrackIndicatorAnchorOverride(eventFrame)
         self:ApplyEventIconVisualStyling(eventFrame, eventID)
         return
     end
@@ -1105,55 +1170,32 @@ function EncounterTimeline:ApplyTrackEventSkin(eventFrame, eventID, force)
         ApplyCooldownTextStyle(eventFrame.Countdown, TRACK_COUNTDOWN_FONT_SIZE)
     end
 
-    local replacementNameText, replacementStatusText = self:EnsureTrackReplacementTextState(eventFrame)
-    if replacementNameText then
-        ApplyTrackTextStyle(replacementNameText, TRACK_NAME_FONT_SIZE)
-    end
-    if replacementStatusText then
-        ApplyTrackTextStyle(replacementStatusText, TRACK_STATUS_FONT_SIZE)
-    end
-    self:HideBlizzardTrackText(eventFrame)
-    self:SyncTrackReplacementText(eventFrame)
-
     local iconHookKey = self:BuildFrameHookKey(eventFrame, "UpdateBorderStyle", "MaskStyle")
     RefineUI:HookOnce(iconHookKey, eventFrame, "UpdateBorderStyle", function(frame)
         local frameEventID = type(frame.GetEventID) == "function" and frame:GetEventID() or nil
         EncounterTimeline:ApplyEventIconVisualStyling(frame, frameEventID)
     end)
 
-    local iconographyHookKey = self:BuildFrameHookKey(eventFrame, "UpdateIconography", "SpellTypeIconAnchor")
-    RefineUI:HookOnce(iconographyHookKey, eventFrame, "UpdateIconography", function(frame)
-        EncounterTimeline:ApplySpellTypeIndicatorAnchorOverride(frame)
-    end)
-
-    local orientationHookKey = self:BuildFrameHookKey(eventFrame, "UpdateOrientation", "SpellTypeIconAnchor")
+    local orientationHookKey = self:BuildFrameHookKey(eventFrame, "UpdateOrientation", "TrackNativeLayout")
     RefineUI:HookOnce(orientationHookKey, eventFrame, "UpdateOrientation", function(frame)
-        EncounterTimeline:ApplySpellTypeIndicatorAnchorOverride(frame)
-    end)
-    self:ApplySpellTypeIndicatorAnchorOverride(eventFrame)
-
-    local nameTextHookKey = self:BuildFrameHookKey(eventFrame, "UpdateNameText", "TrackTextReplacement")
-    RefineUI:HookOnce(nameTextHookKey, eventFrame, "UpdateNameText", function(frame)
-        EncounterTimeline:HideBlizzardTrackText(frame)
         EncounterTimeline:SyncTrackReplacementText(frame)
+        EncounterTimeline:ApplyTrackIndicatorAnchorOverride(frame)
         EncounterTimeline:ApplyTrackTextAnchorOverride(frame)
     end)
 
-    local statusTextHookKey = self:BuildFrameHookKey(eventFrame, "UpdateStatusText", "TrackTextReplacement")
-    RefineUI:HookOnce(statusTextHookKey, eventFrame, "UpdateStatusText", function(frame)
-        EncounterTimeline:HideBlizzardTrackText(frame)
+    local statusHookKey = self:BuildFrameHookKey(eventFrame, "UpdateStatusText", "TrackReplacementText")
+    RefineUI:HookOnce(statusHookKey, eventFrame, "UpdateStatusText", function(frame)
         EncounterTimeline:SyncTrackReplacementText(frame)
         EncounterTimeline:ApplyTrackTextAnchorOverride(frame)
     end)
 
     local textAnchorHookKey = self:BuildFrameHookKey(eventFrame, "UpdateTextAnchors", "TrackTextAnchor")
     RefineUI:HookOnce(textAnchorHookKey, eventFrame, "UpdateTextAnchors", function(frame)
-        EncounterTimeline:HideBlizzardTrackText(frame)
         EncounterTimeline:SyncTrackReplacementText(frame)
         EncounterTimeline:ApplyTrackTextAnchorOverride(frame)
     end)
-    self:HideBlizzardTrackText(eventFrame)
-    self:SyncTrackReplacementText(eventFrame)
+
+    self:ApplyTrackIndicatorAnchorOverride(eventFrame)
     self:ApplyTrackTextAnchorOverride(eventFrame)
 
     self:StateSet(eventFrame, "trackSkinToken", token)
@@ -1327,6 +1369,9 @@ function EncounterTimeline:OnTimelineEventFrameAcquired(viewFrame, eventFrame, e
 end
 
 function EncounterTimeline:OnTimelineEventFrameReleased(_viewFrame, eventFrame)
+    self:CleanupTrackReplacementText(eventFrame)
+    self:RestoreBlizzardTrackText(eventFrame)
+    self:RestoreTrackNativeIndicators(eventFrame)
     self:CleanupReleasedEventFrame(eventFrame)
 end
 

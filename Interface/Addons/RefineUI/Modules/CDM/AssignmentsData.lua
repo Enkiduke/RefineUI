@@ -368,6 +368,9 @@ function CDM:AssignCooldownToBucket(cooldownID, bucketName, destIndex, layoutKey
     if self.MarkReloadRecommendationPending then
         self:MarkReloadRecommendationPending()
     end
+    if self.HandleAssignmentConfigurationChanged then
+        self:HandleAssignmentConfigurationChanged()
+    end
     return true
 end
 
@@ -385,6 +388,9 @@ function CDM:UnassignCooldownID(cooldownID, layoutKey)
     if changed then
         if self.MarkAssignedCooldownSnapshotDirty then
             self:MarkAssignedCooldownSnapshotDirty()
+        end
+        if self.HandleAssignmentConfigurationChanged then
+            self:HandleAssignmentConfigurationChanged()
         end
     end
     return changed
@@ -451,6 +457,9 @@ function CDM:PruneCurrentLayoutAssignments()
     local changed = self:PruneAssignments(self:GetCurrentLayoutKey(), validSet)
     if changed and self.MarkAssignedCooldownSnapshotDirty then
         self:MarkAssignedCooldownSnapshotDirty()
+    end
+    if changed and self.HandleAssignmentConfigurationChanged then
+        self:HandleAssignmentConfigurationChanged()
     end
     self.assignmentsPruneDirty = nil
     return changed

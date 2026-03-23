@@ -35,6 +35,13 @@ local ADD_SLOT_ATLAS = "cdm-empty"
 local ADD_SLOT_FALLBACK_TEXTURE = "Interface\\AddOns\\RefineUI\\Media\\Textures\\add.blp"
 local ADD_SLOT_ICON_INSET = -2
 local GOLD_R, GOLD_G, GOLD_B, GOLD_A = 1, 0.82, 0, 1
+local TIMER_KEY = {
+    INITIAL_UPDATE = "AutoItemBar:InitialUpdate",
+    MOUSEOVER_REFRESH = "AutoItemBar:MouseoverRefresh",
+}
+local DEBOUNCE_KEY = {
+    REQUEST_UPDATE = "AutoItemBar:RequestUpdate",
+}
 
 local function SafeFade(frame, alpha)
     if InCombatLockdown() then
@@ -383,10 +390,7 @@ function AutoItemBar:UpdateButtonLayering()
 end
 
 function AutoItemBar:QueueMouseoverRefresh()
-    if self._mouseoverRefreshQueued then return end
-    self._mouseoverRefreshQueued = true
-    C_Timer.After(0, function()
-        self._mouseoverRefreshQueued = false
+    RefineUI:After(TIMER_KEY.MOUSEOVER_REFRESH, 0, function()
         self._mouseOverBar = self:IsMouseOverBar()
         self:EvaluateMouseoverVisibility()
     end)
@@ -758,7 +762,6 @@ function AutoItemBar:UpdateConsumableButtons()
 end
 
 function AutoItemBar:RequestUpdate()
-    if self.pendingScan then return end
     if self:GetBarVisibilityMode() == self.VISIBILITY_NEVER and not self._editModeActive then
         if self.ConsumableButtonsFrame then
             self._lastVisibleState = nil
@@ -766,9 +769,8 @@ function AutoItemBar:RequestUpdate()
         end
         return
     end
-    self.pendingScan = true
-    C_Timer.After(0.05, function()
-        self.pendingScan = false
+
+    RefineUI:Debounce(DEBOUNCE_KEY.REQUEST_UPDATE, 0.05, function()
         self:UpdateConsumableButtons()
         self:ApplyPendingButtonActions()
         self:UpdateBarVisibility()
@@ -840,7 +842,6 @@ function AutoItemBar:OnEnable()
     self:EnsureAddSlotButton()
     self._mouseOverBar = false
     self._lastVisibleState = nil
-    self._mouseoverRefreshQueued = false
     self._editModeActive = RefineUI.LibEditMode and RefineUI.LibEditMode:IsInEditMode() or false
     self._pendingCombatRefresh = false
     self._appliedInteractive = nil
@@ -885,7 +886,7 @@ function AutoItemBar:OnEnable()
         self._editModeCallbacksRegistered = true
     end
 
-    C_Timer.After(1, function()
+    RefineUI:After(TIMER_KEY.INITIAL_UPDATE, 1, function()
         self:UpdateConsumableButtons()
         self:SetUseActionsEnabled(not self._cursorHasPayload)
         self:ApplyPendingButtonActions()

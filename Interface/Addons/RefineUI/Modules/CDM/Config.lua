@@ -29,6 +29,13 @@ local GetCVarBool = GetCVarBool
 local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
+-- Constants
+----------------------------------------------------------------------------------------
+local RADIAL_BUCKET = "Radial"
+local RADIAL_TEXT_POSITION_CENTER = "CENTER"
+local RADIAL_DEFAULT_SCALE = 0.7
+
+----------------------------------------------------------------------------------------
 -- Public Methods
 ----------------------------------------------------------------------------------------
 function CDM:GetConfig()
@@ -68,7 +75,10 @@ function CDM:GetConfig()
         if type(cfg.BucketSettings[bucket].IconScale) ~= "number" then
             local legacySize = cfg.BucketSettings[bucket].IconSize
             if type(legacySize) == "number" and legacySize > 0 then
-                cfg.BucketSettings[bucket].IconScale = legacySize / 44
+                local baseSize = bucket == RADIAL_BUCKET and 512 or 44
+                cfg.BucketSettings[bucket].IconScale = legacySize / baseSize
+            elseif bucket == RADIAL_BUCKET then
+                cfg.BucketSettings[bucket].IconScale = RADIAL_DEFAULT_SCALE
             else
                 cfg.BucketSettings[bucket].IconScale = cfg.IconScale
             end
@@ -85,6 +95,22 @@ function CDM:GetConfig()
         if type(cfg.BucketSettings[bucket].Direction) ~= "string" or cfg.BucketSettings[bucket].Direction == "" then
             cfg.BucketSettings[bucket].Direction = self.TRACKER_DEFAULT_DIRECTION[bucket] or "RIGHT"
         end
+
+        if bucket == RADIAL_BUCKET then
+            if cfg.BucketSettings[bucket].ShowDurationText == nil then
+                cfg.BucketSettings[bucket].ShowDurationText = true
+            end
+
+            if type(cfg.BucketSettings[bucket].TextSize) ~= "number" then
+                cfg.BucketSettings[bucket].TextSize = 22
+            end
+
+            if type(cfg.BucketSettings[bucket].TextPosition) ~= "string"
+                or cfg.BucketSettings[bucket].TextPosition == ""
+            then
+                cfg.BucketSettings[bucket].TextPosition = RADIAL_TEXT_POSITION_CENTER
+            end
+        end
     end
 
     if cfg.HideNativeAuraViewers == nil then
@@ -97,10 +123,6 @@ function CDM:GetConfig()
 
     if cfg.AuraMode ~= "blizzard" then
         cfg.AuraMode = "refineui"
-    end
-
-    if cfg.SyncStrategy ~= "auto_safe" and cfg.SyncStrategy ~= "mirror_only" then
-        cfg.SyncStrategy = "auto_safe"
     end
 
     cfg.SourceScope = "all_auras"
@@ -164,6 +186,36 @@ function CDM:IsEnabled()
     return self:GetConfig().Enable ~= false
 end
 
+function CDM:IsRefineRuntimeOwnerActive()
+    return self:IsEnabled() and self:GetAuraMode() == "refineui"
+end
+
+function CDM:IsBlizzardRuntimeOwnerActive()
+    return self:IsEnabled() and self:GetAuraMode() == "blizzard"
+end
+
+function CDM:SetEnabled(enabled)
+    local cfg = self:GetConfig()
+    local previousEnabled = self:IsEnabled()
+    local previousMode = self:GetAuraMode()
+    local desired = enabled and true or false
+    cfg.Enable = desired
+
+    if self.HandleSettingsOwnerStateChanged then
+        self:HandleSettingsOwnerStateChanged()
+    end
+    if self.HandleRuntimeModeConfigurationChanged then
+        self:HandleRuntimeModeConfigurationChanged(previousEnabled, previousMode)
+    elseif self.HandleRuntimeOwnerStateChanged then
+        self:HandleRuntimeOwnerStateChanged()
+    end
+    if self.RequestRefresh then
+        self:RequestRefresh(true)
+    end
+
+    return desired
+end
+
 function CDM:IsBlizzardCooldownManagerEnabled()
     local cvarRegistry = _G.CVarCallbackRegistry
     if cvarRegistry and type(cvarRegistry.GetCVarValueBool) == "function" then
@@ -181,10 +233,6 @@ function CDM:IsBlizzardCooldownManagerEnabled()
     end
 
     return true
-end
-
-function CDM:GetSyncStrategy()
-    return self:GetConfig().SyncStrategy or "auto_safe"
 end
 
 function CDM:GetSourceScope()
@@ -206,6 +254,10 @@ function CDM:GetPayloadGhostTTL()
 end
 
 function CDM:GetAuraMode()
+    local cfg = self:GetConfig()
+    if cfg.AuraMode == "blizzard" then
+        return "blizzard"
+    end
     return "refineui"
 end
 
@@ -215,10 +267,26 @@ end
 
 function CDM:SetAuraMode(mode)
     local cfg = self:GetConfig()
-    cfg.AuraMode = "refineui"
+    local previousEnabled = self:IsEnabled()
+    local previousMode = self:GetAuraMode()
+    if mode == "blizzard" then
+        cfg.AuraMode = "blizzard"
+    else
+        cfg.AuraMode = "refineui"
+    end
+
+    if self.HandleSettingsOwnerStateChanged then
+        self:HandleSettingsOwnerStateChanged()
+    end
+    if self.HandleRuntimeModeConfigurationChanged then
+        self:HandleRuntimeModeConfigurationChanged(previousEnabled, previousMode)
+    elseif self.HandleRuntimeOwnerStateChanged then
+        self:HandleRuntimeOwnerStateChanged()
+    end
     self:RequestRefresh(true)
 end
 
 function CDM:ShouldHideNativeAuraViewers()
-    return true
+    local cfg = self:GetConfig()
+    return cfg.HideNativeAuraViewers ~= false
 end

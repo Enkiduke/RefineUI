@@ -30,6 +30,27 @@ local UIParent = _G.UIParent
 -- Locals
 ----------------------------------------------------------------------------------------
 
+local DEFAULT_MINIMAP_SIZE = 294
+
+local function GetCurrentLayoutTierKey()
+    local context = RefineUI.GetLayoutContext and RefineUI:GetLayoutContext() or nil
+    local tierKey = context and context.tierKey or nil
+    if type(tierKey) ~= "string" or tierKey == "" then
+        tierKey = RefineUI.GetLayoutTier and RefineUI:GetLayoutTier() or nil
+    end
+    return tierKey
+end
+
+local function GetDefaultMinimapSize(tierKey)
+    local defaults = RefineUI.GetLayoutDefaults and RefineUI:GetLayoutDefaults(tierKey) or nil
+    local minimapDefaults = defaults and defaults.minimap or nil
+    local defaultSize = tonumber(minimapDefaults and minimapDefaults.baseSize)
+    if not defaultSize or defaultSize <= 0 then
+        defaultSize = DEFAULT_MINIMAP_SIZE
+    end
+    return defaultSize
+end
+
 local function ForceHideFrame(frame, hookKey)
     if not frame then return end
     frame:Hide()
@@ -51,6 +72,7 @@ end
 
 local trackingClickProxy
 local customZoneText
+local minimapBorderHost
 
 ----------------------------------------------------------------------------------------
 -- Functions
@@ -118,6 +140,132 @@ local function RefreshCustomZoneText()
     end
 end
 
+local function EnsureMinimapBorderHost()
+    if minimapBorderHost then
+        return minimapBorderHost
+    end
+
+    minimapBorderHost = CreateFrame("Frame", nil, MinimapCluster)
+    minimapBorderHost:SetFrameStrata(Minimap:GetFrameStrata())
+    minimapBorderHost:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 5)
+    minimapBorderHost:EnableMouse(false)
+    minimapBorderHost:ClearAllPoints()
+    minimapBorderHost:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 0, 0)
+    minimapBorderHost:SetPoint("BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", 0, 0)
+    RefineUI.CreateBorder(minimapBorderHost, 6, 6)
+    if minimapBorderHost.bg then
+        minimapBorderHost.bg:Hide()
+    end
+
+    return minimapBorderHost
+end
+
+local function UpdateMinimapSelectionFrame()
+    if not MinimapCluster or not MinimapCluster.Selection then
+        return
+    end
+
+    local selectionAnchor = minimapBorderHost and (minimapBorderHost.RefineBorder or minimapBorderHost.border) or Minimap
+    if not selectionAnchor then
+        return
+    end
+
+    MinimapCluster.Selection:ClearAllPoints()
+    MinimapCluster.Selection:SetPoint("TOPLEFT", selectionAnchor, "TOPLEFT", 0, 0)
+    MinimapCluster.Selection:SetPoint("BOTTOMRIGHT", selectionAnchor, "BOTTOMRIGHT", 0, 0)
+
+    if MinimapCluster.UpdateClampOffsets then
+        MinimapCluster:UpdateClampOffsets()
+    end
+end
+
+local function ApplyInstanceDifficultyLayout()
+    local instanceDifficulty = MinimapCluster and MinimapCluster.InstanceDifficulty
+    if not instanceDifficulty then
+        return
+    end
+
+    instanceDifficulty:SetParent(Minimap)
+    instanceDifficulty:ClearAllPoints()
+    instanceDifficulty:SetPoint("TOPLEFT", Minimap, "TOPLEFT", -1, 1)
+
+    for _, key in ipairs({"Default", "Guild", "ChallengeMode"}) do
+        local diff = instanceDifficulty[key]
+        if diff then
+            if diff.Border then
+                diff.Border:Hide()
+            end
+
+            if diff.Background then
+                diff.Background:SetSize(36, 36)
+                diff.Background:ClearAllPoints()
+                diff.Background:SetPoint("CENTER", diff, "CENTER", 0, 0)
+                if key == "Default" then
+                    diff.Background:SetVertexColor(0.6, 0.3, 0)
+                elseif key == "ChallengeMode" then
+                    diff.Background:SetVertexColor(0.8, 0.8, 0)
+                else
+                    diff.Background:SetVertexColor(1, 1, 1)
+                end
+            end
+
+            if diff.Instance and diff.Instance.Layout then
+                diff.Instance:Layout()
+            end
+            if diff.Layout then
+                diff:Layout()
+            end
+        end
+    end
+
+    if instanceDifficulty.Update then
+        instanceDifficulty:Update()
+    end
+end
+
+local function RefreshMinimapLayoutOverlays()
+    ApplyInstanceDifficultyLayout()
+    UpdateMinimapSelectionFrame()
+end
+
+local function GetPreferredMinimapSize(maps)
+    local db = maps and maps.db or nil
+    local tierKey = GetCurrentLayoutTierKey()
+    local defaultSize = GetDefaultMinimapSize(tierKey)
+    local preferredSize
+
+    if type(db) == "table" then
+        db.LayoutSizes = db.LayoutSizes or {}
+
+        preferredSize = tonumber(db.LayoutSizes[tierKey])
+        if not preferredSize or preferredSize <= 0 then
+            local legacySize = tonumber(db.Size)
+            if legacySize and legacySize > 0 and legacySize ~= DEFAULT_MINIMAP_SIZE then
+                preferredSize = legacySize
+            else
+                preferredSize = defaultSize
+            end
+            db.LayoutSizes[tierKey] = preferredSize
+        end
+
+        db.Size = preferredSize
+    end
+
+    if not preferredSize or preferredSize <= 0 then
+        preferredSize = defaultSize
+    end
+    return preferredSize
+end
+
+local function GetCurrentMinimapEditModeScale()
+    local minimapContainer = MinimapCluster and MinimapCluster.MinimapContainer
+    local scale = minimapContainer and minimapContainer.GetScale and minimapContainer:GetScale() or 1
+    if type(scale) ~= "number" or scale <= 0 then
+        scale = 1
+    end
+    return scale
+end
+
 function Maps:SetupMinimap()
     if not self.db or self.db.Enable ~= true then return end
     local db = RefineUI.DB
@@ -140,23 +288,38 @@ function Maps:SetupMinimap()
     Minimap:SetArchBlobRingScalar(0)
     Minimap:SetQuestBlobRingScalar(0)
 
-    local function EnforceSize()
-        if Minimap.isEnforcingSize then return end
-        Minimap.isEnforcingSize = true
-        
-        local preferredSize = self.db.Size or 162
-        MinimapCluster:SetSize(preferredSize, preferredSize)
-        Minimap:SetSize(preferredSize, preferredSize)
-        if MinimapCluster.Selection then
-            MinimapCluster.Selection:SetSize(preferredSize, preferredSize)
+    local function ApplyMinimapSize(scale)
+        local preferredSize = GetPreferredMinimapSize(self)
+        local effectiveScale = tonumber(scale) or GetCurrentMinimapEditModeScale()
+        if effectiveScale <= 0 then
+            effectiveScale = 1
         end
-        
-        Minimap.isEnforcingSize = false
+        local clusterSize = preferredSize * effectiveScale
+
+        if MinimapCluster.MinimapContainer then
+            MinimapCluster.MinimapContainer:SetSize(preferredSize, preferredSize)
+        end
+        Minimap:SetSize(preferredSize, preferredSize)
+
+        MinimapCluster:SetSize(clusterSize, clusterSize)
+        if MinimapCluster.Selection then
+            MinimapCluster.Selection:SetSize(clusterSize, clusterSize)
+        end
+
+        if self.RequestButtonCollectRefresh then
+            self:RequestButtonCollectRefresh()
+        end
     end
 
-    RefineUI:HookOnce("Minimap:MinimapCluster:SetSize", MinimapCluster, "SetSize", EnforceSize)
-    RefineUI:HookOnce("Minimap:Minimap:SetSize", Minimap, "SetSize", EnforceSize)
-    EnforceSize()
+    self.RefreshMinimapSize = function(_, scale)
+        ApplyMinimapSize(scale)
+    end
+
+    RefineUI:HookOnce("Minimap:MinimapCluster:SetEditModeScale", MinimapCluster, "SetEditModeScale", function(_, scale)
+        ApplyMinimapSize(scale)
+    end)
+    RefineUI:HookOnce("Minimap:MinimapCluster:UpdateSystemSettingHeaderUnderneath", MinimapCluster, "UpdateSystemSettingHeaderUnderneath", RefreshMinimapLayoutOverlays)
+    ApplyMinimapSize()
     
     -- Keep Blizzard default minimap anchoring until install/layout is ready.
     -- Moving MinimapCluster while EditMode still marks it as default can produce
@@ -169,31 +332,18 @@ function Maps:SetupMinimap()
             MinimapCluster:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -26, -26)
         end
     end
-    Minimap:SetAllPoints(MinimapCluster)
+    if MinimapCluster.MinimapContainer then
+        Minimap:ClearAllPoints()
+        Minimap:SetAllPoints(MinimapCluster.MinimapContainer)
+    end
     
     MinimapCluster:SetFrameLevel(10)
-    RefineUI.SetTemplate(MinimapCluster, "Default")
+    EnsureMinimapBorderHost()
+    RefineUI:HookOnce("Minimap:MinimapCluster:AnchorSelectionFrame", MinimapCluster, "AnchorSelectionFrame", UpdateMinimapSelectionFrame)
+    RefreshMinimapLayoutOverlays()
     MinimapCluster:EnableMouse(false)
 
-    if MinimapCluster.InstanceDifficulty then
-        MinimapCluster.InstanceDifficulty:SetParent(Minimap)
-        MinimapCluster.InstanceDifficulty:ClearAllPoints()
-        MinimapCluster.InstanceDifficulty:SetPoint("TOPLEFT", Minimap, "TOPLEFT", -1, 1)
-        
-        for _, key in ipairs({"Default", "Guild", "ChallengeMode"}) do
-            local diff = MinimapCluster.InstanceDifficulty[key]
-            if diff then
-                if diff.Border then diff.Border:Hide() end
-                if diff.Background then
-                    diff.Background:SetSize(36, 36)
-                    diff.Background:ClearAllPoints()
-                    diff.Background:SetPoint("TOPLEFT", Minimap, "TOPLEFT", -1, 1)
-                    if key == "Default" then diff.Background:SetVertexColor(0.6, 0.3, 0)
-                    elseif key == "ChallengeMode" then diff.Background:SetVertexColor(0.8, 0.8, 0) end
-                end
-            end
-        end
-    end
+    ApplyInstanceDifficultyLayout()
 
     if _G.QueueStatusButton then
         _G.QueueStatusButton:ClearAllPoints()

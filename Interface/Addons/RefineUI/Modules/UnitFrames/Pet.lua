@@ -37,6 +37,7 @@ local unpack = unpack
 ----------------------------------------------------------------------------------------
 local Private = UnitFrames:GetPrivate()
 local C = Private.Constants
+local PLAYER_MANA_OVERLAY_EVENT_KEY_PREFIX = "UnitFrames:Pet:PlayerManaOverlay"
 
 ----------------------------------------------------------------------------------------
 -- Secondary Mana Overlay
@@ -172,25 +173,26 @@ function UnitFrames:EnsurePlayerSecondaryManaOverlay(frame, manaBar)
 
     local overlayData = data.PlayerManaOverlay
     if not overlayData.eventsRegistered then
-        local overlay = overlayData.Bar
-        overlay:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
-        overlay:RegisterUnitEvent("UNIT_MAXPOWER", "player")
-        overlay:RegisterUnitEvent("UNIT_DISPLAYPOWER", "player")
-        overlay:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-        overlay:RegisterEvent("PLAYER_ENTERING_WORLD")
-        overlay:SetScript("OnEvent", function(_, event, unit, powerType)
+        local function OnOverlayUnitEvent(event, _, powerType)
             if event == "UNIT_POWER_UPDATE" then
-                if unit ~= "player" or powerType ~= "MANA" then
-                    return
-                end
-            elseif event == "UNIT_MAXPOWER" or event == "UNIT_DISPLAYPOWER" then
-                if unit ~= "player" then
+                if powerType ~= "MANA" then
                     return
                 end
             end
 
             UnitFrames:UpdatePlayerSecondaryManaOverlay(frame)
-        end)
+        end
+
+        local function OnOverlayEvent(event, unit)
+            if event == "PLAYER_SPECIALIZATION_CHANGED" and unit and unit ~= "player" then
+                return
+            end
+
+            UnitFrames:UpdatePlayerSecondaryManaOverlay(frame)
+        end
+
+        RefineUI:OnUnitEvents("player", { "UNIT_POWER_UPDATE", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }, OnOverlayUnitEvent, PLAYER_MANA_OVERLAY_EVENT_KEY_PREFIX .. ":Unit")
+        RefineUI:OnEvents({ "PLAYER_SPECIALIZATION_CHANGED", "PLAYER_ENTERING_WORLD" }, OnOverlayEvent, PLAYER_MANA_OVERLAY_EVENT_KEY_PREFIX .. ":Event")
         overlayData.eventsRegistered = true
     end
 

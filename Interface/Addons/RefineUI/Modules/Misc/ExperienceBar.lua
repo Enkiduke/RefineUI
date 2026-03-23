@@ -13,6 +13,9 @@ local max = math.max
 local min = math.min
 local format = string.format
 local tostring = tostring
+local tonumber = tonumber
+local type = type
+local sort = table.sort
 
 -- WoW Globals
 local UnitXP = UnitXP
@@ -28,12 +31,24 @@ local UnitHonorLevel = UnitHonorLevel
 local C_Reputation = C_Reputation
 local C_MajorFactions = C_MajorFactions
 local C_PvP = C_PvP
+local C_Texture = C_Texture
 local GameTooltip = GameTooltip
 local BreakUpLargeNumbers = BreakUpLargeNumbers
+local UIFrameFadeRemoveFrame = UIFrameFadeRemoveFrame
 
 -- Locals
 local Mult = 2.5
 local CurrentType = "experience"
+local BAR_WIDTH = 294
+local BAR_HEIGHT = 30
+local ICON_SIZE = BAR_HEIGHT + 4
+local ICON_GAP = 6
+local MAJOR_FACTION_ICON_ATLAS_FORMAT = "majorfactions_icons_%s512"
+local DEFAULT_IDLE_ALPHA = 0.5
+local DEFAULT_BAR_SCALE = 1.0
+local MIN_BAR_SCALE = 0.75
+local MAX_BAR_SCALE = 1.5
+local FRAME_NAME = "RefineUI_ExperienceBar"
 
 local Colors = {
 	experience = { 0.6 * Mult, 0, 0.6 * Mult }, -- Purple
@@ -48,29 +63,255 @@ local RENOWN_EVENTS = {
 	"MAJOR_FACTION_UNLOCKED",
 }
 
+local EXPANSION_LEVEL = {
+    DRAGONFLIGHT = (Enum and Enum.ExpansionLevel and Enum.ExpansionLevel.Dragonflight) or 9,
+    WAR_WITHIN = (Enum and Enum.ExpansionLevel and Enum.ExpansionLevel.WarWithin) or 10,
+    MIDNIGHT = (Enum and Enum.ExpansionLevel and Enum.ExpansionLevel.Midnight) or 11,
+}
+
+local MAJOR_FACTION_EXPANSIONS = {
+    { id = EXPANSION_LEVEL.MIDNIGHT, label = "Midnight" },
+    { id = EXPANSION_LEVEL.WAR_WITHIN, label = "The War Within" },
+    { id = EXPANSION_LEVEL.DRAGONFLIGHT, label = "Dragonflight" },
+}
+
+local function ClampAlpha(value, fallback)
+    local alpha = tonumber(value)
+    if not alpha then
+        alpha = fallback or DEFAULT_IDLE_ALPHA
+    end
+
+    if alpha < 0 then
+        return 0
+    elseif alpha > 1 then
+        return 1
+    end
+
+    return alpha
+end
+
+local function ClampScale(value)
+    local scale = tonumber(value)
+    if not scale then
+        scale = DEFAULT_BAR_SCALE
+    end
+
+    if scale < MIN_BAR_SCALE then
+        scale = MIN_BAR_SCALE
+    elseif scale > MAX_BAR_SCALE then
+        scale = MAX_BAR_SCALE
+    end
+
+    return floor((scale * 100) + 0.5) / 100
+end
+
+function ExperienceBar:GetBarScale()
+    return ClampScale(self.db and self.db.Scale)
+end
+
+function ExperienceBar:GetScaledMetrics()
+    local scale = self:GetBarScale()
+    local width = max(1, floor((BAR_WIDTH * scale) + 0.5))
+    local height = max(1, floor((BAR_HEIGHT * scale) + 0.5))
+    local iconSize = max(1, floor((ICON_SIZE * scale) + 0.5))
+    local iconGap = max(0, floor((ICON_GAP * scale) + 0.5))
+    local textSize = max(8, floor((16 * scale) + 0.5))
+    local textOffsetY = floor((6 * scale) + 0.5)
+
+    return width, height, iconSize, iconGap, textSize, textOffsetY
+end
+
+function ExperienceBar:IsMouseoverEnabled()
+    return not self.db or self.db.Mouseover ~= false
+end
+
+function ExperienceBar:GetIdleAlpha()
+    return ClampAlpha(self.db and self.db.Alpha, DEFAULT_IDLE_ALPHA)
+end
+
+function ExperienceBar:RefreshEditModeSettingsAvailability()
+    if not (LibEditMode and self.Frame and self._editModeSettings) then
+        return
+    end
+
+    local alphaSetting
+    for _, setting in ipairs(self._editModeSettings) do
+        if setting.name == "Alpha When Not Moused-Over" then
+            alphaSetting = setting
+            break
+        end
+    end
+
+    if alphaSetting then
+        alphaSetting.disabled = not self:IsMouseoverEnabled()
+    end
+
+    if type(LibEditMode.RefreshFrameSettings) == "function" then
+        LibEditMode:RefreshFrameSettings(self.Frame)
+    end
+end
+
+function ExperienceBar:ApplyAlphaState()
+    if not self.Frame then
+        return
+    end
+
+    if UIFrameFadeRemoveFrame then
+        UIFrameFadeRemoveFrame(self.Frame)
+    end
+
+    if EditModeManagerFrame and EditModeManagerFrame:IsShown() then
+        self.Frame:SetAlpha(1)
+        return
+    end
+
+    if self:IsMouseoverEnabled() then
+        if self.Frame:IsMouseOver() then
+            self.Frame:SetAlpha(1)
+        else
+            self.Frame:SetAlpha(self:GetIdleAlpha())
+        end
+    else
+        self.Frame:SetAlpha(1)
+    end
+end
+
+function ExperienceBar:ApplyScale()
+    if not (self.Frame and self.Bar and self.IconFrame and self.Text) then
+        return
+    end
+
+    local width, height, iconSize, _, textSize, textOffsetY = self:GetScaledMetrics()
+
+    if RefineUI.SetPixelSize then
+        RefineUI:SetPixelSize(self.Frame, width, height)
+        RefineUI:SetPixelSize(self.IconFrame, iconSize, iconSize)
+    else
+        self.Frame:SetSize(width, height)
+        self.IconFrame:SetSize(iconSize, iconSize)
+    end
+
+    self.Text:ClearAllPoints()
+    RefineUI.Point(self.Text, "CENTER", self.Bar, "CENTER", 0, textOffsetY)
+    RefineUI.Font(self.Text, textSize)
+
+    self:UpdateBarLayout(self.IconFrame:IsShown())
+end
+
+function ExperienceBar:RegisterEditModeSettings()
+    if not (LibEditMode and self.Frame and type(LibEditMode.AddFrameSettings) == "function") then
+        return
+    end
+    if self._editModeSettingsAttached then
+        return
+    end
+
+    local settings = {
+        {
+            kind = LibEditMode.SettingType.Slider,
+            name = "Scale",
+            default = DEFAULT_BAR_SCALE,
+            minValue = MIN_BAR_SCALE,
+            maxValue = MAX_BAR_SCALE,
+            valueStep = 0.05,
+            formatter = function(value)
+                return format("%.2f", ClampScale(value))
+            end,
+            get = function()
+                return ExperienceBar:GetBarScale()
+            end,
+            set = function(_, value)
+                ExperienceBar.db.Scale = ClampScale(value)
+                ExperienceBar:ApplyScale()
+            end,
+        },
+        {
+            kind = LibEditMode.SettingType.Checkbox,
+            name = "Mouseover",
+            default = false,
+            get = function()
+                return ExperienceBar:IsMouseoverEnabled()
+            end,
+            set = function(_, value)
+                ExperienceBar.db.Mouseover = value == true
+                ExperienceBar:ApplyAlphaState()
+                ExperienceBar:RefreshEditModeSettingsAvailability()
+            end,
+        },
+        {
+            kind = LibEditMode.SettingType.Slider,
+            name = "Alpha When Not Moused-Over",
+            default = DEFAULT_IDLE_ALPHA,
+            minValue = 0,
+            maxValue = 1,
+            valueStep = 0.05,
+            disabled = not self:IsMouseoverEnabled(),
+            get = function()
+                return ExperienceBar:GetIdleAlpha()
+            end,
+            set = function(_, value)
+                ExperienceBar.db.Alpha = ClampAlpha(value, DEFAULT_IDLE_ALPHA)
+                ExperienceBar:ApplyAlphaState()
+            end,
+        },
+    }
+
+    self._editModeSettings = settings
+    LibEditMode:AddFrameSettings(self.Frame, settings)
+    self._editModeSettingsAttached = true
+    self:RefreshEditModeSettingsAvailability()
+end
+
+function ExperienceBar:RegisterEditModeCallbacks()
+    if self._editModeCallbacksRegistered or not (LibEditMode and type(LibEditMode.RegisterCallback) == "function") then
+        return
+    end
+
+    LibEditMode:RegisterCallback("enter", function()
+        ExperienceBar:ApplyAlphaState()
+    end)
+
+    LibEditMode:RegisterCallback("exit", function()
+        ExperienceBar:ApplyAlphaState()
+    end)
+
+    self._editModeCallbacksRegistered = true
+end
+
 function ExperienceBar:CreateBar()
-	local Bar = CreateFrame("StatusBar", "RefineUI_ExperienceBar", _G.UIParent)
+	local Container = CreateFrame("Frame", FRAME_NAME, _G.UIParent)
+    local width, height, iconSize, _, textSize, textOffsetY = self:GetScaledMetrics()
     
     -- Strict API: Size and Point
-	RefineUI.Size(Bar, 294, 30)
+	if RefineUI.SetPixelSize then
+        RefineUI:SetPixelSize(Container, width, height)
+    else
+        Container:SetSize(width, height)
+    end
 	
     -- Position Priority: Central Config > DB Saved > Default
-    local pos = RefineUI.Positions.RefineUI_ExperienceBar or (self.db and self.db.Position) or { "TOP", "UIParent", "TOP", 0, -12 }
+    local pos = (RefineUI.Positions and RefineUI.Positions[FRAME_NAME]) or { "TOP", "Minimap", "BOTTOM", 0, -10 }
     
     -- Handle string relativeTo
     local point, relativeTo, relativePoint, x, y = unpack(pos)
     if type(relativeTo) == "string" then
         relativeTo = _G[relativeTo] or _G.UIParent
     end
-	RefineUI.Point(Bar, point, relativeTo, relativePoint, x, y)
+	RefineUI.Point(Container, point, relativeTo, relativePoint, x, y)
 
-	Bar.editModeName = "Experience Bar"
+	Container.editModeName = "Experience Bar"
 	if LibEditMode then
-		LibEditMode:AddFrame(Bar, function(frame, layout, point, x, y)
-			if not self.db then return end
-			self.db.Position = { point, "UIParent", point, x, y }
+		LibEditMode:AddFrame(Container, function(frame, layout, point, x, y)
+			RefineUI:SetPosition(FRAME_NAME, { point, "UIParent", point, x, y })
 		end, { point = point, x = x, y = y })
 	end
+
+    Container:EnableMouse(true)
+	Container:SetAlpha(1)
+
+	local Bar = CreateFrame("StatusBar", nil, Container)
+	RefineUI.Point(Bar, "TOPLEFT", Container, "TOPLEFT", 0, 0)
+	RefineUI.Point(Bar, "BOTTOMRIGHT", Container, "BOTTOMRIGHT", 0, 0)
     
 	Bar:SetStatusBarTexture(RefineUI.Media.Textures.Statusbar)
 	Bar:SetStatusBarColor(unpack(Colors.experience))
@@ -81,13 +322,27 @@ function ExperienceBar:CreateBar()
     if Bar.bg and Bar.bg.border then
         Bar.bg.border:SetFrameLevel(Bar:GetFrameLevel() + 1)
     end
-    
-	Bar:SetScript("OnEnter", function(self) ExperienceBar:OnEnter(self) end)
-	Bar:SetScript("OnLeave", function(self) ExperienceBar:OnLeave(self) end)
-	Bar:SetAlpha(0.25)
+
+	local IconFrame = CreateFrame("Frame", nil, Container)
+	if RefineUI.SetPixelSize then
+        RefineUI:SetPixelSize(IconFrame, iconSize, iconSize)
+    else
+        IconFrame:SetSize(iconSize, iconSize)
+    end
+	RefineUI.Point(IconFrame, "LEFT", Container, "LEFT", 0, 0)
+    RefineUI.CreateBackdrop(IconFrame, "Default")
+    IconFrame:Hide()
+
+    if IconFrame.bg and IconFrame.bg.border then
+        IconFrame.bg.border:SetFrameLevel(IconFrame:GetFrameLevel() + 1)
+    end
+
+    local IconTexture = IconFrame:CreateTexture(nil, "ARTWORK")
+    IconTexture:SetPoint("TOPLEFT", IconFrame, "TOPLEFT", 2, -2)
+    IconTexture:SetPoint("BOTTOMRIGHT", IconFrame, "BOTTOMRIGHT", -2, 2)
+    IconTexture:Hide()
 
 	local BarRested = CreateFrame("StatusBar", nil, Bar)
-	RefineUI.Size(BarRested, 171, 8)
 	RefineUI.SetInside(BarRested)
 	BarRested:SetStatusBarTexture(RefineUI.Media.Textures.Statusbar)
 	BarRested:SetStatusBarColor(unpack(Colors.rested))
@@ -99,14 +354,16 @@ function ExperienceBar:CreateBar()
 	RefineUI.SetInside(InvisFrame)
 
 	local Text = InvisFrame:CreateFontString(nil, "OVERLAY")
-	RefineUI.Point(Text, "CENTER", Bar, 0, 6)
+	RefineUI.Point(Text, "CENTER", Bar, "CENTER", 0, textOffsetY)
     
     -- Strict API: Font
-	RefineUI.Font(Text, 16) -- Defaults to RefineUI.Media.Fonts.Default
+	RefineUI.Font(Text, textSize) -- Defaults to RefineUI.Media.Fonts.Default
     
     -- Context Menu
     local MenuUtil = MenuUtil
-    Bar:SetScript("OnMouseUp", function(self, button)
+    Container:SetScript("OnEnter", function(frame) ExperienceBar:OnEnter(frame) end)
+    Container:SetScript("OnLeave", function(frame) ExperienceBar:OnLeave(frame) end)
+    Container:SetScript("OnMouseUp", function(self, button)
         if button == "RightButton" then
             MenuUtil.CreateContextMenu(self, function(ownerRegion, rootDescription)
                 rootDescription:CreateTitle("Experience Bar")
@@ -120,7 +377,7 @@ function ExperienceBar:CreateBar()
                 local pIsMaxLevel = pLevel >= maxLevel
 
                 local experienceRadio = rootDescription:CreateRadio("Experience", function()
-                    return (ExperienceBar.db.SubMaxTrackMode or "EXPERIENCE") == "EXPERIENCE"
+                    return not pIsMaxLevel and (ExperienceBar.db.SubMaxTrackMode or "EXPERIENCE") == "EXPERIENCE"
                 end, function()
                     ExperienceBar.db.SubMaxTrackMode = "EXPERIENCE"
                     RefineUI:Print("Tracking: Experience")
@@ -129,7 +386,7 @@ function ExperienceBar:CreateBar()
                 experienceRadio:SetEnabled(not pIsMaxLevel)
 
                 rootDescription:CreateRadio("Reputation", function()
-                    return ExperienceBar.db.SubMaxTrackMode == "REPUTATION"
+                    return pIsMaxLevel or ExperienceBar.db.SubMaxTrackMode == "REPUTATION"
                 end, function()
                     ExperienceBar.db.SubMaxTrackMode = "REPUTATION"
                     RefineUI:Print("Tracking: Reputation")
@@ -138,16 +395,29 @@ function ExperienceBar:CreateBar()
 
                 rootDescription:CreateDivider()
 
+                -- Status / Clear Manual
+                local currentWatched = C_Reputation.GetWatchedFactionData()
+                if not currentWatched then
+                    local numFactions = C_Reputation.GetNumFactions()
+                    for i = 1, numFactions do
+                        local factionData = C_Reputation.GetFactionDataByIndex(i)
+                        if factionData and factionData.isWatched then
+                            currentWatched = factionData
+                            break
+                        end
+                    end
+                end
+
                 -- Auto-Track Settings
                 local autoTrackName = "Auto-Track"
                 if ExperienceBar.db.AutoTrack == "RECENT" then autoTrackName = autoTrackName .. " (Recent)"
-                elseif ExperienceBar.db.AutoTrack == "CLOSEST" then autoTrackName = autoTrackName .. " (Closest)"
-                else autoTrackName = autoTrackName .. " (None)" 
+                else autoTrackName = autoTrackName .. " (Closest)"
                 end
                 
                 local autoTrackMenu = rootDescription:CreateButton(autoTrackName)
+                autoTrackMenu:SetEnabled(not currentWatched)
                 
-                autoTrackMenu:CreateRadio("Closest (Default)", function() return ExperienceBar.db.AutoTrack == "CLOSEST" end, function()
+                autoTrackMenu:CreateRadio("Closest", function() return ExperienceBar.db.AutoTrack == "CLOSEST" end, function()
                     ExperienceBar.db.AutoTrack = "CLOSEST"
                     RefineUI:Print("Auto-Track: Closest")
                     ExperienceBar:OnEvent()
@@ -159,80 +429,8 @@ function ExperienceBar:CreateBar()
                     ExperienceBar:OnEvent()
                 end)
                 
-                autoTrackMenu:CreateRadio("None", function() return ExperienceBar.db.AutoTrack == "NONE" end, function()
-                    ExperienceBar.db.AutoTrack = "NONE"
-                    RefineUI:Print("Auto-Track: None")
-                    ExperienceBar:OnEvent()
-                end)
-                
                 rootDescription:CreateDivider()
-                
-                -- Icon Mappings
-                local TWW_ICONS_PATH = "Interface\\MajorFactions\\TheWarWithinMajorFactionsIcons\\"
-                local DF_ICONS_PATH = "Interface\\MajorFactions\\MajorFactionsIcons\\"
-                local MN_ICONS_PATH = "Interface\\MajorFactions\\MidnightMajorFactionsIcons\\"
-                
-                local FactionIcons = {
-                    -- Midnight (Placeholders)
-                    [9991] = MN_ICONS_PATH .. "majorfactions_icons_amanitribe512",
-                    [9992] = MN_ICONS_PATH .. "majorfactions_icons_haratitribe512",
-                    [9993] = MN_ICONS_PATH .. "majorfactions_icons_shadowstepcadre512",
-                    [9994] = MN_ICONS_PATH .. "majorfactions_icons_silvermooncourt512",
-                
-                    -- The War Within
-                    [2590] = TWW_ICONS_PATH .. "majorfactions_icons_storm512",  -- Council of Dornogal
-                    [2594] = TWW_ICONS_PATH .. "majorfactions_icons_candle512", -- Assembly of the Deeps
-                    [2570] = TWW_ICONS_PATH .. "majorfactions_icons_flame512",  -- Hallowfall Arathi
-                    [2600] = TWW_ICONS_PATH .. "majorfactions_icons_web512",    -- Severed Threads
-                    
-                    -- Dragonflight
-                    [2507] = DF_ICONS_PATH .. "MajorFactions_Icons_Expedition512", -- Dragonscale
-                    [2510] = DF_ICONS_PATH .. "MajorFactions_Icons_Centaur512",    -- Maruuk
-                    [2511] = DF_ICONS_PATH .. "MajorFactions_Icons_Tuskarr512",    -- Iskaara
-                    [2503] = DF_ICONS_PATH .. "MajorFactions_Icons_Valdrakken512", -- Valdrakken
-                    [2564] = DF_ICONS_PATH .. "MajorFactions_Icons_Niffen512",     -- Loamm Niffen
-                    [2574] = DF_ICONS_PATH .. "MajorFactions_Icons_Dream512",      -- Dream Wardens
-                }
 
-                -- Expansion Submenus
-                -- Expansion Submenus
-                local function AddFactionMenu(parent, factionID, knownName)
-                     local data = C_MajorFactions.GetMajorFactionData(factionID)
-
-                     -- Fallback for placeholder/unknown IDs
-                     local name = data and data.name or knownName or "Unknown Faction"
-                     local level = data and data.renownLevel or 0
-                     local text = string.format("%s (Lvl %d)", name, level)
-                     
-                     -- Prepend Icon if available (Inline Texture)
-                     local iconPath = FactionIcons[factionID]
-                     if iconPath then
-                         text = string.format("|T%s:18:18:0:0|t  %s", iconPath, text)
-                     end
-
-                     local isMaxed = data and C_MajorFactions.HasMaximumRenown(factionID)
-                     if isMaxed then
-                         text = "|cff808080" .. text .. " (Maxed)|r"
-                     end
-
-                     parent:CreateRadio(text, function()
-                        local watched = C_Reputation.GetWatchedFactionData()
-                        return watched and watched.factionID == factionID
-                     end, function()
-                         if isMaxed then return end -- Disable selection
-                         
-                         if not data then 
-                            RefineUI:Print("Faction ID " .. factionID .. " not found. Please update ExperienceBar.lua with correct ID.")
-                            return 
-                         end
-                         C_Reputation.SetWatchedFactionByID(factionID)
-                         RefineUI:Print("Watching: " .. name)
-                         ExperienceBar:OnEvent()
-                     end)
-                end
-                
-                -- Status / Clear Manual
-                local currentWatched = C_Reputation.GetWatchedFactionData()
                 if currentWatched then
                     rootDescription:CreateButton("|cffFF0000Stop Tracking|r " .. (currentWatched.name or ""), function()
                         C_Reputation.SetWatchedFactionByID(0) -- Clear watch
@@ -241,37 +439,82 @@ function ExperienceBar:CreateBar()
                     end)
                     rootDescription:CreateDivider()
                 end
-                
-                -- Midnight (12.0)
-                local mnMenu = rootDescription:CreateButton("Midnight")
-                AddFactionMenu(mnMenu, 9991, "Amani Tribe")
-                AddFactionMenu(mnMenu, 9992, "Harati Tribe")
-                AddFactionMenu(mnMenu, 9993, "Shadowstep Cadre")
-                AddFactionMenu(mnMenu, 9994, "Silvermoon Court")
-                
-                -- The War Within (11.0)
-                local twwMenu = rootDescription:CreateButton("The War Within")
-                AddFactionMenu(twwMenu, 2590) -- Council of Dornogal
-                AddFactionMenu(twwMenu, 2594) -- The Assembly of the Deeps
-                AddFactionMenu(twwMenu, 2570) -- Hallowfall Arathi
-                AddFactionMenu(twwMenu, 2600) -- The Severed Threads
 
-                -- Dragonflight
-                local dfMenu = rootDescription:CreateButton("Dragonflight")
-                AddFactionMenu(dfMenu, 2507) -- Dragonscale Expedition
-                AddFactionMenu(dfMenu, 2510) -- Maruuk Centaur
-                AddFactionMenu(dfMenu, 2511) -- Iskaara Tuskarr
-                AddFactionMenu(dfMenu, 2503) -- Valdrakken Accord
-                AddFactionMenu(dfMenu, 2564) -- Loamm Niffen
-                AddFactionMenu(dfMenu, 2574) -- Dream Wardens
+                local function AddFactionMenu(parent, majorFactionData)
+                    if not majorFactionData then
+                        return
+                    end
+
+                    local factionID = majorFactionData.factionID
+                    local name = majorFactionData.name or ("Faction " .. tostring(factionID))
+                    local level = majorFactionData.renownLevel or 0
+                    local isMaxed = C_MajorFactions.HasMaximumRenown(factionID)
+                    local text = format("%s (Lvl %d)", name, level)
+
+                    if not majorFactionData.isUnlocked then
+                        text = "|cff808080" .. text .. " (" .. (_G.MAJOR_FACTION_BUTTON_FACTION_LOCKED or "Locked") .. ")|r"
+                    elseif isMaxed then
+                        text = "|cff808080" .. text .. " (Maxed)|r"
+                    end
+
+                    parent:CreateRadio(text, function()
+                        local watched = C_Reputation.GetWatchedFactionData()
+                        return watched and watched.factionID == factionID
+                    end, function()
+                        if not majorFactionData.isUnlocked or isMaxed then
+                            return
+                        end
+
+                        C_Reputation.SetWatchedFactionByID(factionID)
+                        RefineUI:Print("Watching: " .. name)
+                        ExperienceBar:OnEvent()
+                    end)
+                end
+
+                for _, expansionInfo in ipairs(MAJOR_FACTION_EXPANSIONS) do
+                    local factionIDs = C_MajorFactions.GetMajorFactionIDs(expansionInfo.id)
+                    if factionIDs and #factionIDs > 0 then
+                        local menu = rootDescription:CreateButton(expansionInfo.label)
+                        local majorFactions = {}
+
+                        for _, factionID in ipairs(factionIDs) do
+                            if not C_MajorFactions.IsMajorFactionHiddenFromExpansionPage(factionID) then
+                                local majorFactionData = C_MajorFactions.GetMajorFactionData(factionID)
+                                if majorFactionData then
+                                    majorFactions[#majorFactions + 1] = majorFactionData
+                                end
+                            end
+                        end
+
+                        sort(majorFactions, function(a, b)
+                            if a.uiPriority ~= b.uiPriority then
+                                return a.uiPriority < b.uiPriority
+                            end
+
+                            return a.name < b.name
+                        end)
+
+                        for _, majorFactionData in ipairs(majorFactions) do
+                            AddFactionMenu(menu, majorFactionData)
+                        end
+                    end
+                end
                 
             end)
         end
     end)
 
+	self.Frame = Container
 	self.Bar = Bar
 	self.BarRested = BarRested
+	self.IconFrame = IconFrame
+	self.IconTexture = IconTexture
 	self.Text = Text
+
+    self:ApplyScale()
+    self:RegisterEditModeSettings()
+    self:RegisterEditModeCallbacks()
+    self:ApplyAlphaState()
 end
 
 ----------------------------------------------------------------------------------------
@@ -308,7 +551,7 @@ local function ProcessFactionData(factionData)
                 if rMax <= 0 then rMax = 1 end
                 if rCur > rMax then rCur = rMax end
                 local rPerc = floor(rCur / rMax * 100 + 0.5)
-                return rCur, rMax, rPerc, 0, 0, majorFactionData.renownLevel, "renown", majorFactionData.name or name
+                return rCur, rMax, rPerc, 0, 0, majorFactionData.renownLevel, "renown", majorFactionData.name or name, factionID
             end
         end
 	end
@@ -321,13 +564,13 @@ local function ProcessFactionData(factionData)
 			local maxVal = threshold
 			if maxVal <= 0 then maxVal = 1 end
 			local perc = floor(cur / maxVal * 100 + 0.5)
-			return cur, maxVal, perc, 0, 0, "Paragon", "reputation", name
+			return cur, maxVal, perc, 0, 0, "Paragon", "reputation", name, factionID
 		end
 	end
 
 	-- Standard reputation
 	local standingText = _G['FACTION_STANDING_LABEL' .. reaction] or tostring(reaction)
-	return cur, maxVal, perc, 0, 0, standingText, "reputation", name
+	return cur, maxVal, perc, 0, 0, standingText, "reputation", name, factionID
 end
 
 -- Fallback: Iterate all factions if GetWatchedFactionData fails (Blizzard Bug #584)
@@ -344,33 +587,85 @@ end
 
 local LastGainedFactionID = nil
 
--- The War Within (10) and Dragonflight (9) Major Factions
--- It's safer to check these explicitly if GetMajorFactionList isn't available
-local WAR_WITHIN_FACTIONS = {
-    2590, -- Council of Dornogal
-    2594, -- The Assembly of the Deeps
-    2570, -- Hallowfall Arathi
-    2600, -- The Severed Threads
-    -- Dragonflight IDs (optional, kept for completeness if user is playing current exp)
-    2507, -- Dragonscale Expedition
-    2510, -- Maruuk Centaur
-    2511, -- Iskaara Tuskarr
-    2503, -- Valdrakken Accord
-    2564, -- Loamm Niffen
-    2574, -- Dream Wardens
-}
+local function GetMajorFactionIconAtlas(factionID)
+    if not (factionID and C_MajorFactions and C_MajorFactions.GetMajorFactionData and C_Texture and C_Texture.GetAtlasInfo) then
+        return nil
+    end
+
+    local majorFactionData = C_MajorFactions.GetMajorFactionData(factionID)
+    if not (majorFactionData and majorFactionData.textureKit) then
+        return nil
+    end
+
+    local atlas = format(MAJOR_FACTION_ICON_ATLAS_FORMAT, majorFactionData.textureKit)
+    if not C_Texture.GetAtlasInfo(atlas) then
+        return nil
+    end
+
+    return atlas
+end
+
+local function GetMajorFactionDataForExpansion(expansionID)
+    if not (C_MajorFactions and C_MajorFactions.GetMajorFactionIDs and C_MajorFactions.GetMajorFactionData) then
+        return {}
+    end
+
+    local majorFactions = {}
+    local factionIDs = C_MajorFactions.GetMajorFactionIDs(expansionID)
+    for _, factionID in ipairs(factionIDs or {}) do
+        if not C_MajorFactions.IsMajorFactionHiddenFromExpansionPage(factionID) then
+            local data = C_MajorFactions.GetMajorFactionData(factionID)
+            if data then
+                majorFactions[#majorFactions + 1] = data
+            end
+        end
+    end
+
+    sort(majorFactions, function(a, b)
+        if a.uiPriority ~= b.uiPriority then
+            return a.uiPriority < b.uiPriority
+        end
+
+        if a.name and b.name then
+            return a.name < b.name
+        end
+
+        return (a.factionID or 0) < (b.factionID or 0)
+    end)
+
+    return majorFactions
+end
+
+local function GetAllKnownMajorFactionData()
+    local allMajorFactions = {}
+    local seenFactionIDs = {}
+
+    for _, expansionInfo in ipairs(MAJOR_FACTION_EXPANSIONS) do
+        for _, majorFactionData in ipairs(GetMajorFactionDataForExpansion(expansionInfo.id)) do
+            local factionID = majorFactionData.factionID
+            if factionID and not seenFactionIDs[factionID] then
+                allMajorFactions[#allMajorFactions + 1] = majorFactionData
+                seenFactionIDs[factionID] = true
+            end
+        end
+    end
+
+    return allMajorFactions
+end
 
 local function GetClosestFaction()
     local currentExpansionID = GetExpansionLevel()
-    local bestData = nil
-    local bestPerc = -1
+    local bestCurrentData = nil
+    local bestCurrentPerc = -1
+    local bestFallbackData = nil
+    local bestFallbackPerc = -1
 
-    for _, factionID in ipairs(WAR_WITHIN_FACTIONS) do
+    for _, majorFactionData in ipairs(GetAllKnownMajorFactionData()) do
+        local factionID = majorFactionData.factionID
         local isMax = C_MajorFactions.HasMaximumRenown(factionID)
         local isParagon = C_Reputation.IsFactionParagon(factionID)
         
         if not isMax or isParagon then
-            local data = C_MajorFactions.GetMajorFactionData(factionID)
             local valid = false
             local perc = 0
             
@@ -380,28 +675,72 @@ local function GetClosestFaction()
                      perc = (currentValue % threshold) / threshold
                      valid = true
                  end
-            elseif data and data.expansionID == currentExpansionID and data.isUnlocked then
-                 local rCur = data.renownReputationEarned or 0
-                 local rMax = data.renownLevelThreshold or 1
+            elseif majorFactionData.expansionID == currentExpansionID and majorFactionData.isUnlocked then
+                 local rCur = majorFactionData.renownReputationEarned or 0
+                 local rMax = majorFactionData.renownLevelThreshold or 1
                  if rMax > 0 then
                      perc = rCur / rMax
                      valid = true
                  end
             end
             
-            if valid and perc > bestPerc then
-                bestPerc = perc
-                bestData = data
+            if valid then
+                if majorFactionData.expansionID == currentExpansionID then
+                    if perc > bestCurrentPerc then
+                        bestCurrentPerc = perc
+                        bestCurrentData = majorFactionData
+                    end
+                elseif perc > bestFallbackPerc then
+                    bestFallbackPerc = perc
+                    bestFallbackData = majorFactionData
+                end
             end
         end
     end
     
-    return bestData
+    return bestCurrentData or bestFallbackData
 end
 
 local function GetRecentFaction()
     if not LastGainedFactionID then return nil end
     return C_Reputation.GetFactionDataByID(LastGainedFactionID)
+end
+
+function ExperienceBar:UpdateBarLayout(showIcon)
+    if not self.Bar or not self.Frame then
+        return
+    end
+
+    local _, _, iconSize, iconGap = self:GetScaledMetrics()
+
+    self.Bar:ClearAllPoints()
+    if showIcon then
+        RefineUI.Point(self.Bar, "TOPLEFT", self.Frame, "TOPLEFT", iconSize + iconGap, 0)
+        RefineUI.Point(self.Bar, "BOTTOMRIGHT", self.Frame, "BOTTOMRIGHT", 0, 0)
+    else
+        RefineUI.Point(self.Bar, "TOPLEFT", self.Frame, "TOPLEFT", 0, 0)
+        RefineUI.Point(self.Bar, "BOTTOMRIGHT", self.Frame, "BOTTOMRIGHT", 0, 0)
+    end
+end
+
+function ExperienceBar:UpdateTrackedFactionIcon(factionID)
+    if not (self.IconFrame and self.IconTexture) then
+        return
+    end
+
+    local atlas = GetMajorFactionIconAtlas(factionID)
+    if atlas then
+        self.IconTexture:SetAtlas(atlas, true)
+        self.IconTexture:Show()
+        self.IconFrame:Show()
+        self:UpdateBarLayout(true)
+        return
+    end
+
+    self.IconTexture:SetTexture(nil)
+    self.IconTexture:Hide()
+    self.IconFrame:Hide()
+    self:UpdateBarLayout(false)
 end
 
 function ExperienceBar:GetValues()
@@ -417,7 +756,7 @@ function ExperienceBar:GetValues()
         local rested = GetXPExhaustion() or 0
         local perc = floor(cur / maxVal * 100 + 0.5)
         local restedPerc = floor(rested / maxVal * 100 + 0.5)
-        return cur, maxVal, perc, rested, restedPerc, pLevel, "experience", nil
+        return cur, maxVal, perc, rested, restedPerc, pLevel, "experience", nil, nil
     end
 
     local shouldTrackRepAtSubMax = self.db and self.db.SubMaxTrackMode == "REPUTATION"
@@ -434,7 +773,7 @@ function ExperienceBar:GetValues()
     -- AutoTrack applies for max level, or when sub-max rep override is enabled
     if not watchedFactionData and self.db and self.db.AutoTrack and (pIsMaxLevel or shouldTrackRepAtSubMax) then
         if self.db.AutoTrack == "RECENT" then
-            watchedFactionData = GetRecentFaction()
+            watchedFactionData = GetRecentFaction() or GetClosestFaction()
         elseif self.db.AutoTrack == "CLOSEST" then
             watchedFactionData = GetClosestFaction()
         end
@@ -457,7 +796,7 @@ function ExperienceBar:GetValues()
 		    if maxVal <= 0 then maxVal = 1 end
 		    local level = UnitHonorLevel('player')
 		    local perc = floor(cur / maxVal * 100 + 0.5)
-		    return cur, maxVal, perc, 0, 0, level, "honor", nil
+		    return cur, maxVal, perc, 0, 0, level, "honor", nil, nil
 	    end
 
 	    -- 4. Fallback: At max level, display watched faction data
@@ -474,7 +813,7 @@ function ExperienceBar:GetValues()
         return GetExperienceValues()
 	end
 
-	return 0, 1, 0, 0, 0, pLevel, "none", nil
+	return 0, 1, 0, 0, 0, pLevel, "none", nil, nil
 end
 
 function ExperienceBar:OnEnter(frame)
@@ -505,16 +844,30 @@ function ExperienceBar:OnEnter(frame)
 	end
 
 	GameTooltip:Show()
-    
-    -- Strict API: Use RefineUI:FadeIn() helper
+
+    if not self:IsMouseoverEnabled() then
+        if UIFrameFadeRemoveFrame then
+            UIFrameFadeRemoveFrame(frame)
+        end
+        frame:SetAlpha(1)
+        return
+    end
+
 	RefineUI:FadeIn(frame, 0.2, 1)
 end
 
 function ExperienceBar:OnLeave(frame)
 	GameTooltip:Hide()
-    
-    -- Strict API: Use RefineUI:FadeOut() helper
-	RefineUI:FadeOut(frame, 0.5, 0.25)
+
+    if not self:IsMouseoverEnabled() then
+        if UIFrameFadeRemoveFrame then
+            UIFrameFadeRemoveFrame(frame)
+        end
+        frame:SetAlpha(1)
+        return
+    end
+
+	RefineUI:FadeOut(frame, 0.5, self:GetIdleAlpha())
 end
 
 function ExperienceBar:OnEvent(event, arg1)
@@ -524,13 +877,12 @@ function ExperienceBar:OnEvent(event, arg1)
         if factionName then
              -- We have a name, but need ID. Iterate to find it.
              local numFactions = C_Reputation.GetNumFactions()
-             local currentExpansionID = GetExpansionLevel()
              for i=1, numFactions do
                  local data = C_Reputation.GetFactionDataByIndex(i)
                  if data and data.name == factionName then
-                     -- Check if Major Faction and Current Exp
+                     -- Track recent major faction gains across all known renown factions.
                      local majorData = C_MajorFactions.GetMajorFactionData(data.factionID)
-                     if majorData and majorData.expansionID == currentExpansionID then
+                     if majorData then
                         LastGainedFactionID = data.factionID
                         if self.db.AutoTrack == "RECENT" then self:OnEvent() end -- Force update
                      end
@@ -541,7 +893,7 @@ function ExperienceBar:OnEvent(event, arg1)
         return
     end
 
-	local cur, maxVal, perc, rested, restedPerc, level, barType, name = self:GetValues()
+	local cur, maxVal, perc, rested, restedPerc, level, barType, name, factionID = self:GetValues()
 	CurrentType = barType
 
 	self.Bar:SetMinMaxValues(0, maxVal)
@@ -560,6 +912,8 @@ function ExperienceBar:OnEvent(event, arg1)
 	else
 		self.BarRested:Hide()
 	end
+
+    self:UpdateTrackedFactionIcon(factionID)
 	
 	-- Visibility Checks
 	local shouldShow = true
@@ -582,9 +936,11 @@ function ExperienceBar:OnEvent(event, arg1)
 	end
 
 	if shouldShow then
-		self.Bar:Show()
+		self.Frame:Show()
+        self.Bar:Show()
+        self:ApplyAlphaState()
 	else
-		self.Bar:Hide()
+		self.Frame:Hide()
 	end
 end
 
@@ -619,8 +975,8 @@ function ExperienceBar:RegisterEvents()
 	if SetWatchedFactionIndex then
 		RefineUI:HookOnce("ExperienceBar:SetWatchedFactionIndex", "SetWatchedFactionIndex", function() self:OnEvent() end)
 	end
-	if C_Reputation and C_Reputation.SetWatchedFaction then
-		RefineUI:HookOnce("ExperienceBar:C_Reputation:SetWatchedFaction", C_Reputation, "SetWatchedFaction", function() self:OnEvent() end)
+	if C_Reputation and C_Reputation.SetWatchedFactionByID then
+		RefineUI:HookOnce("ExperienceBar:C_Reputation:SetWatchedFactionByID", C_Reputation, "SetWatchedFactionByID", function() self:OnEvent() end)
 	end
 end
 
@@ -635,7 +991,6 @@ function ExperienceBar:OnEnable()
 	if type(config) ~= "table" then
 		config = {
 			Enable = config,
-			Position = { "TOP", "UIParent", "TOP", 0, -12 }
 		}
 		RefineUI.Config.UnitFrames.DataBars.ExperienceBar = config
 	end
@@ -644,6 +999,17 @@ function ExperienceBar:OnEnable()
 	self.db = config
     if self.db.SubMaxTrackMode ~= "EXPERIENCE" and self.db.SubMaxTrackMode ~= "REPUTATION" then
         self.db.SubMaxTrackMode = "EXPERIENCE"
+    end
+    self.db.Scale = ClampScale(self.db.Scale)
+    if self.db.Mouseover == nil then
+        self.db.Mouseover = false
+    end
+    self.db.Alpha = ClampAlpha(self.db.Alpha, DEFAULT_IDLE_ALPHA)
+    if self.db.Position then
+        if not RefineUI.Positions[FRAME_NAME] then
+            RefineUI:SetPosition(FRAME_NAME, self.db.Position)
+        end
+        self.db.Position = nil
     end
 
 	self:CreateBar()

@@ -103,8 +103,7 @@ function EncounterTimeline:ApplyStoredBigIconPosition(frame)
 end
 
 function EncounterTimeline:SaveBigIconPosition(point, x, y)
-    RefineUI.Positions = RefineUI.Positions or {}
-    RefineUI.Positions[self.BIG_ICON_FRAME_NAME] = { point, "UIParent", point, x, y }
+    RefineUI:SetPosition(self.BIG_ICON_FRAME_NAME, { point, "UIParent", point, x, y })
 end
 
 ----------------------------------------------------------------------------------------
@@ -996,6 +995,22 @@ function EncounterTimeline:RegisterBigIconEditModeCallbacks()
     self.bigIconEditModeCallbacksRegistered = true
 end
 
+function EncounterTimeline:PrepareBigIconRuntime()
+    local config = self:GetConfig()
+    if not config or config.BigIconEnable ~= true then
+        return
+    end
+
+    local frame = self:EnsureBigIconFrame()
+    if not frame then
+        return
+    end
+
+    self:ApplyStoredBigIconPosition(frame)
+    self:RegisterBigIconEditModeFrame()
+    self:RegisterBigIconEditModeCallbacks()
+end
+
 ----------------------------------------------------------------------------------------
 -- Event Resolution
 ----------------------------------------------------------------------------------------
@@ -1493,10 +1508,6 @@ function EncounterTimeline:RefreshBigIconVisualState()
     if not frame then
         return
     end
-
-    self:RegisterBigIconEditModeFrame()
-    self:RegisterBigIconEditModeCallbacks()
-    self:ApplyStoredBigIconPosition(frame)
 
     if not IsEditModeActive() then
         self.bigIconPreviewActive = nil

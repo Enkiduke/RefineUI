@@ -15,6 +15,7 @@ end
 local _G = _G
 local type = type
 local C_CVar = C_CVar
+local GetCVar = GetCVar
 
 ----------------------------------------------------------------------------------------
 -- Locals
@@ -27,6 +28,7 @@ local TIMESTAMP_FORMATS = {
 }
 
 local editModeSettingsRegistered = false
+local DEFAULT_TIMESTAMP_FORMAT = TIMESTAMP_FORMATS[1].value
 
 local function GetChatConfig()
     Chat.db = Chat.db or (RefineUI.DB and RefineUI.DB.Chat) or RefineUI.Config.Chat or {}
@@ -45,9 +47,6 @@ local function GetChatConfig()
     if Chat.db.ChatIcons == nil then
         Chat.db.ChatIcons = true
     end
-    if Chat.db.ShortChannels == nil then
-        Chat.db.ShortChannels = true
-    end
     return Chat.db
 end
 
@@ -59,7 +58,33 @@ function Chat:ResolveTimestampFormat()
             return value
         end
     end
-    return TIMESTAMP_FORMATS[1].value
+    return DEFAULT_TIMESTAMP_FORMAT
+end
+
+function Chat:GetTimestampCVarValue()
+    if C_CVar and type(C_CVar.GetCVar) == "function" then
+        return C_CVar.GetCVar("showTimestamps")
+    end
+    if type(GetCVar) == "function" then
+        return GetCVar("showTimestamps")
+    end
+    return nil
+end
+
+function Chat:SyncTimestampConfigFromCVar()
+    local cfg = GetChatConfig()
+    local value = self:GetTimestampCVarValue()
+    if type(value) ~= "string" or value == "" then
+        return
+    end
+
+    if value == "none" then
+        cfg.TimeStamps = false
+        return
+    end
+
+    cfg.TimeStamps = true
+    cfg.TimestampFormat = value
 end
 
 function Chat:ApplyTimestampSetting()
@@ -75,9 +100,12 @@ function Chat:ApplyTimestampSetting()
     end
 end
 
-function Chat:RefreshRuntimeSettings()
+function Chat:RefreshRuntimeSettings(opts)
+    opts = opts or {}
     self.db = GetChatConfig()
-    self:ApplyTimestampSetting()
+    if opts.applyTimestamp == true then
+        self:ApplyTimestampSetting()
+    end
 
     if self.SetupIcons then
         self:SetupIcons()
@@ -113,7 +141,7 @@ function Chat:InitializeEditModeSettings()
             end,
             set = function(_, value)
                 GetChatConfig().TimeStamps = value and true or false
-                Chat:RefreshRuntimeSettings()
+                Chat:RefreshRuntimeSettings({ applyTimestamp = true })
             end,
         },
         {
@@ -126,7 +154,7 @@ function Chat:InitializeEditModeSettings()
             end,
             set = function(_, value)
                 GetChatConfig().TimestampFormat = value
-                Chat:RefreshRuntimeSettings()
+                Chat:RefreshRuntimeSettings({ applyTimestamp = true })
             end,
         },
         {
@@ -162,17 +190,6 @@ function Chat:InitializeEditModeSettings()
             set = function(_, value)
                 GetChatConfig().ChatIcons = value and true or false
                 Chat:RefreshRuntimeSettings()
-            end,
-        },
-        {
-            kind = settingType.Checkbox,
-            name = "Shorten Channel Names",
-            default = true,
-            get = function()
-                return GetChatConfig().ShortChannels ~= false
-            end,
-            set = function(_, value)
-                GetChatConfig().ShortChannels = value and true or false
             end,
         },
     }

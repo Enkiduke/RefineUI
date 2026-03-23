@@ -113,6 +113,11 @@ function UnitFrames:RegisterRuntimeHooks()
     RefineUI:HookOnce("UnitFrames:PlayerFrame_ToVehicleArt", "PlayerFrame_ToVehicleArt", function()
         UnitFrames:StyleFrame(PlayerFrame)
     end)
+    RefineUI:HookOnce("UnitFrames:PlayerFrame_UpdateStatus:RestPresentation", "PlayerFrame_UpdateStatus", function()
+        if UnitFrames.UpdatePlayerRestPresentation then
+            UnitFrames:UpdatePlayerRestPresentation(PlayerFrame)
+        end
+    end)
 
     if PetFrame then
         RefineUI:HookScriptOnce("UnitFrames:PetFrame:OnShow", PetFrame, "OnShow", function(selfFrame)
@@ -177,10 +182,8 @@ function UnitFrames:RegisterRuntimeEvents()
     RefineUI:RegisterEventCallback("UNIT_MAXPOWER", OnPowerEvent, EVENT_KEY.POWER_MAX)
     RefineUI:RegisterEventCallback("UNIT_DISPLAYPOWER", OnPowerEvent, EVENT_KEY.POWER_DISPLAY)
 
-    RefineUI:OnEvents({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, function(_, unit)
-        if unit == "pet" then
-            UnitFrames:ApplyPetFrameDynamicStyle(PetFrame)
-        end
+    RefineUI:OnUnitEvents("pet", { "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, function()
+        UnitFrames:ApplyPetFrameDynamicStyle(PetFrame)
     end, EVENT_KEY.PET_HEALTH)
 
     RefineUI:RegisterEventCallback("UNIT_PET", function(_, ownerUnit)

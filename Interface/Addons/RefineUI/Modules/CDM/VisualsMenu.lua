@@ -244,6 +244,17 @@ local function GetAssignmentTargetIndex(bucket)
     return #ids + 1
 end
 
+local function GetOwnerBucket(owner)
+    if not owner or not CDM.StateGet then
+        return nil
+    end
+    local bucket = CDM:StateGet(owner, "bucketKey")
+    if type(bucket) ~= "string" or bucket == "" then
+        return nil
+    end
+    return bucket
+end
+
 
 local function AddRefineTrackerAssignmentMenu(rootDescription, cooldownID)
     rootDescription:CreateDivider()
@@ -259,6 +270,10 @@ local function AddRefineTrackerAssignmentMenu(rootDescription, cooldownID)
     end)
     rootDescription:CreateButton("Assign to Bottom", function()
         CDM:AssignCooldownToBucket(cooldownID, "Bottom", GetAssignmentTargetIndex("Bottom"))
+        CDM:RequestRefresh(true)
+    end)
+    rootDescription:CreateButton("Assign to Radial", function()
+        CDM:AssignCooldownToBucket(cooldownID, "Radial", GetAssignmentTargetIndex("Radial"))
         CDM:RequestRefresh(true)
     end)
     rootDescription:CreateButton("Move to Not Tracked", function()
@@ -308,6 +323,10 @@ local function AddVisualColorMenu(rootDescription, cooldownID, showBarColor, isS
 end
 
 local function PopulateCooldownSettingsMenu(owner, rootDescription)
+    if not CDM.IsRefineRuntimeOwnerActive or not CDM:IsRefineRuntimeOwnerActive() then
+        return
+    end
+
     local cooldownID = GetOwnerCooldownID(owner)
     if not IsUsableCooldownID(cooldownID) then
         return
@@ -339,6 +358,9 @@ end
 
 function CDM:InstallVisualMenuHooks()
     if self.visualMenuHooksInstalled then
+        return
+    end
+    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
         return
     end
     if not Menu or type(Menu.ModifyMenu) ~= "function" then

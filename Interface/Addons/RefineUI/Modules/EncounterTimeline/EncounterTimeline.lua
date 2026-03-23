@@ -271,6 +271,45 @@ function EncounterTimeline:UpdateEventMetadataFromInfo(eventID, eventInfo)
         hasData = true
     end
 
+    local okSpellID, spellID = pcall(function(info)
+        return info.spellID
+    end, eventInfo)
+    if okSpellID and HasAnyValue(spellID) then
+        metadata.spellID = spellID
+        hasData = true
+    end
+
+    local okSpellName, spellName = pcall(function(info)
+        return info.spellName
+    end, eventInfo)
+    if okSpellName then
+        metadata.trackDisplayName = spellName
+        hasData = true
+    end
+
+    local okOverrideName, overrideName = pcall(function(info)
+        return info.overrideName
+    end, eventInfo)
+    if okOverrideName and not IsUnreadableValue(overrideName) and type(overrideName) == "string" and overrideName ~= "" then
+        metadata.overrideName = overrideName
+        hasData = true
+    end
+
+    local okColor, r, g, b = pcall(function(info)
+        if info.color and type(info.color.GetRGB) == "function" then
+            return info.color:GetRGB()
+        end
+        return nil, nil, nil
+    end, eventInfo)
+    if okColor and HasAnyValue(r) and HasAnyValue(g) and HasAnyValue(b)
+        and not IsUnreadableValue(r) and not IsUnreadableValue(g) and not IsUnreadableValue(b)
+        and type(r) == "number" and type(g) == "number" and type(b) == "number" then
+        metadata.trackTextColorR = r
+        metadata.trackTextColorG = g
+        metadata.trackTextColorB = b
+        hasData = true
+    end
+
     if hasData then
         self:SetEventMetadata(eventID, metadata)
     end

@@ -633,36 +633,7 @@ local function HandleUnitAuraUpdate(unit, unitAuraUpdateInfo)
     if not bucket then
         return
     end
-
-    if type(unitAuraUpdateInfo) ~= "table" or unitAuraUpdateInfo.isFullUpdate then
-        PrimeUnitAuraCache(unit)
-        return
-    end
-
-    if type(unitAuraUpdateInfo.removedAuraInstanceIDs) == "table" then
-        for i = 1, #unitAuraUpdateInfo.removedAuraInstanceIDs do
-            RemoveAuraInstance(unit, unitAuraUpdateInfo.removedAuraInstanceIDs[i])
-        end
-    end
-
-    if type(unitAuraUpdateInfo.updatedAuraInstanceIDs) == "table"
-        and C_UnitAuras
-        and type(C_UnitAuras.GetAuraDataByAuraInstanceID) == "function"
-    then
-        for i = 1, #unitAuraUpdateInfo.updatedAuraInstanceIDs do
-            local auraInstanceID = unitAuraUpdateInfo.updatedAuraInstanceIDs[i]
-            if type(auraInstanceID) == "number" and not IsSecret(auraInstanceID) and auraInstanceID > 0 then
-                local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, unit, auraInstanceID)
-                if ok and type(auraData) == "table" then
-                    StoreAuraData(unit, auraData)
-                end
-            end
-        end
-    end
-
-    if type(unitAuraUpdateInfo.addedAuras) == "table" then
-        CacheAuraTable(unit, unitAuraUpdateInfo.addedAuras)
-    end
+    PrimeUnitAuraCache(unit)
 end
 
 local function IsPayloadWindowActive(payload, nowSeconds)
@@ -716,7 +687,11 @@ local function GetCachedActivePayload(cooldownID, nowSeconds)
         return nil
     end
 
-    return CopyActivePayload(cached)
+    local copied = CopyActivePayload(cached)
+    if type(copied) == "table" then
+        copied.source = "resolver-cache"
+    end
+    return copied
 end
 
 local function BuildPlayerTotemMap()
@@ -732,16 +707,20 @@ local function BuildPlayerTotemMap()
 
     for slot = 1, slotCount do
         local ok, hasTotem, name, startTime, duration, icon, modRate, spellID = pcall(GetTotemInfo, slot)
-        local hasUsableTotem = ok and not IsSecret(hasTotem) and hasTotem == true
-        if hasUsableTotem and not IsSecret(spellID) and type(spellID) == "number" and spellID > 0 then
-            local rawStartTime = type(startTime) == "number" and startTime or 0
-            local rawDuration = type(duration) == "number" and duration or 0
+        local rawSpellID = (not IsSecret(spellID) and type(spellID) == "number" and spellID > 0) and spellID or nil
+        local rawStartTime = (not IsSecret(startTime) and type(startTime) == "number") and startTime or 0
+        local rawDuration = (not IsSecret(duration) and type(duration) == "number") and duration or 0
+
+        -- In combat, hasTotem can become secret even when the slot's spell/timer data is still usable.
+        -- Prefer the usable timing payload over the boolean slot state to avoid dropping active totems.
+        local hasUsableTotem = ok and rawSpellID ~= nil and rawDuration > 0
+        if hasUsableTotem then
             local expirationTime = nil
-            if not IsSecret(rawStartTime) and not IsSecret(rawDuration) then
+            if rawStartTime > 0 then
                 expirationTime = rawStartTime + rawDuration
             end
             local totemInfo = {
-                spellID = spellID,
+                spellID = rawSpellID,
                 slot = slot,
                 name = (not IsSecret(name) and name) or nil,
                 startTime = rawStartTime,
@@ -751,15 +730,15 @@ local function BuildPlayerTotemMap()
                 modRate = (type(modRate) == "number" and modRate) or 1,
             }
 
-            local existing = totemMap[spellID]
+            local existing = totemMap[rawSpellID]
             if not existing then
-                totemMap[spellID] = totemInfo
+                totemMap[rawSpellID] = totemInfo
             elseif existing.expirationTime == nil then
                 if totemInfo.expirationTime ~= nil then
-                    totemMap[spellID] = totemInfo
+                    totemMap[rawSpellID] = totemInfo
                 end
             elseif totemInfo.expirationTime ~= nil and totemInfo.expirationTime > existing.expirationTime then
-                totemMap[spellID] = totemInfo
+                totemMap[rawSpellID] = totemInfo
             end
         end
     end
@@ -1191,6 +1170,34 @@ function CDM:ResolveActiveCooldownPayload(cooldownID, targetAuras, totemMap, now
     return nil
 end
 
+function CDM:ResolveTotemFallbackPayload(cooldownID)
+    if type(cooldownID) ~= "number" or cooldownID <= 0 then
+        return nil
+    end
+
+    local info = self:GetCooldownInfo(cooldownID)
+    if type(info) ~= "table" then
+        return nil
+    end
+
+    local totemInfo = ResolveTotemForInfo(info, BuildPlayerTotemMap())
+    if not totemInfo then
+        return nil
+    end
+
+    local icon = totemInfo.icon or SafeGetSpellTexture(totemInfo.spellID) or DEFAULT_ICON_TEXTURE
+    return {
+        cooldownID = cooldownID,
+        icon = icon,
+        auraUnit = "player",
+        activeStateToken = "totem:" .. tostring(totemInfo.slot) .. ":" .. tostring(totemInfo.spellID),
+        cooldownStartTime = totemInfo.startTime,
+        cooldownDuration = totemInfo.duration,
+        cooldownModRate = totemInfo.modRate or 1,
+        source = "resolver-totem-fallback",
+    }
+end
+
 
 function CDM:_ProbeCooldownAuraInternal(cooldownID)
     local totemMap = BuildPlayerTotemMap()
@@ -1227,6 +1234,9 @@ function CDM:_GetActiveAuraMapInternal(cooldownIDs)
 
     return activeMap
 end
+
+CDM._ProbeCooldownAuraResolverInternal = CDM._ProbeCooldownAuraInternal
+CDM._GetActiveAuraMapResolverInternal = CDM._GetActiveAuraMapInternal
 
 
 function CDM:HandleUnitAuraUpdate(unit, unitAuraUpdateInfo)

@@ -26,14 +26,15 @@ local tostring = tostring
 local strfind = string.find
 local abs = math.abs
 local floor = math.floor
-local tinsert = table.insert
 local tsort = table.sort
 local wipe = wipe
+local tconcat = table.concat
 
 local GetPartyData     = P.GetData
 local GetPartyAuraData = P.GetAuraData
 local BuildPartyHookKey = P.BuildHookKey
 local IsUnreadableNumber = P.IsUnreadableNumber
+local IsSecretValue = P.IsSecretValue
 local GetSafeFrameLevel  = P.GetSafeFrameLevel
 local GetSafeFrameStrata = P.GetSafeFrameStrata
 local IsPartyRaidCompactFrame = P.IsCompactFrame
@@ -55,9 +56,6 @@ local COMPACT_GRID_DIRECTION_FALLBACK = {
     LeftToRight = { x = 1, y = 0, isVertical = false },
 }
 
-local importantByFrameScratch = {}
-local importantLayoutTokenParts = {}
-
 local function WipeTable(tbl)
     if wipe then
         wipe(tbl)
@@ -68,6 +66,27 @@ local function WipeTable(tbl)
         tbl[key] = nil
     end
     return tbl
+end
+
+local function WipeArray(tbl, usedCount)
+    if type(tbl) ~= "table" then
+        return tbl
+    end
+
+    for index = (usedCount or 0) + 1, #tbl do
+        tbl[index] = nil
+    end
+    return tbl
+end
+
+local function GetAuraScratch(frame)
+    local frameData = GetPartyData(frame)
+    frameData.AuraScratch = frameData.AuraScratch or {
+        importantBuffFrames = {},
+        layoutParts = {},
+        importantByFrame = {},
+    }
+    return frameData.AuraScratch
 end
 
 ----------------------------------------------------------------------------------------
@@ -248,8 +267,47 @@ local function EnsureCompactImportantBuffAnchor(ownerFrame)
     return anchor
 end
 
-local function BuildCompactImportantLayoutToken(frame, importantBuffFrames, stride, spacing, direction)
-    local parts = WipeTable(importantLayoutTokenParts)
+local function GetComparableCompactAuraIdentity(auraFrame)
+    local auraData = auraFrame and GetPartyAuraData(auraFrame)
+    local auraInstanceID = auraData and auraData.auraInstanceID
+    if type(auraInstanceID) == "number" and not IsSecretValue(auraInstanceID) then
+        return "I:" .. tostring(auraInstanceID)
+    end
+
+    local spellID = auraData and auraData.auraSpellID
+    if type(spellID) == "number" and not IsSecretValue(spellID) then
+        return "S:" .. tostring(spellID)
+    end
+
+    return nil
+end
+
+local function BuildCompactImportantMembershipToken(frame, importantBuffFrames, auraScratch)
+    local parts = WipeArray(auraScratch.layoutParts, 0)
+    local nextIndex = 1
+
+    parts[nextIndex] = tostring(#importantBuffFrames)
+    nextIndex = nextIndex + 1
+
+    for index = 1, #importantBuffFrames do
+        local token = GetComparableCompactAuraIdentity(importantBuffFrames[index])
+        if not token then
+            WipeArray(parts, 0)
+            return nil
+        end
+
+        parts[nextIndex] = token
+        nextIndex = nextIndex + 1
+    end
+
+    local membershipToken = tconcat(parts, "|", 1, nextIndex - 1)
+    WipeArray(parts, 0)
+    return membershipToken
+end
+
+local function BuildCompactImportantLayoutToken(frame, importantBuffFrames, stride, spacing, direction, auraScratch)
+    local importantByFrame = auraScratch.importantByFrame
+    local parts = WipeArray(auraScratch.layoutParts, 0)
     parts[1] = tostring(stride)
     parts[2] = ":"
     parts[3] = tostring(spacing)
@@ -261,11 +319,16 @@ local function BuildCompactImportantLayoutToken(frame, importantBuffFrames, stri
     local nextIndex = 8
     for index = 1, #importantBuffFrames do
         local buffFrame = importantBuffFrames[index]
-        local auraData = buffFrame and GetPartyAuraData(buffFrame)
+        local token = GetComparableCompactAuraIdentity(buffFrame)
+        if not token then
+            WipeArray(parts, 0)
+            return nil
+        end
+
         parts[nextIndex] = "|I:"
         parts[nextIndex + 1] = tostring(index)
         parts[nextIndex + 2] = ":"
-        parts[nextIndex + 3] = tostring(auraData and (auraData.auraInstanceID or auraData.auraSpellID) or buffFrame)
+        parts[nextIndex + 3] = token
         nextIndex = nextIndex + 4
     end
 
@@ -273,19 +336,54 @@ local function BuildCompactImportantLayoutToken(frame, importantBuffFrames, stri
         for index = 1, #frame.buffFrames do
             local buffFrame = frame.buffFrames[index]
             if buffFrame and buffFrame:IsShown() then
-                local auraData = GetPartyAuraData(buffFrame)
+                local token = GetComparableCompactAuraIdentity(buffFrame)
+                if not token then
+                    WipeArray(parts, 0)
+                    return nil
+                end
+
                 parts[nextIndex] = "|B:"
                 parts[nextIndex + 1] = tostring(index)
                 parts[nextIndex + 2] = ":"
-                parts[nextIndex + 3] = tostring(auraData and (auraData.auraInstanceID or auraData.auraSpellID) or buffFrame)
+                parts[nextIndex + 3] = token
                 parts[nextIndex + 4] = ":"
-                parts[nextIndex + 5] = importantByFrameScratch[buffFrame] and "1" or "0"
+                parts[nextIndex + 5] = importantByFrame[buffFrame] and "1" or "0"
                 nextIndex = nextIndex + 6
             end
         end
     end
 
-    return table.concat(parts, "")
+    local layoutToken = tconcat(parts, "", 1, nextIndex - 1)
+    WipeArray(parts, 0)
+    return layoutToken
+end
+
+local function BuildCompactAuraSpacingSignature(data, point, relPoint, x, y, offsetX, offsetY)
+    return tostring(data.containerType or "")
+        .. "|"
+        .. tostring(data.containerIndex or 0)
+        .. "|"
+        .. tostring(point or "")
+        .. "|"
+        .. tostring(relPoint or "")
+        .. "|"
+        .. tostring(x or 0)
+        .. "|"
+        .. tostring(y or 0)
+        .. "|"
+        .. tostring(offsetX or 0)
+        .. "|"
+        .. tostring(offsetY or 0)
+end
+
+local function BuildCompactAuraBaseAnchorToken(point, relPoint, x, y)
+    return tostring(point or "")
+        .. "|"
+        .. tostring(relPoint or "")
+        .. "|"
+        .. tostring(x or 0)
+        .. "|"
+        .. tostring(y or 0)
 end
 
 ----------------------------------------------------------------------------------------
@@ -436,11 +534,22 @@ local function ApplyCompactAuraSpacingFromAnchor(auraFrame, point, relTo, relPoi
         return
     end
 
+    local spacingMode = (offsetX == 0 and offsetY == 0) and "base" or "carrier"
+    local spacingSignature = BuildCompactAuraSpacingSignature(data, point, relPoint, x, y, offsetX, offsetY)
+    if data.spacingSignature == spacingSignature and data.spacingRelTo == relTo and data.spacingMode == spacingMode then
+        return
+    end
+
     if offsetX == 0 and offsetY == 0 then
         data.spacingAdjusting = true
         pcall(auraFrame.ClearAllPoints, auraFrame)
         pcall(auraFrame.SetPoint, auraFrame, point, relTo, relPoint, x, y)
         data.spacingAdjusting = false
+        data.spacingSignature = spacingSignature
+        data.spacingRelTo = relTo
+        data.spacingMode = spacingMode
+        data.lastAppliedBaseAnchor = BuildCompactAuraBaseAnchorToken(point, relPoint, x, y)
+        data.lastAppliedBaseRelTo = relTo
         return
     end
 
@@ -470,6 +579,11 @@ local function ApplyCompactAuraSpacingFromAnchor(auraFrame, point, relTo, relPoi
         pcall(auraFrame.SetPoint, auraFrame, point, carrier, point, offsetX, offsetY)
     end
     data.spacingAdjusting = false
+    data.spacingSignature = spacingSignature
+    data.spacingRelTo = relTo
+    data.spacingMode = spacingMode
+    data.lastAppliedBaseAnchor = BuildCompactAuraBaseAnchorToken(point, relPoint, x, y)
+    data.lastAppliedBaseRelTo = relTo
 end
 
 local function ApplyCompactAuraSpacingToCurrentPoint(auraFrame)
@@ -636,7 +750,8 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
     end
 
     local frameData = GetPartyData(frame)
-    local importantByFrame = WipeTable(importantByFrameScratch)
+    local auraScratch = GetAuraScratch(frame)
+    local importantByFrame = WipeTable(auraScratch.importantByFrame)
     for i = 1, #importantBuffFrames do
         local buffFrame = importantBuffFrames[i]
         if buffFrame then
@@ -647,9 +762,16 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
     for _, buffFrame in ipairs(frame.buffFrames) do
         local data = GetPartyAuraData(buffFrame)
         data.isInImportantAnchor = importantByFrame[buffFrame] == true
+        if not data.isInImportantAnchor then
+            data.importantAnchorSignature = nil
+        end
     end
 
     if #importantBuffFrames == 0 then
+        frameData.CompactAuraLayoutSignature = "none"
+        if frameData.importantMembershipToken == "none" and frameData.importantLayoutToken == "none" then
+            return
+        end
         frameData.importantMembershipToken = "none"
         frameData.importantLayoutToken = "none"
         for _, buffFrame in ipairs(frame.buffFrames) do
@@ -661,6 +783,7 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
     end
 
     SortImportantBuffFrames(importantBuffFrames)
+    local membershipToken = BuildCompactImportantMembershipToken(frame, importantBuffFrames, auraScratch)
 
     local anchor = EnsureCompactImportantBuffAnchor(frame)
     if not anchor then
@@ -674,6 +797,20 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
     end
     local spacing = GetCompactAuraIconSpacing()
     local direction = layoutSpec and layoutSpec.direction
+    local layoutToken = BuildCompactImportantLayoutToken(frame, importantBuffFrames, stride, spacing, direction, auraScratch)
+
+    if membershipToken and layoutToken
+        and frameData.importantMembershipToken == membershipToken
+        and frameData.importantLayoutToken == layoutToken then
+        frameData.CompactAuraLayoutSignature = layoutToken
+        return
+    end
+
+    frameData.importantMembershipToken = membershipToken or nil
+    frameData.importantLayoutToken = layoutToken or nil
+    frameData.CompactAuraLayoutSignature = layoutToken or membershipToken or nil
+
+    local anchorPoint, _, anchorRelativePoint, anchorX, anchorY = GetCompactImportantAnchorPoint(frame)
 
     -- Place important frames onto the important anchor
     for index = 1, #importantBuffFrames do
@@ -686,10 +823,39 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
             local x = -(col * (iconWidth + spacing))
             local y = -(row * (iconHeight + spacing))
             local data = GetPartyAuraData(buffFrame)
-            data.spacingAdjusting = true
-            buffFrame:ClearAllPoints()
-            buffFrame:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", x, y)
-            data.spacingAdjusting = false
+            local identityToken = GetComparableCompactAuraIdentity(buffFrame)
+            local nextImportantAnchorSignature = identityToken
+                and (identityToken
+                    .. "|"
+                    .. tostring(index)
+                    .. "|"
+                    .. tostring(stride)
+                    .. "|"
+                    .. tostring(spacing)
+                    .. "|"
+                    .. tostring(anchorPoint)
+                    .. "|"
+                    .. tostring(anchorRelativePoint)
+                    .. "|"
+                    .. tostring(anchorX)
+                    .. "|"
+                    .. tostring(anchorY)
+                    .. "|"
+                    .. tostring(x)
+                    .. "|"
+                    .. tostring(y))
+                or nil
+
+            if not nextImportantAnchorSignature or data.importantAnchorSignature ~= nextImportantAnchorSignature then
+                data.spacingAdjusting = true
+                buffFrame:ClearAllPoints()
+                buffFrame:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", x, y)
+                data.spacingAdjusting = false
+            elseif not buffFrame:IsShown() then
+                buffFrame:Show()
+            end
+
+            data.importantAnchorSignature = nextImportantAnchorSignature
         end
     end
 
@@ -749,14 +915,54 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
             data.baseX = nextBaseX
             data.baseY = nextBaseY
             data.containerIndex = nextContainerIndex
-
-            -- Re-apply spacing from corrected base position.
-            data.spacingAdjusting = true
-            buffFrame:ClearAllPoints()
-            data.spacingAdjusting = false
+            data.importantAnchorSignature = nil
+            data.lastAppliedBaseAnchor = BuildCompactAuraBaseAnchorToken(originPoint, originRelPoint, nextBaseX, nextBaseY)
             ApplyCompactAuraSpacingToCurrentPoint(buffFrame)
 
             seqIndex = seqIndex + 1
+        end
+    end
+end
+
+local function InvalidateCompactAuraLayoutState(frame)
+    if not frame then
+        return
+    end
+
+    local frameData = GetPartyData(frame)
+    frameData.CompactAuraLayoutSignature = nil
+    frameData.importantMembershipToken = nil
+    frameData.importantLayoutToken = nil
+
+    local function ResetAuraState(auraFrame)
+        if not auraFrame then
+            return
+        end
+
+        local data = GetPartyAuraData(auraFrame)
+        data.spacingSignature = nil
+        data.spacingRelTo = nil
+        data.spacingMode = nil
+        data.importantAnchorSignature = nil
+        data.lastAppliedBaseAnchor = nil
+        data.lastAppliedBaseRelTo = nil
+    end
+
+    if type(frame.buffFrames) == "table" then
+        for _, auraFrame in ipairs(frame.buffFrames) do
+            ResetAuraState(auraFrame)
+        end
+    end
+
+    if type(frame.debuffFrames) == "table" then
+        for _, auraFrame in ipairs(frame.debuffFrames) do
+            ResetAuraState(auraFrame)
+        end
+    end
+
+    if type(frame.dispelDebuffFrames) == "table" then
+        for _, auraFrame in ipairs(frame.dispelDebuffFrames) do
+            ResetAuraState(auraFrame)
         end
     end
 end
@@ -769,6 +975,7 @@ local function PrewarmAuraHelpersForFrame(frame)
         return
     end
 
+    InvalidateCompactAuraLayoutState(frame)
     EnsureCompactImportantBuffAnchor(frame)
     ApplyCompactAuraSpacingForFrame(frame)
 
@@ -812,3 +1019,5 @@ P.ApplyCompactAuraSpacingForFrame    = ApplyCompactAuraSpacingForFrame
 P.ApplyCompactAuraSpacingToCurrentPoint = ApplyCompactAuraSpacingToCurrentPoint
 P.ApplyCompactImportantBuffLayout    = ApplyCompactImportantBuffLayout
 P.PrewarmAuraHelpersForFrame         = PrewarmAuraHelpersForFrame
+P.GetAuraScratch                     = GetAuraScratch
+P.InvalidateCompactAuraLayoutState   = InvalidateCompactAuraLayoutState

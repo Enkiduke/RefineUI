@@ -492,21 +492,12 @@ function Maps:GetCachedWorldQuestRewardItem(questID)
 end
 
 function Maps:GetWorldQuestRewardTooltip()
-    local primaryShoppingTooltip = _G.ShoppingTooltip1
-    local secondaryShoppingTooltip = _G.ShoppingTooltip2
-
     if self._worldQuestRewardTooltip and self._worldQuestRewardTooltip.SetOwner then
-        if primaryShoppingTooltip and secondaryShoppingTooltip and not self._worldQuestRewardTooltip.shoppingTooltips then
-            self._worldQuestRewardTooltip.shoppingTooltips = { primaryShoppingTooltip, secondaryShoppingTooltip }
-        end
         return self._worldQuestRewardTooltip
     end
 
     local rewardTooltip = CreateFrame("GameTooltip", "RefineUIWorldQuestRewardTooltip", UIParent, "GameTooltipTemplate")
     rewardTooltip:SetFrameStrata("TOOLTIP")
-    if primaryShoppingTooltip and secondaryShoppingTooltip then
-        rewardTooltip.shoppingTooltips = { primaryShoppingTooltip, secondaryShoppingTooltip }
-    end
     rewardTooltip:Hide()
     self._worldQuestRewardTooltip = rewardTooltip
     return rewardTooltip
@@ -516,15 +507,6 @@ function Maps:HideWorldQuestRewardTooltip()
     local rewardTooltip = self._worldQuestRewardTooltip
     if not rewardTooltip then
         return
-    end
-
-    if rewardTooltip.shoppingTooltips then
-        for index = 1, #rewardTooltip.shoppingTooltips do
-            local shoppingTooltip = rewardTooltip.shoppingTooltips[index]
-            if shoppingTooltip then
-                shoppingTooltip:Hide()
-            end
-        end
     end
 
     rewardTooltip:Hide()
@@ -800,7 +782,7 @@ function Maps:ShowWorldQuestRewardTooltip(button)
         return
     end
 
-    rewardTooltip:SetOwner(GameTooltip, "ANCHOR_NONE")
+    rewardTooltip:SetOwner(button, "ANCHOR_NONE")
     rewardTooltip:ClearAllPoints()
     rewardTooltip:SetPoint("TOPLEFT", GameTooltip, "TOPRIGHT", 8, 0)
 
@@ -816,10 +798,6 @@ function Maps:ShowWorldQuestRewardTooltip(button)
     if not shown then
         self:HideWorldQuestRewardTooltip()
         return
-    end
-
-    if _G.GameTooltip_ShowCompareItem and rewardTooltip.shoppingTooltips and rewardTooltip.shoppingTooltips[1] and rewardTooltip.shoppingTooltips[2] then
-        _G.GameTooltip_ShowCompareItem(rewardTooltip)
     end
 
     rewardTooltip:Show()

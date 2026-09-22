@@ -62,6 +62,21 @@ local function GetUtil()
     return private and private.Util
 end
 
+local function GetCacheableUnitGUID(unit, util)
+    local guid = UnitGUID(unit)
+
+    -- Protected NPCs can return a secret value whose type is still "string".
+    -- Gate it before any comparison or table indexing.
+    if util.IsSecret(guid) or not util.IsAccessibleValue(guid) then
+        return nil
+    end
+    if type(guid) ~= "string" or guid == "" then
+        return nil
+    end
+
+    return guid
+end
+
 local function GetNativeNameSource(unitFrame)
     if not unitFrame then
         return nil
@@ -303,10 +318,8 @@ local function ResolveNpcTitle(unit)
         return nil, true
     end
 
-    local cacheGUID = nil
-    local guid = UnitGUID(unit)
-    if type(guid) == "string" and guid ~= "" and not util.IsSecret(guid) and util.IsAccessibleValue(guid) then
-        cacheGUID = guid
+    local cacheGUID = GetCacheableUnitGUID(unit, util)
+    if cacheGUID then
         local cachedTitle = runtime.npcTitleCacheByGUID[cacheGUID]
         if cachedTitle ~= nil then
             if cachedTitle == false then
@@ -745,11 +758,7 @@ function Nameplates:ApplyNpcTitleVisual(nameplate, unit, opts)
     end
 
     local runtime = private and private.Runtime
-    local guid = UnitGUID(resolvedUnit)
-    local cacheGUID = nil
-    if runtime and type(guid) == "string" and guid ~= "" and not util.IsSecret(guid) and util.IsAccessibleValue(guid) then
-        cacheGUID = guid
-    end
+    local cacheGUID = runtime and GetCacheableUnitGUID(resolvedUnit, util) or nil
 
     if cacheGUID and runtime then
         local cachedTitle = runtime.npcTitleCacheByGUID[cacheGUID]

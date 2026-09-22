@@ -1,10 +1,10 @@
 ----------------------------------------------------------------------------------------
--- EncounterAchievements Interactions
+-- AdventureGuideInstances Interactions
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local EncounterAchievements = RefineUI:GetModule("EncounterAchievements")
-if not EncounterAchievements then
+local AdventureGuideInstances = RefineUI:GetModule("AdventureGuideInstances")
+if not AdventureGuideInstances then
     return
 end
 
@@ -107,12 +107,12 @@ end
 ----------------------------------------------------------------------------------------
 -- Achievement UI Availability
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:IsAchievementUIReady()
+function AdventureGuideInstances:IsAchievementUIReady()
     return type(_G.AchievementFrame_SelectAchievement) == "function"
         and type(_G.AchievementFrame_ToggleAchievementFrame) == "function"
 end
 
-function EncounterAchievements:EnsureAchievementUILoaded()
+function AdventureGuideInstances:EnsureAchievementUILoaded()
     if self:IsAchievementUIReady() then
         self.achievementUIReady = true
         return true
@@ -140,25 +140,19 @@ function EncounterAchievements:EnsureAchievementUILoaded()
     return self.achievementUIReady == true
 end
 
-function EncounterAchievements:OnAchievementUILoaded()
+function AdventureGuideInstances:OnAchievementUILoaded()
     self.achievementUIReady = self:IsAchievementUIReady()
     if not self.achievementUIReady then
         return
     end
-
-    if self.CancelPendingInstanceRowBuilds then
-        self:CancelPendingInstanceRowBuilds()
+    if self.achievementUIInitialized then
+        return
     end
+    self.achievementUIInitialized = true
 
     -- Re-evaluate mappings after the Achievement UI has initialized all category data.
-    self._instanceCategoryCache = {}
-    self._instanceAchievementCache = {}
-    self._instanceRowCache = {}
-    self._categoryGraph = nil
-    self._allCategoryIDs = nil
-    self._categoryPathCache = {}
-    self._categoryPathTokenCache = {}
-    self._categoryDepthCache = {}
+    self:InitializeData()
+    self:ScheduleCompletionRefresh()
 
     self:EnsureAchievementListView()
 
@@ -170,7 +164,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Row Rendering
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:InitializeAchievementRow(button, elementData)
+function AdventureGuideInstances:InitializeAchievementRow(button, elementData)
     if not button or type(elementData) ~= "table" then
         return
     end
@@ -295,7 +289,7 @@ function EncounterAchievements:InitializeAchievementRow(button, elementData)
     end
 end
 
-function EncounterAchievements:ResetAchievementRow(button)
+function AdventureGuideInstances:ResetAchievementRow(button)
     if not button then
         return
     end
@@ -314,7 +308,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Interactions
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:ToggleAchievementTracking(achievementID)
+function AdventureGuideInstances:ToggleAchievementTracking(achievementID)
     if type(achievementID) ~= "number" or achievementID <= 0 then
         return false
     end
@@ -369,7 +363,7 @@ function EncounterAchievements:ToggleAchievementTracking(achievementID)
     return false
 end
 
-function EncounterAchievements:OpenAchievementInUI(achievementID)
+function AdventureGuideInstances:OpenAchievementInUI(achievementID)
     if type(achievementID) ~= "number" or achievementID <= 0 then
         return false
     end
@@ -400,7 +394,7 @@ function EncounterAchievements:OpenAchievementInUI(achievementID)
     return false
 end
 
-function EncounterAchievements:OnAchievementRowClick(button)
+function AdventureGuideInstances:OnAchievementRowClick(button)
     local achievementID = button and button.achievementID
     if type(achievementID) ~= "number" or achievementID <= 0 then
         return
@@ -421,7 +415,7 @@ function EncounterAchievements:OnAchievementRowClick(button)
     self:OpenAchievementInUI(achievementID)
 end
 
-function EncounterAchievements:OnAchievementRowEnter(button)
+function AdventureGuideInstances:OnAchievementRowEnter(button)
     if not button or type(button.achievementID) ~= "number" then
         return
     end
@@ -446,7 +440,7 @@ function EncounterAchievements:OnAchievementRowEnter(button)
     _G.GameTooltip:Show()
 end
 
-function EncounterAchievements:OnAchievementRowLeave()
+function AdventureGuideInstances:OnAchievementRowLeave()
     if _G.GameTooltip and type(_G.GameTooltip.Hide) == "function" then
         _G.GameTooltip:Hide()
     end

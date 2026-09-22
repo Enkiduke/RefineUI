@@ -156,8 +156,18 @@ function CR.GetSoulFragmentsState(specID)
         return 0, 0
     end
 
-    local darkHeartAura = type(GetPlayerAuraBySpellID) == "function" and GetPlayerAuraBySpellID(K.AURA_DARK_HEART_ID) or nil
-    local collapsingStarAura = type(GetPlayerAuraBySpellID) == "function" and GetPlayerAuraBySpellID(K.AURA_COLLAPSING_STAR_ID) or nil
+    local darkHeartAura = nil
+    local collapsingStarAura = nil
+    if type(GetPlayerAuraBySpellID) == "function" then
+        local okDark, aura = pcall(GetPlayerAuraBySpellID, K.AURA_DARK_HEART_ID)
+        if okDark and aura and not (issecretvalue and issecretvalue(aura)) then
+            darkHeartAura = aura
+        end
+        local okStar, auraStar = pcall(GetPlayerAuraBySpellID, K.AURA_COLLAPSING_STAR_ID)
+        if okStar and auraStar and not (issecretvalue and issecretvalue(auraStar)) then
+            collapsingStarAura = auraStar
+        end
+    end
     local activeAura = collapsingStarAura or darkHeartAura
 
     local currentValue = activeAura and activeAura.applications or 0

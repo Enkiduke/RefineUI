@@ -24,13 +24,17 @@ local ipairs = ipairs
 
 local addQuestWatch = C_QuestLog.AddQuestWatch
 local removeQuestWatch = C_QuestLog.RemoveQuestWatch
+local removeWorldQuestWatch = C_QuestLog.RemoveWorldQuestWatch
 local isWorldQuest = C_QuestLog.IsWorldQuest
 local getQuestInfo = C_QuestLog.GetInfo
 local getNumQuestLogEntries = C_QuestLog.GetNumQuestLogEntries
 local getLogIndexForQuestID = C_QuestLog.GetLogIndexForQuestID
 local getNumQuestWatches = C_QuestLog.GetNumQuestWatches
 local getQuestIDForQuestWatchIndex = C_QuestLog.GetQuestIDForQuestWatchIndex
+local getNumWorldQuestWatches = C_QuestLog.GetNumWorldQuestWatches
+local getQuestIDForWorldQuestWatchIndex = C_QuestLog.GetQuestIDForWorldQuestWatchIndex
 local getQuestWatchType = C_QuestLog.GetQuestWatchType
+local getTasksTable = GetTasksTable
 
 local function isQuestWatched(questID)
     if getQuestWatchType then
@@ -43,7 +47,7 @@ local hiddenQuests = {
     [24636] = true,
 }
 
-local questDB
+local manualPins = {}
 
 local AUTO_CAP = 12
 local OPS_PER_TICK = 2
@@ -65,13 +69,6 @@ local knownWatchTypes = {}
 ----------------------------------------------------------------------------------------
 --	Helpers
 ----------------------------------------------------------------------------------------
-local function EnsureDB()
-    if not questDB then
-        RefineUI_ZonedQuestsDB = RefineUI_ZonedQuestsDB or {}
-        questDB = RefineUI_ZonedQuestsDB
-    end
-end
-
 local function IsEligibleQuestInfo(info)
     if not info or not info.questID then
         return false
@@ -92,47 +89,71 @@ local function ShouldAutoTrack(info)
     return info.isOnMap or hiddenQuests[info.questID] or false
 end
 
+local function RecordWatch(watchedSet, watchedOrder, worldQuestSet, questID, worldQuest)
+    if not questID then
+        return
+    end
+
+    if worldQuest then
+        worldQuestSet[questID] = true
+    end
+
+    if watchedSet[questID] then
+        return
+    end
+
+    watchedSet[questID] = true
+    tinsert(watchedOrder, questID)
+
+    if getQuestWatchType then
+        local watchType = getQuestWatchType(questID)
+        if watchType ~= nil then
+            knownWatchTypes[questID] = watchType
+        end
+    end
+end
+
 local function BuildCurrentWatchSet()
     local watchedSet = {}
     local watchedOrder = {}
+    local worldQuestSet = {}
 
     if getNumQuestWatches and getQuestIDForQuestWatchIndex then
         local numWatched = getNumQuestWatches() or 0
         for i = 1, numWatched do
-            local questID = getQuestIDForQuestWatchIndex(i)
-            if questID then
-                watchedSet[questID] = true
-                tinsert(watchedOrder, questID)
-                if getQuestWatchType then
-                    local watchType = getQuestWatchType(questID)
-                    if watchType ~= nil then
-                        knownWatchTypes[questID] = watchType
-                    end
-                end
-            end
+            RecordWatch(watchedSet, watchedOrder, worldQuestSet, getQuestIDForQuestWatchIndex(i))
         end
     else
         for i = 1, getNumQuestLogEntries() do
             local info = getQuestInfo(i)
             if IsEligibleQuestInfo(info) and isQuestWatched(info.questID) then
-                watchedSet[info.questID] = true
-                tinsert(watchedOrder, info.questID)
-                if getQuestWatchType then
-                    local watchType = getQuestWatchType(info.questID)
-                    if watchType ~= nil then
-                        knownWatchTypes[info.questID] = watchType
-                    end
-                end
+                RecordWatch(watchedSet, watchedOrder, worldQuestSet, info.questID)
             end
         end
     end
 
-    return watchedSet, watchedOrder
+    for i = 1, getNumWorldQuestWatches() do
+        RecordWatch(watchedSet, watchedOrder, worldQuestSet, getQuestIDForWorldQuestWatchIndex(i), true)
+    end
+
+    return watchedSet, watchedOrder, worldQuestSet
+end
+
+local function BuildLocalWorldQuestSet()
+    local localWorldQuests = {}
+    local tasks = getTasksTable()
+
+    for i = 1, #tasks do
+        local questID = tasks[i]
+        if isWorldQuest(questID) then
+            localWorldQuests[questID] = true
+        end
+    end
+
+    return localWorldQuests
 end
 
 local function BuildDesiredWatchSet()
-    EnsureDB()
-
     local desiredSet = {}
     local desiredOrder = {}
     local autoCandidates = {}
@@ -141,7 +162,7 @@ local function BuildDesiredWatchSet()
         local info = getQuestInfo(i)
         if IsEligibleQuestInfo(info) then
             local questID = info.questID
-            if questDB[questID] then
+            if manualPins[questID] then
                 if not desiredSet[questID] then
                     desiredSet[questID] = true
                     tinsert(desiredOrder, questID)
@@ -180,7 +201,8 @@ local function StopQueueProcessing(clearQueue)
 end
 
 local function BuildFullResyncOps()
-    local watchedSet, watchedOrder = BuildCurrentWatchSet()
+    local watchedSet, watchedOrder, worldQuestSet = BuildCurrentWatchSet()
+    local localWorldQuests = BuildLocalWorldQuestSet()
     local desiredSet, desiredOrder = BuildDesiredWatchSet()
 
     wipe(pendingOps)
@@ -193,8 +215,13 @@ local function BuildFullResyncOps()
     end
 
     for _, questID in ipairs(watchedOrder) do
-        if not desiredSet[questID] then
-            tinsert(pendingOps, { op = "remove", questID = questID })
+        local keepLocalWorldQuest = worldQuestSet[questID] and localWorldQuests[questID]
+        if not desiredSet[questID] and not keepLocalWorldQuest then
+            tinsert(pendingOps, {
+                op = "remove",
+                questID = questID,
+                isWorldQuest = worldQuestSet[questID] or false,
+            })
         end
     end
 end
@@ -253,7 +280,11 @@ local function ProcessQueueTick()
                 end
             elseif op.op == "remove" then
                 if isQuestWatched(op.questID) then
-                    removeQuestWatch(op.questID)
+                    if op.isWorldQuest then
+                        removeWorldQuestWatch(op.questID)
+                    else
+                        removeQuestWatch(op.questID)
+                    end
                 end
                 knownWatchTypes[op.questID] = nil
             end
@@ -330,8 +361,6 @@ local function RemovePendingOpsForQuest(questID)
 end
 
 local function EvaluateQuestWant(questID)
-    EnsureDB()
-
     local questLogIndex = getLogIndexForQuestID and getLogIndexForQuestID(questID)
     if not questLogIndex then
         return false, false
@@ -342,7 +371,7 @@ local function EvaluateQuestWant(questID)
         return false, false
     end
 
-    if questDB[questID] then
+    if manualPins[questID] then
         return true, true
     end
 
@@ -358,18 +387,18 @@ local function CanAddAutoQuest(questID)
     local autoCount = 0
 
     for _, watchedQuestID in ipairs(watchedOrder) do
-        if not questDB[watchedQuestID] then
+        if not isWorldQuest(watchedQuestID) and not manualPins[watchedQuestID] then
             autoCount = autoCount + 1
         end
     end
 
-    if watchedSet[questID] and not questDB[questID] then
+    if watchedSet[questID] and not manualPins[questID] then
         return true
     end
 
     for i = queueIndex, #pendingOps do
         local op = pendingOps[i]
-        if op and op.questID and not questDB[op.questID] then
+        if op and op.questID and not op.isWorldQuest and not manualPins[op.questID] then
             if op.op == "add" and not watchedSet[op.questID] then
                 watchedSet[op.questID] = true
                 autoCount = autoCount + 1
@@ -397,6 +426,11 @@ local function QueueIncrementalQuestUpdate(questID)
         return
     end
 
+    if isWorldQuest(questID) then
+        QueueResync(0.05)
+        return
+    end
+
     local want, isManualPin = EvaluateQuestWant(questID)
     local watched = isQuestWatched(questID)
 
@@ -409,7 +443,11 @@ local function QueueIncrementalQuestUpdate(questID)
         tinsert(pendingOps, { op = "add", questID = questID })
         StartQueueProcessing()
     elseif not want and watched then
-        tinsert(pendingOps, { op = "remove", questID = questID })
+        tinsert(pendingOps, {
+            op = "remove",
+            questID = questID,
+            isWorldQuest = isWorldQuest(questID),
+        })
         StartQueueProcessing()
     end
 end
@@ -418,8 +456,7 @@ local function CleanupQuestState(questID)
     if not questID then
         return
     end
-    EnsureDB()
-    questDB[questID] = nil
+    manualPins[questID] = nil
     knownWatchTypes[questID] = nil
     RemovePendingOpsForQuest(questID)
 end
@@ -428,8 +465,6 @@ end
 --	Update Trigger
 -----------------------------------------------------------------------------------------
 function AutoZoneTrack:UpdateTrigger(delay, questID)
-    EnsureDB()
-
     if not Config.Quests.AutoZoneTrack then
         RefineUI:CancelDebounce(RESYNC_DEBOUNCE_KEY)
         StopQueueProcessing(true)
@@ -452,8 +487,6 @@ function AutoZoneTrack:OnQuestWatchListChanged(questID, added)
         return
     end
 
-    EnsureDB()
-
     if isApplyingQueue then
         if added and getQuestWatchType then
             knownWatchTypes[questID] = getQuestWatchType(questID)
@@ -466,14 +499,14 @@ function AutoZoneTrack:OnQuestWatchListChanged(questID, added)
     if added then
         local watchType = getQuestWatchType and getQuestWatchType(questID)
         knownWatchTypes[questID] = watchType
-        if watchType == QUEST_WATCH_TYPE_MANUAL then
-            questDB[questID] = true
+        if watchType == QUEST_WATCH_TYPE_MANUAL and not isWorldQuest(questID) then
+            manualPins[questID] = true
         end
     else
         local previousType = knownWatchTypes[questID]
         knownWatchTypes[questID] = nil
         if previousType == QUEST_WATCH_TYPE_MANUAL then
-            questDB[questID] = nil
+            manualPins[questID] = nil
         end
     end
 end
@@ -485,8 +518,6 @@ function AutoZoneTrack:OnInitialize()
     if not Config.Quests.Enable then
         return
     end
-
-    EnsureDB()
 
     local events = {
         "QUEST_WATCH_LIST_CHANGED",

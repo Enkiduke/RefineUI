@@ -42,7 +42,13 @@ function CR.UpdateSegmentedBar(resource)
             barCount = maximumValue
         end
     elseif resource.Type == "MAELSTROM" then
-        local aura = GetPlayerAuraBySpellID(K.ENHANCEMENT_MAELSTROM_WEAPON_AURA_SPELL_ID)
+        local aura = nil
+        if type(GetPlayerAuraBySpellID) == "function" then
+            local ok, res = pcall(GetPlayerAuraBySpellID, K.ENHANCEMENT_MAELSTROM_WEAPON_AURA_SPELL_ID)
+            if ok and res and not (issecretvalue and issecretvalue(res)) then
+                aura = res
+            end
+        end
         minimumValue = aura and aura.applications or 0
         maximumValue = 10
         barCount = 10

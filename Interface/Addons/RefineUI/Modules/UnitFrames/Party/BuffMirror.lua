@@ -33,6 +33,21 @@ local TrySetFrameLevel = P.TrySetFrameLevel
 local TrySetFrameStrata = P.TrySetFrameStrata
 local IsUnreadableNumber = P.IsUnreadableNumber
 local IsPartyRaidCompactFrame = P.IsCompactFrame
+local IsForbiddenObject = P.IsForbiddenObject or function(object)
+    if not object then return false end
+    if type(object) ~= "table" and type(object) ~= "userdata" then return false end
+    local isForbidden = object.IsForbidden
+    if type(isForbidden) ~= "function" then return false end
+    local ok, forbidden = pcall(isForbidden, object)
+    return not ok or forbidden == true
+end
+local IsFrameShownSafe = P.IsFrameShown or function(frame)
+    if not frame or IsForbiddenObject(frame) then return false end
+    local isShown = frame.IsShown
+    if type(isShown) ~= "function" then return false end
+    local ok, shown = pcall(isShown, frame)
+    return ok and shown == true
+end
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -80,7 +95,7 @@ end
 ----------------------------------------------------------------------------------------
 local function IsCompactBuffMirrorEnabled(frame)
     return frame
-        and not frame:IsForbidden()
+        and not IsForbiddenObject(frame)
         and IsPartyRaidCompactFrame(frame)
         and type(frame.buffFrames) == "table"
 end
@@ -276,7 +291,7 @@ local function GetSourceCountText(buffFrame)
     if not buffFrame or not buffFrame.count then
         return nil
     end
-    if not buffFrame.count.IsShown or not buffFrame.count:IsShown() then
+    if not IsFrameShownSafe(buffFrame.count) then
         return nil
     end
     if buffFrame.count.GetText then
@@ -297,7 +312,7 @@ local function CollectShownBuffSources(frame, regularSources, importantSources)
     end
 
     for _, buffFrame in ipairs(frame.buffFrames) do
-        if buffFrame and buffFrame:IsShown() then
+        if IsFrameShownSafe(buffFrame) then
             local auraData = GetPartyAuraData(buffFrame)
             local settings = nil
             if auraData.classBuffEntryKey then
@@ -609,7 +624,7 @@ local function UpdateCompactBuffMirrorForFrame(frame)
     end
 
     for _, buffFrame in ipairs(frame.buffFrames) do
-        if buffFrame and buffFrame:IsShown() then
+        if IsFrameShownSafe(buffFrame) then
             SetCompactNativeBuffVisualSuppressed(buffFrame, true)
         else
             SetCompactNativeBuffVisualSuppressed(buffFrame, false)

@@ -19,7 +19,6 @@ end
 local _G = _G
 local pairs = pairs
 local select = select
-local tonumber = tonumber
 local type = type
 local format = string.format
 local floor = math.floor
@@ -30,6 +29,7 @@ local strlower = string.lower
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
+local C_Bank = _G.C_Bank
 local C_Container = _G.C_Container
 local GetRealmName = GetRealmName
 local UnitName = UnitName
@@ -42,32 +42,63 @@ local GameTooltip = _G.GameTooltip
 -- Constants
 ----------------------------------------------------------------------------------------
 local STORAGE_KEY = "TooltipItemCount"
-local ITEM_COUNT_TEXT = "Item Count:"
-local YOU_TEXT = "You"
+local OWNED_TEXT = "Owned"
+local YOU_TEXT = _G.YOU or "You"
 
 local ITEM_COUNT_HANDLER_KEY = "ItemCount"
 local ITEM_COUNT_RENDER_FLAG = "Tooltip:ItemCount:Added"
 
-local ITEM_COUNT_EVENT_WORLD_KEY = "Tooltip:ItemCount:PLAYER_ENTERING_WORLD"
-local ITEM_COUNT_EVENT_BAG_KEY = "Tooltip:ItemCount:BAG_UPDATE_DELAYED"
+local ITEM_COUNT_EVENT_BAG_UPDATE_KEY = "Tooltip:ItemCount:BAG_UPDATE"
+local ITEM_COUNT_EVENT_BAG_DELAYED_KEY = "Tooltip:ItemCount:BAG_UPDATE_DELAYED"
 local ITEM_COUNT_EVENT_BANK_OPEN_KEY = "Tooltip:ItemCount:BANKFRAME_OPENED"
+local ITEM_COUNT_EVENT_BANK_CLOSE_KEY = "Tooltip:ItemCount:BANKFRAME_CLOSED"
 local ITEM_COUNT_EVENT_BANK_SLOTS_KEY = "Tooltip:ItemCount:PLAYERBANKSLOTS_CHANGED"
+local ITEM_COUNT_EVENT_BANK_TABS_KEY = "Tooltip:ItemCount:BANK_TABS_CHANGED"
 local ITEM_COUNT_EVENT_EQUIPMENT_KEY = "Tooltip:ItemCount:PLAYER_EQUIPMENT_CHANGED"
+local ITEM_COUNT_BANK_TIMER_KEY = "Tooltip:ItemCount:UpdateBank"
+
+local BAG_INDEX = _G.Enum and _G.Enum.BagIndex
+local BANK_TYPE = _G.Enum and _G.Enum.BankType
+local FIRST_BAG_ID = (BAG_INDEX and BAG_INDEX.Backpack) or 0
+local LAST_BAG_ID = rawget(_G, "REAGENTBAG_CONTAINER") or (BAG_INDEX and BAG_INDEX.ReagentBag) or 5
+local CHARACTER_BANK_TYPE = BANK_TYPE and BANK_TYPE.Character
+
+----------------------------------------------------------------------------------------
+-- Runtime State
+----------------------------------------------------------------------------------------
 local ITEM_COUNT_LINES_CACHE = {}
+local CHARACTER_ROSTER = {}
+local CHARACTER_BANK_TAB_IDS = {}
+
+local bagCountScratch = {}
+local bankCountScratch = {}
+local equippedCountScratch = {}
+
+local currentStorage
+local currentRealmData
+local currentPlayerName
+local currentFaction
+local bankOpen = false
+local bankUpdateScheduled = false
+local playerBagsDirty = false
 
 ----------------------------------------------------------------------------------------
 -- Storage Helpers
 ----------------------------------------------------------------------------------------
 local function EnsureCurrentCharacterStorage()
-    local db = _G.RefineDB
-    if type(db) ~= "table" then
-        return nil, nil, nil
+    if currentStorage then
+        return currentStorage
     end
 
-    local realm = GetRealmName()
-    local playerName = UnitName("player")
+    local db = _G.RefineDB
+    if type(db) ~= "table" then
+        return nil
+    end
+
+    local realm = RefineUI.MyRealm or GetRealmName()
+    local playerName = RefineUI.MyName or UnitName("player")
     if not realm or not playerName then
-        return nil, nil, nil
+        return nil
     end
 
     db[realm] = db[realm] or {}
@@ -78,104 +109,114 @@ local function EnsureCurrentCharacterStorage()
     local storage = profile[STORAGE_KEY]
 
     storage.faction = UnitFactionGroup("player")
-    storage.class = select(2, UnitClass("player"))
+    storage.class = RefineUI.MyClass or select(2, UnitClass("player"))
     storage.bags = type(storage.bags) == "table" and storage.bags or {}
     storage.bank = type(storage.bank) == "table" and storage.bank or {}
     storage.equipped = type(storage.equipped) == "table" and storage.equipped or {}
 
-    return storage, db[realm], playerName
+    currentStorage = storage
+    currentRealmData = db[realm]
+    currentPlayerName = playerName
+    currentFaction = storage.faction
+    return storage
 end
 
 local function AddCount(countTable, itemID, count)
-    itemID = tonumber(itemID)
-    if not itemID or not count or count <= 0 then
+    if not itemID then
         return
     end
     countTable[itemID] = (countTable[itemID] or 0) + count
 end
 
-local function InvalidateItemCountLineCache()
-    wipe(ITEM_COUNT_LINES_CACHE)
+local function CommitCounts(storageKey, newCounts)
+    local oldCounts = currentStorage[storageKey]
+
+    for itemID, oldCount in pairs(oldCounts) do
+        if newCounts[itemID] ~= oldCount then
+            ITEM_COUNT_LINES_CACHE[itemID] = nil
+        end
+    end
+    for itemID in pairs(newCounts) do
+        if oldCounts[itemID] == nil then
+            ITEM_COUNT_LINES_CACHE[itemID] = nil
+        end
+    end
+
+    currentStorage[storageKey] = newCounts
+    wipe(oldCounts)
+    return oldCounts
+end
+
+local function ScanContainer(countTable, containerID)
+    local numSlots = C_Container.GetContainerNumSlots(containerID)
+    if not numSlots or numSlots <= 0 then
+        return
+    end
+
+    for slot = 1, numSlots do
+        local itemInfo = C_Container.GetContainerItemInfo(containerID, slot)
+        if itemInfo and itemInfo.itemID then
+            AddCount(countTable, itemInfo.itemID, itemInfo.stackCount or 1)
+        end
+    end
 end
 
 local function UpdateBagCounts()
-    if not C_Container then
+    if not C_Container or not EnsureCurrentCharacterStorage() then
         return
     end
 
-    local storage = EnsureCurrentCharacterStorage()
-    if not storage then
-        return
+    wipe(bagCountScratch)
+    for bagID = FIRST_BAG_ID, LAST_BAG_ID do
+        ScanContainer(bagCountScratch, bagID)
     end
-
-    InvalidateItemCountLineCache()
-    wipe(storage.bags)
-    for bag = BACKPACK_CONTAINER, NUM_BAG_SLOTS do
-        local numSlots = C_Container.GetContainerNumSlots(bag)
-        if numSlots and numSlots > 0 then
-            for slot = 1, numSlots do
-                local itemInfo = C_Container.GetContainerItemInfo(bag, slot)
-                if itemInfo and itemInfo.itemID then
-                    AddCount(storage.bags, itemInfo.itemID, itemInfo.stackCount or 1)
-                end
-            end
-        end
-    end
+    bagCountScratch = CommitCounts("bags", bagCountScratch)
 end
 
 local function UpdateBankCounts()
-    if not C_Container then
+    if not bankOpen or not C_Container or not C_Bank or not C_Bank.FetchPurchasedBankTabIDs
+        or CHARACTER_BANK_TYPE == nil or not EnsureCurrentCharacterStorage() then
         return
     end
 
-    local storage = EnsureCurrentCharacterStorage()
-    if not storage then
+    local bankTabIDs = C_Bank.FetchPurchasedBankTabIDs(CHARACTER_BANK_TYPE)
+    if type(bankTabIDs) ~= "table" then
         return
     end
 
-    InvalidateItemCountLineCache()
-    wipe(storage.bank)
-
-    local bankContainer = rawget(_G, "BANK_CONTAINER") or -1
-    local numBagSlots = rawget(_G, "NUM_BAG_SLOTS") or 4
-    local numBankBagSlots = rawget(_G, "NUM_BANKBAGSLOTS") or 7
-
-    local function AddBagContents(bagID)
-        local numSlots = C_Container.GetContainerNumSlots(bagID)
-        if not numSlots or numSlots <= 0 then
-            return
-        end
-        for slot = 1, numSlots do
-            local itemInfo = C_Container.GetContainerItemInfo(bagID, slot)
-            if itemInfo and itemInfo.itemID then
-                AddCount(storage.bank, itemInfo.itemID, itemInfo.stackCount or 1)
-            end
-        end
+    wipe(CHARACTER_BANK_TAB_IDS)
+    wipe(bankCountScratch)
+    for index = 1, #bankTabIDs do
+        local bankTabID = bankTabIDs[index]
+        CHARACTER_BANK_TAB_IDS[bankTabID] = true
+        ScanContainer(bankCountScratch, bankTabID)
     end
-
-    AddBagContents(bankContainer)
-    for bag = numBagSlots + 1, numBagSlots + numBankBagSlots do
-        AddBagContents(bag)
-    end
+    bankCountScratch = CommitCounts("bank", bankCountScratch)
 end
 
 local function UpdateEquippedCounts()
-    local storage = EnsureCurrentCharacterStorage()
-    if not storage then
+    if not EnsureCurrentCharacterStorage() then
         return
     end
 
-    InvalidateItemCountLineCache()
-    wipe(storage.equipped)
+    wipe(equippedCountScratch)
 
     local firstEquipped = _G.INVSLOT_FIRST_EQUIPPED or 1
     local lastEquipped = _G.INVSLOT_LAST_EQUIPPED or 19
     for slot = firstEquipped, lastEquipped do
-        local itemID = GetInventoryItemID("player", slot)
-        if itemID then
-            AddCount(storage.equipped, itemID, 1)
+        AddCount(equippedCountScratch, GetInventoryItemID("player", slot), 1)
+    end
+
+    if C_Container and C_Container.ContainerIDToInventoryID then
+        for bagID = FIRST_BAG_ID + 1, LAST_BAG_ID do
+            local inventoryID = C_Container.ContainerIDToInventoryID(bagID)
+            if inventoryID then
+                AddCount(equippedCountScratch, GetInventoryItemID("player", inventoryID), 1)
+            end
         end
     end
+
+    equippedCountScratch = CommitCounts("equipped", equippedCountScratch)
 end
 
 ----------------------------------------------------------------------------------------
@@ -207,9 +248,48 @@ local function GetClassColorPrefix(classToken)
     return "|cffffffff"
 end
 
+local function SortCharacterRoster(a, b)
+    if a.isCurrent ~= b.isCurrent then
+        return a.isCurrent
+    end
+    if a.sortName == b.sortName then
+        return a.name < b.name
+    end
+    return a.sortName < b.sortName
+end
+
+local function BuildCharacterRoster()
+    wipe(CHARACTER_ROSTER)
+    if type(currentRealmData) ~= "table" then
+        return
+    end
+
+    for playerName, profile in pairs(currentRealmData) do
+        if type(playerName) == "string" and type(profile) == "table" then
+            local storage = profile[STORAGE_KEY]
+            if type(storage) == "table" and storage.faction == currentFaction then
+                storage.bags = type(storage.bags) == "table" and storage.bags or {}
+                storage.bank = type(storage.bank) == "table" and storage.bank or {}
+                storage.equipped = type(storage.equipped) == "table" and storage.equipped or {}
+
+                local isCurrent = playerName == currentPlayerName
+                local displayName = isCurrent and YOU_TEXT or playerName
+                CHARACTER_ROSTER[#CHARACTER_ROSTER + 1] = {
+                    name = playerName,
+                    sortName = strlower(playerName),
+                    isCurrent = isCurrent,
+                    storage = storage,
+                    lineLabel = GetClassColorPrefix(storage.class) .. displayName .. "|r",
+                }
+            end
+        end
+    end
+
+    sort(CHARACTER_ROSTER, SortCharacterRoster)
+end
+
 local function GetItemCountLines(itemID)
-    itemID = tonumber(itemID)
-    if not itemID then
+    if type(itemID) ~= "number" then
         return nil
     end
 
@@ -218,68 +298,33 @@ local function GetItemCountLines(itemID)
         return cachedLines ~= false and cachedLines or nil
     end
 
-    local db = _G.RefineDB
-    local realm = GetRealmName()
-    local realmData = db and db[realm]
-    if type(realmData) ~= "table" then
-        ITEM_COUNT_LINES_CACHE[itemID] = false
-        return nil
-    end
+    local lines
+    local grandTotal = 0
+    local currentTotal = 0
+    for index = 1, #CHARACTER_ROSTER do
+        local entry = CHARACTER_ROSTER[index]
+        local storage = entry.storage
+        local bags = storage.bags
+        local bank = storage.bank
+        local equipped = storage.equipped
+        local total = (bags[itemID] or 0) + (bank[itemID] or 0) + (equipped[itemID] or 0)
 
-    local currentPlayer = UnitName("player")
-    local playerFaction = UnitFactionGroup("player")
-    local entries = {}
-
-    for playerName, profile in pairs(realmData) do
-        if type(profile) == "table" then
-            local storage = profile[STORAGE_KEY]
-            if type(storage) == "table" and storage.faction == playerFaction then
-                local bags = type(storage.bags) == "table" and storage.bags or nil
-                local bank = type(storage.bank) == "table" and storage.bank or nil
-                local equipped = type(storage.equipped) == "table" and storage.equipped or nil
-                local bagCount = bags and (bags[itemID] or 0) or 0
-                local bankCount = bank and (bank[itemID] or 0) or 0
-                local equippedCount = equipped and (equipped[itemID] or 0) or 0
-                local total = bagCount + bankCount + equippedCount
-                if total > 0 then
-                    entries[#entries + 1] = {
-                        name = playerName,
-                        class = storage.class,
-                        total = total,
-                        isCurrent = playerName == currentPlayer,
-                        sortName = strlower(playerName or ""),
-                    }
-                end
+        if total > 0 then
+            lines = lines or { 0 }
+            grandTotal = grandTotal + total
+            if entry.isCurrent then
+                currentTotal = total
             end
+            lines[#lines + 1] = entry.lineLabel
+            lines[#lines + 1] = total
         end
     end
 
-    if #entries <= 0 then
-        ITEM_COUNT_LINES_CACHE[itemID] = false
-        return nil
+    if lines then
+        lines[1] = grandTotal
+        lines.showOwned = grandTotal ~= currentTotal
     end
-
-    sort(entries, function(a, b)
-        if a.isCurrent ~= b.isCurrent then
-            return a.isCurrent
-        end
-        local aLower = a.sortName or ""
-        local bLower = b.sortName or ""
-        if aLower == bLower then
-            return (a.name or "") < (b.name or "")
-        end
-        return aLower < bLower
-    end)
-
-    local lines = {}
-    for index = 1, #entries do
-        local entry = entries[index]
-        local displayName = entry.isCurrent and YOU_TEXT or entry.name
-        local colorPrefix = GetClassColorPrefix(entry.class)
-        lines[#lines + 1] = format("%s%s|r: %d", colorPrefix, displayName, entry.total)
-    end
-
-    ITEM_COUNT_LINES_CACHE[itemID] = lines
+    ITEM_COUNT_LINES_CACHE[itemID] = lines or false
     return lines
 end
 
@@ -296,24 +341,80 @@ local function SetRenderFlag(context, key)
 end
 
 ----------------------------------------------------------------------------------------
+-- Event Handling
+----------------------------------------------------------------------------------------
+local function RunScheduledBankUpdate()
+    bankUpdateScheduled = false
+    UpdateBankCounts()
+end
+
+local function ScheduleBankUpdate()
+    if not bankOpen or bankUpdateScheduled then
+        return
+    end
+
+    bankUpdateScheduled = true
+    RefineUI:After(ITEM_COUNT_BANK_TIMER_KEY, 0, RunScheduledBankUpdate)
+end
+
+local function HandleBagUpdate(_, containerID)
+    if type(containerID) ~= "number" then
+        return
+    end
+
+    if containerID >= FIRST_BAG_ID and containerID <= LAST_BAG_ID then
+        playerBagsDirty = true
+    elseif bankOpen and CHARACTER_BANK_TAB_IDS[containerID] then
+        ScheduleBankUpdate()
+    end
+end
+
+local function HandleBagUpdateDelayed()
+    if not playerBagsDirty then
+        return
+    end
+
+    playerBagsDirty = false
+    UpdateBagCounts()
+end
+
+local function HandleBankOpened()
+    bankOpen = true
+    ScheduleBankUpdate()
+end
+
+local function HandleBankClosed()
+    bankOpen = false
+    bankUpdateScheduled = false
+    RefineUI:CancelTimer(ITEM_COUNT_BANK_TIMER_KEY)
+end
+
+local function HandleBankTabsChanged(_, bankType)
+    if bankType == CHARACTER_BANK_TYPE then
+        ScheduleBankUpdate()
+    end
+end
+
+----------------------------------------------------------------------------------------
 -- Initialization
 ----------------------------------------------------------------------------------------
 function Tooltip:InitializeItemCountStorage()
-    EnsureCurrentCharacterStorage()
+    if not EnsureCurrentCharacterStorage() then
+        return
+    end
+
     UpdateBagCounts()
     UpdateEquippedCounts()
+    BuildCharacterRoster()
 end
 
 function Tooltip:InitializeItemCount()
-    RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
-        UpdateBagCounts()
-        UpdateEquippedCounts()
-    end, ITEM_COUNT_EVENT_WORLD_KEY)
-
-    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", UpdateBagCounts, ITEM_COUNT_EVENT_BAG_KEY)
-
-    RefineUI:RegisterEventCallback("BANKFRAME_OPENED", UpdateBankCounts, ITEM_COUNT_EVENT_BANK_OPEN_KEY)
-    RefineUI:RegisterEventCallback("PLAYERBANKSLOTS_CHANGED", UpdateBankCounts, ITEM_COUNT_EVENT_BANK_SLOTS_KEY)
+    RefineUI:RegisterEventCallback("BAG_UPDATE", HandleBagUpdate, ITEM_COUNT_EVENT_BAG_UPDATE_KEY)
+    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", HandleBagUpdateDelayed, ITEM_COUNT_EVENT_BAG_DELAYED_KEY)
+    RefineUI:RegisterEventCallback("BANKFRAME_OPENED", HandleBankOpened, ITEM_COUNT_EVENT_BANK_OPEN_KEY)
+    RefineUI:RegisterEventCallback("BANKFRAME_CLOSED", HandleBankClosed, ITEM_COUNT_EVENT_BANK_CLOSE_KEY)
+    RefineUI:RegisterEventCallback("PLAYERBANKSLOTS_CHANGED", ScheduleBankUpdate, ITEM_COUNT_EVENT_BANK_SLOTS_KEY)
+    RefineUI:RegisterEventCallback("BANK_TABS_CHANGED", HandleBankTabsChanged, ITEM_COUNT_EVENT_BANK_TABS_KEY)
     RefineUI:RegisterEventCallback("PLAYER_EQUIPMENT_CHANGED", UpdateEquippedCounts, ITEM_COUNT_EVENT_EQUIPMENT_KEY)
 
     Tooltip:RegisterItemHandler(ITEM_COUNT_HANDLER_KEY, function(tooltip, data, context)
@@ -324,8 +425,8 @@ function Tooltip:InitializeItemCount()
             return
         end
 
-        local lines = GetItemCountLines(data and data.id)
-        if not lines or #lines <= 0 then
+        local lines = GetItemCountLines(Tooltip:ReadSafeNumber(data.id))
+        if not lines then
             return
         end
         if HasRenderFlag(context, ITEM_COUNT_RENDER_FLAG) then
@@ -333,9 +434,11 @@ function Tooltip:InitializeItemCount()
         end
 
         tooltip:AddLine(" ")
-        tooltip:AddLine(ITEM_COUNT_TEXT)
-        for index = 1, #lines do
-            tooltip:AddLine(lines[index])
+        if lines.showOwned then
+            tooltip:AddDoubleLine(OWNED_TEXT, lines[1])
+        end
+        for index = 2, #lines, 2 do
+            tooltip:AddDoubleLine(lines[index], lines[index + 1])
         end
 
         SetRenderFlag(context, ITEM_COUNT_RENDER_FLAG)

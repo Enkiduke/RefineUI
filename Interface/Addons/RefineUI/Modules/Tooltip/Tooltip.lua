@@ -56,4 +56,5 @@ function Tooltip:OnInitialize()
     if self.InitializeItemCount then
         self:InitializeItemCount()
     end
+    self:InitializeItemTokens()
 end

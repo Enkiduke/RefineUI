@@ -61,6 +61,9 @@ end
 ----------------------------------------------------------------------------------------
 function Skins:OnEnable()
     GetCharacterPanelConfig()
+    if self.SetupAdventureGuideSkin then
+        self:SetupAdventureGuideSkin()
+    end
     if self:IsCharacterPanelEnabled() and self.SetupCharacterPanel then
         self:SetupCharacterPanel()
     end

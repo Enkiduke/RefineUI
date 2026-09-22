@@ -1,10 +1,11 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
     <Include file="AFK\!AFK.xml"/>
     <Include file="ActionBars\!ActionBars.xml"/>
+    <Include file="AchievementWindow\!AchievementWindow.xml"/>
     <Include file="Auras\!Auras.xml"/>
     <Include file="BuffReminder\!BuffReminder.xml"/>
     <Include file="CDM\!CDM.xml"/>
-    <Include file="EncounterAchievements\!EncounterAchievements.xml"/>
+    <Include file="AdventureGuide\!AdventureGuide.xml"/>
     <Include file="EncounterTimeline\!EncounterTimeline.xml"/>
     <Include file="EntranceDifficulty\!EntranceDifficulty.xml"/>
     <Include file="Chat\!Chat.xml"/>
@@ -12,6 +13,7 @@
     <Include file="UnitFrames\!UnitFrames.xml"/>
     <Include file="Nameplates\!Nameplates.xml"/>
     <Include file="Misc\!Misc.xml"/>
+    <Include file="MythicPlus\!MythicPlus.xml"/>
     <Include file="AutoItemBar\!AutoItemBar.xml"/>
     <Include file="AutoOpenBar\!AutoOpenBar.xml"/>
     <Include file="ClickCasting\!ClickCasting.xml"/>

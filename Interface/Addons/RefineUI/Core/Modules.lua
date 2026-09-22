@@ -176,7 +176,13 @@ local MODULE_STARTUP_FALLBACK = {
     Dismount = function()
         return true
     end,
-    EncounterAchievements = function()
+    AdventureGuidePlanner = function()
+        return true
+    end,
+    AdventureGuideOpportunities = function()
+        return true
+    end,
+    AdventureGuideInstances = function()
         return true
     end,
     EncounterTimeline = function(cfg)
@@ -233,6 +239,9 @@ local MODULE_STARTUP_FALLBACK = {
     MicroMenu = function()
         return true
     end,
+    MythicPlus = function(cfg)
+        return not (cfg and cfg.MythicPlus and cfg.MythicPlus.Enable == false)
+    end,
     Nameplates = function(cfg)
         return not (cfg and cfg.Nameplates and cfg.Nameplates.Enable == false)
     end,
@@ -266,6 +275,11 @@ function RefineUI:GetSavedModuleEnabled(moduleName)
     local value
     if type(moduleState) == "table" then
         value = moduleState[moduleName]
+        -- Preserve the combined module's startup preference until each new
+        -- Adventure Guide module receives its own explicit setting.
+        if value == nil and (moduleName == "AdventureGuideInstances" or moduleName == "AdventureGuidePlanner") then
+            value = moduleState.EncounterAchievements
+        end
     end
     if type(value) == "boolean" then
         return value

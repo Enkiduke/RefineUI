@@ -40,6 +40,21 @@ local TrySetFrameStrata   = P.TrySetFrameStrata
 local GetSafeDispelTypeKey = P.GetSafeDispelTypeKey
 local IsPartyRaidCompactFrame = P.IsCompactFrame
 local GetAuraScratch      = P.GetAuraScratch
+local IsForbiddenObject   = P.IsForbiddenObject or function(object)
+    if not object then return false end
+    if type(object) ~= "table" and type(object) ~= "userdata" then return false end
+    local isForbidden = object.IsForbidden
+    if type(isForbidden) ~= "function" then return false end
+    local ok, forbidden = pcall(isForbidden, object)
+    return not ok or forbidden == true
+end
+local IsFrameShownSafe    = P.IsFrameShown or function(frame)
+    if not frame or IsForbiddenObject(frame) then return false end
+    local isShown = frame.IsShown
+    if type(isShown) ~= "function" then return false end
+    local ok, shown = pcall(isShown, frame)
+    return ok and shown == true
+end
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -165,7 +180,7 @@ end
 -- Border Creation
 ----------------------------------------------------------------------------------------
 local function EnsureCompactAuraBorder(auraFrame)
-    if not auraFrame or auraFrame:IsForbidden() then return nil end
+    if not auraFrame or IsForbiddenObject(auraFrame) then return nil end
 
     local data = GetPartyAuraData(auraFrame)
     local borderHost = data.borderHost
@@ -242,6 +257,7 @@ local function EnsureCompactAuraBorder(auraFrame)
 end
 
 local function ApplyCompactAuraBorderColor(auraFrame, r, g, b, a)
+    if not auraFrame or IsForbiddenObject(auraFrame) then return false end
     local border = EnsureCompactAuraBorder(auraFrame)
     if not border then return false end
     local data = GetPartyAuraData(auraFrame)
@@ -261,7 +277,7 @@ local function ApplyCompactAuraBorderColor(auraFrame, r, g, b, a)
 end
 
 local function HideCompactAuraBorder(auraFrame)
-    if not auraFrame then return end
+    if not auraFrame or IsForbiddenObject(auraFrame) then return end
     local data = GetPartyAuraData(auraFrame)
     if data.border and data.border.Hide then
         data.border:Hide()
@@ -537,7 +553,7 @@ local function TrackCompactUnitAuraBorderColor(frame, r, g, b)
 end
 
 local function TrackCompactDispelBorderColor(frame, aura)
-    if not frame or frame:IsForbidden() then
+    if not frame or IsForbiddenObject(frame) then
         return
     end
 
@@ -550,8 +566,9 @@ local function TrackCompactDispelBorderColor(frame, aura)
         local dispelFrames = frame.dispelDebuffFrames
         if type(dispelFrames) == "table" then
             for _, dispelFrame in ipairs(dispelFrames) do
-                if dispelFrame and dispelFrame.icon and dispelFrame.icon.GetAtlas then
-                    local dispelType = GetDispelTypeFromAtlasName(dispelFrame.icon:GetAtlas())
+                if dispelFrame and not IsForbiddenObject(dispelFrame) and dispelFrame.icon and dispelFrame.icon.GetAtlas then
+                    local okAtlas, atlas = pcall(dispelFrame.icon.GetAtlas, dispelFrame.icon)
+                    local dispelType = okAtlas and GetDispelTypeFromAtlasName(atlas) or nil
                     if dispelType then
                         r, g, b = GetDirectDebuffTypeColorRGB(dispelType)
                         break
@@ -561,23 +578,34 @@ local function TrackCompactDispelBorderColor(frame, aura)
         end
     end
 
-    if not r then
-        return
+    local data = GetPartyData(frame)
+    if r then
+        data.dispelOverlayActive = true
+        data.dispelOverlayR = r
+        data.dispelOverlayG = g
+        data.dispelOverlayB = b
+        TrackCompactUnitAuraBorderColor(frame, r, g, b)
+    else
+        data.dispelOverlayActive = nil
+        data.dispelOverlayR = nil
+        data.dispelOverlayG = nil
+        data.dispelOverlayB = nil
+        data.auraBorderR = nil
+        data.auraBorderG = nil
+        data.auraBorderB = nil
     end
-
-    TrackCompactUnitAuraBorderColor(frame, r, g, b)
 end
 
 ----------------------------------------------------------------------------------------
 -- Dispel Indicator Detection
 ----------------------------------------------------------------------------------------
 local function HasShownCompactDispelDebuff(frame)
-    if type(frame.dispelDebuffFrames) ~= "table" then
+    if not frame or IsForbiddenObject(frame) or type(frame.dispelDebuffFrames) ~= "table" then
         return false
     end
 
     for _, dispelFrame in ipairs(frame.dispelDebuffFrames) do
-        if dispelFrame and dispelFrame:IsShown() then
+        if IsFrameShownSafe(dispelFrame) then
             return true
         end
     end
@@ -586,15 +614,29 @@ local function HasShownCompactDispelDebuff(frame)
 end
 
 local function HasShownCompactDispelIndicator(frame)
+    if not frame or IsForbiddenObject(frame) then
+        return false
+    end
+
     if HasShownCompactDispelDebuff(frame) then
         return true
     end
 
-    return frame and frame.DispelOverlay and frame.DispelOverlay.IsShown and frame.DispelOverlay:IsShown() or false
+    local data = GetPartyData(frame)
+    if data and data.dispelOverlayActive then
+        return true
+    end
+
+    local overlay = frame.DispelOverlay
+    if IsFrameShownSafe(overlay) then
+        return true
+    end
+
+    return false
 end
 
 local function GetCompactDispelIndicatorType(frame)
-    if not frame then
+    if not frame or IsForbiddenObject(frame) then
         return nil
     end
 
@@ -641,7 +683,7 @@ local function GetConfiguredCompactPartyBorderColorRGBA()
 end
 
 local function UpdateCompactPartyDispelBorderColor(frame)
-    if not frame or frame:IsForbidden() then
+    if not frame or IsForbiddenObject(frame) then
         return
     end
 
@@ -659,12 +701,18 @@ local function UpdateCompactPartyDispelBorderColor(frame)
             colorG = data.auraBorderG or data.auraBorderR
             colorB = data.auraBorderB or data.auraBorderR
             colorA = 1
+        elseif type(data.dispelOverlayR) == "number" then
+            colorR = data.dispelOverlayR
+            colorG = data.dispelOverlayG or data.dispelOverlayR
+            colorB = data.dispelOverlayB or data.dispelOverlayR
+            colorA = 1
         else
             local dispelFrames = frame.dispelDebuffFrames
             if type(dispelFrames) == "table" then
                 for _, dispelFrame in ipairs(dispelFrames) do
-                    if dispelFrame and dispelFrame:IsShown() and dispelFrame.icon and dispelFrame.icon.GetAtlas then
-                        local dispelType = GetDispelTypeFromAtlasName(dispelFrame.icon:GetAtlas())
+                    if IsFrameShownSafe(dispelFrame) and dispelFrame.icon and dispelFrame.icon.GetAtlas then
+                        local okAtlas, atlas = pcall(dispelFrame.icon.GetAtlas, dispelFrame.icon)
+                        local dispelType = okAtlas and GetDispelTypeFromAtlasName(atlas) or nil
                         if dispelType then
                             colorR, colorG, colorB = GetDirectDebuffTypeColorRGB(dispelType)
                             colorA = 1
@@ -674,8 +722,10 @@ local function UpdateCompactPartyDispelBorderColor(frame)
                 end
             end
 
-            if not colorR and frame.DispelOverlay and frame.DispelOverlay.IsShown and frame.DispelOverlay:IsShown() and frame.DispelOverlay.GetDispelType then
-                local dispelType = GetSafeDispelTypeKey(frame.DispelOverlay:GetDispelType())
+            local overlay = frame.DispelOverlay
+            if not colorR and IsFrameShownSafe(overlay) and overlay.GetDispelType then
+                local okType, rawType = pcall(overlay.GetDispelType, overlay)
+                local dispelType = okType and GetSafeDispelTypeKey(rawType) or nil
                 if dispelType then
                     colorR, colorG, colorB = GetDirectDebuffTypeColorRGB(dispelType)
                     colorA = 1
@@ -737,7 +787,7 @@ end
 -- Top-Level Aura Styling Orchestrator
 ----------------------------------------------------------------------------------------
 local function ApplyCompactAuraStylingForFrame(frame)
-    if not frame or frame:IsForbidden() then return end
+    if not frame or IsForbiddenObject(frame) then return end
     if not IsPartyRaidCompactFrame(frame) then return end
 
     local frameData = GetPartyData(frame)
@@ -757,13 +807,13 @@ local function ApplyCompactAuraStylingForFrame(frame)
 
     if type(frame.buffFrames) == "table" then
         for index, buffFrame in ipairs(frame.buffFrames) do
-            if buffFrame then
+            if buffFrame and not IsForbiddenObject(buffFrame) then
                 EnsureCompactAuraSpacing(frame, buffFrame, BUFF, index)
                 if not GetPartyAuraData(buffFrame).border then
                     EnsureCompactAuraBorder(buffFrame)
                 end
             end
-            if buffFrame and buffFrame:IsShown() then
+            if IsFrameShownSafe(buffFrame) then
                 ApplyCompactBuffBorderColor(buffFrame)
 
                 local entry = GetTrackedClassBuffEntryForAuraFrame(buffFrame)
@@ -780,11 +830,11 @@ local function ApplyCompactAuraStylingForFrame(frame)
 
     P.ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
 
-    if frame.CenterDefensiveBuff then
+    if frame.CenterDefensiveBuff and not IsForbiddenObject(frame.CenterDefensiveBuff) then
         if not GetPartyAuraData(frame.CenterDefensiveBuff).border then
             EnsureCompactAuraBorder(frame.CenterDefensiveBuff)
         end
-        if frame.CenterDefensiveBuff:IsShown() then
+        if IsFrameShownSafe(frame.CenterDefensiveBuff) then
             ApplyCompactBuffBorderColor(frame.CenterDefensiveBuff)
 
             local entry = GetTrackedClassBuffEntryForAuraFrame(frame.CenterDefensiveBuff)
@@ -797,13 +847,13 @@ local function ApplyCompactAuraStylingForFrame(frame)
 
     if type(frame.debuffFrames) == "table" then
         for index, debuffFrame in ipairs(frame.debuffFrames) do
-            if debuffFrame then
+            if debuffFrame and not IsForbiddenObject(debuffFrame) then
                 EnsureCompactAuraSpacing(frame, debuffFrame, DEBUFF, index)
                 if not GetPartyAuraData(debuffFrame).border then
                     EnsureCompactAuraBorder(debuffFrame)
                 end
             end
-            if debuffFrame and debuffFrame:IsShown() then
+            if IsFrameShownSafe(debuffFrame) then
                 ApplyCompactDebuffBorderColor(debuffFrame)
             end
         end
@@ -811,7 +861,7 @@ local function ApplyCompactAuraStylingForFrame(frame)
 
     if type(frame.dispelDebuffFrames) == "table" then
         for index, dispelFrame in ipairs(frame.dispelDebuffFrames) do
-            if dispelFrame then
+            if dispelFrame and not IsForbiddenObject(dispelFrame) then
                 EnsureCompactAuraSpacing(frame, dispelFrame, DISPEL, index)
                 HideCompactAuraBorder(dispelFrame)
             end

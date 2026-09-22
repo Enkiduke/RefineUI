@@ -1,0 +1,12 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="Instances.lua"/>
+    <Script file="Settings.lua"/>
+    <Script file="Data.lua"/>
+    <Script file="UI.lua"/>
+    <Script file="Interactions.lua"/>
+    <Script file="CompletionData.lua"/>
+    <Script file="CompletionUI.lua"/>
+    <Script file="InstanceListUI.lua"/>
+    <Script file="ExpansionCompletionUI.lua"/>
+    <Script file="Lockouts.lua"/>
+</Ui>

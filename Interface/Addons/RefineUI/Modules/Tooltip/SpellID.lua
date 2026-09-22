@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------------------------
 -- Tooltip Spell/Item IDs
--- Description: Displays spell/item IDs in tooltips while modifier key is held.
+-- Description: Displays spell/item IDs in tooltips while a modifier key is held.
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
@@ -17,17 +17,11 @@ end
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
-local pcall = pcall
-local tonumber = tonumber
-local tostring = tostring
 local type = type
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
-local GameTooltip = _G.GameTooltip
-local ItemRefTooltip = _G.ItemRefTooltip
-local C_UnitAuras = _G.C_UnitAuras
 local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
 
 ----------------------------------------------------------------------------------------
@@ -36,27 +30,29 @@ local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
 local SPELL_ID_TEXT = "Spell ID:"
 local ITEM_ID_TEXT = "Item ID:"
 local SPELL_ID_COLOR_PREFIX = "|cffffffff"
-local SPELL_ID_RENDER_FLAG_PREFIX = "Tooltip:SpellID:"
+local SPELL_ID_RENDER_FLAG = "Tooltip:SpellID:Spell"
+local ITEM_ID_RENDER_FLAG = "Tooltip:SpellID:Item"
 
 local SPELL_ID_ITEM_HANDLER_KEY = "SpellID"
 local SPELL_ID_POSTCALL_SPELL_KEY = "SpellID:PostCall:Spell"
+local SPELL_ID_POSTCALL_UNIT_AURA_KEY = "SpellID:PostCall:UnitAura"
 local SPELL_ID_POSTCALL_MACRO_KEY = "SpellID:PostCall:Macro"
 local SPELL_ID_POSTCALL_TOY_KEY = "SpellID:PostCall:Toy"
+local SPELL_ID_MODIFIER_EVENT_KEY = "Tooltip:SpellID:MODIFIER_STATE_CHANGED"
 
-local SPELL_ID_HOOK_SET_UNIT_AURA_KEY = "Tooltip:SpellID:GameTooltip:SetUnitAura"
-local SPELL_ID_HOOK_SET_UNIT_BUFF_AURA_INSTANCE_KEY = "Tooltip:SpellID:GameTooltip:SetUnitBuffByAuraInstanceID"
-local SPELL_ID_HOOK_SET_UNIT_DEBUFF_AURA_INSTANCE_KEY = "Tooltip:SpellID:GameTooltip:SetUnitDebuffByAuraInstanceID"
-local SPELL_ID_HOOK_SET_ITEM_REF_KEY = "Tooltip:SpellID:SetItemRef"
+local TOOLTIP_ID_FRAME_NAMES = {
+    "GameTooltip",
+    "ItemRefTooltip",
+    "ItemRefShoppingTooltip1",
+    "ItemRefShoppingTooltip2",
+    "ShoppingTooltip1",
+    "ShoppingTooltip2",
+}
 
 ----------------------------------------------------------------------------------------
 -- Helpers
 ----------------------------------------------------------------------------------------
 local function ClaimRenderFlag(tooltip, context, key)
-    key = Tooltip:ReadSafeString(key)
-    if not key or key == "" then
-        return false
-    end
-
     local flags = context and context.flags
     if type(flags) == "table" then
         if flags[key] then
@@ -76,50 +72,79 @@ local function ClaimRenderFlag(tooltip, context, key)
 end
 
 local function AddIDLine(tooltip, id, isItem, context)
-    if not IsModifierKeyDown() then
-        return
-    end
-    if not Tooltip:IsGameTooltipFrameSafe(tooltip) then
+    if not IsModifierKeyDown() or not Tooltip:IsAugmentableTooltipFrame(tooltip) then
         return
     end
 
-    id = tonumber(id)
+    id = Tooltip:ReadSafeNumber(id)
     if not id then
         return
     end
 
     local label = isItem and ITEM_ID_TEXT or SPELL_ID_TEXT
-    local renderFlag = SPELL_ID_RENDER_FLAG_PREFIX .. label .. ":" .. tostring(id)
+    local renderFlag = isItem and ITEM_ID_RENDER_FLAG or SPELL_ID_RENDER_FLAG
     if not ClaimRenderFlag(tooltip, context, renderFlag) then
         return
     end
 
     tooltip:AddLine(SPELL_ID_COLOR_PREFIX .. label .. " " .. id)
-    if not isItem then
-        tooltip:Show()
-    end
 end
 
 local function GetTooltipDataID(data)
     if not Tooltip:CanAccessObjectSafe(data) then
         return nil
     end
+
     local rawID, okID = Tooltip:SafeGetField(data, "id")
-    if not okID then
-        return nil
-    end
-    return Tooltip:ReadSafeNumber(rawID)
+    return okID and Tooltip:ReadSafeNumber(rawID) or nil
 end
 
-local function AddAuraInstanceID(tooltip, unitToken, auraInstanceID)
-    if not IsModifierKeyDown() or not C_UnitAuras or type(C_UnitAuras.GetAuraDataByAuraInstanceID) ~= "function" then
+local function GetNestedTooltipID(data)
+    if not Tooltip:CanAccessObjectSafe(data) then
+        return nil, nil
+    end
+
+    local lines, okLines = Tooltip:SafeGetField(data, "lines")
+    if not okLines or type(lines) ~= "table" then
+        return nil, nil
+    end
+
+    local lineData, okLineData = Tooltip:SafeGetField(lines, 1)
+    if not okLineData or not Tooltip:CanAccessObjectSafe(lineData) then
+        return nil, nil
+    end
+
+    local rawTooltipType, okTooltipType = Tooltip:SafeGetField(lineData, "tooltipType")
+    local rawTooltipID, okTooltipID = Tooltip:SafeGetField(lineData, "tooltipID")
+    if not okTooltipType or not okTooltipID then
+        return nil, nil
+    end
+
+    return Tooltip:ReadSafeNumber(rawTooltipType), Tooltip:ReadSafeNumber(rawTooltipID)
+end
+
+local function RegisterDataIDPostCall(key, dataType, isItem)
+    if not dataType then
         return
     end
 
-    local aura = C_UnitAuras.GetAuraDataByAuraInstanceID(unitToken, auraInstanceID)
-    local spellID = aura and Tooltip:ReadSafeNumber(aura.spellId)
-    if spellID then
-        AddIDLine(tooltip, spellID, false)
+    Tooltip:AddTooltipPostCallOnce(key, dataType, function(tooltip, data)
+        AddIDLine(tooltip, GetTooltipDataID(data), isItem)
+    end)
+end
+
+local function RefreshVisibleIDTooltips()
+    for index = 1, #TOOLTIP_ID_FRAME_NAMES do
+        local tooltip = _G[TOOLTIP_ID_FRAME_NAMES[index]]
+        if tooltip and Tooltip:IsAugmentableTooltipFrame(tooltip) then
+            local okShown, isShown = Tooltip:SafeObjectMethodCall(tooltip, "IsShown")
+            if okShown and isShown == true then
+                local refreshQueued = Tooltip:SafeObjectMethodCall(tooltip, "RefreshDataNextUpdate")
+                if not refreshQueued then
+                    Tooltip:SafeObjectMethodCall(tooltip, "RebuildFromTooltipInfo")
+                end
+            end
+        end
     end
 end
 
@@ -127,97 +152,35 @@ end
 -- Initialization
 ----------------------------------------------------------------------------------------
 function Tooltip:InitializeSpellID()
-    RefineUI:HookOnce(SPELL_ID_HOOK_SET_UNIT_AURA_KEY, GameTooltip, "SetUnitAura", function(tooltip, unitToken, index, filter)
-        if not IsModifierKeyDown() then
-            return
-        end
-        if not C_UnitAuras or type(C_UnitAuras.GetAuraDataByIndex) ~= "function" then
-            return
-        end
-
-        local auraInfo = C_UnitAuras.GetAuraDataByIndex(unitToken, index, filter)
-        if auraInfo and auraInfo.spellId then
-            AddIDLine(tooltip, auraInfo.spellId, false)
-        end
-    end)
-
-    RefineUI:HookOnce(
-        SPELL_ID_HOOK_SET_UNIT_BUFF_AURA_INSTANCE_KEY,
-        GameTooltip,
-        "SetUnitBuffByAuraInstanceID",
-        AddAuraInstanceID
-    )
-    RefineUI:HookOnce(
-        SPELL_ID_HOOK_SET_UNIT_DEBUFF_AURA_INSTANCE_KEY,
-        GameTooltip,
-        "SetUnitDebuffByAuraInstanceID",
-        AddAuraInstanceID
-    )
-
-    RefineUI:HookOnce(SPELL_ID_HOOK_SET_ITEM_REF_KEY, "SetItemRef", function(link)
-        if type(link) ~= "string" then
-            return
-        end
-        local spellID = tonumber(link:match("spell:(%d+)"))
-        if spellID then
-            Tooltip:ResetTooltipRenderFlags(ItemRefTooltip)
-            AddIDLine(ItemRefTooltip, spellID, false)
-        end
-    end)
-
     Tooltip:RegisterItemHandler(SPELL_ID_ITEM_HANDLER_KEY, function(tooltip, data, context)
-        if not IsModifierKeyDown() then
-            return
-        end
-        if not Tooltip:IsAugmentableTooltipFrame(tooltip) then
-            return
-        end
-        AddIDLine(tooltip, data and data.id, true, context)
+        AddIDLine(tooltip, GetTooltipDataID(data), true, context)
     end)
 
-    if TOOLTIP_DATA_TYPE and TOOLTIP_DATA_TYPE.Spell then
-        Tooltip:AddTooltipPostCallOnce(SPELL_ID_POSTCALL_SPELL_KEY, TOOLTIP_DATA_TYPE.Spell, function(tooltip, data)
-            if not IsModifierKeyDown() then
-                return
-            end
-            if tooltip ~= GameTooltip then
-                return
-            end
-            AddIDLine(tooltip, GetTooltipDataID(data), false)
-        end)
+    if TOOLTIP_DATA_TYPE then
+        RegisterDataIDPostCall(SPELL_ID_POSTCALL_SPELL_KEY, TOOLTIP_DATA_TYPE.Spell, false)
+        RegisterDataIDPostCall(SPELL_ID_POSTCALL_UNIT_AURA_KEY, TOOLTIP_DATA_TYPE.UnitAura, false)
+        RegisterDataIDPostCall(SPELL_ID_POSTCALL_TOY_KEY, TOOLTIP_DATA_TYPE.Toy, true)
+
+        if TOOLTIP_DATA_TYPE.Macro then
+            Tooltip:AddTooltipPostCallOnce(SPELL_ID_POSTCALL_MACRO_KEY, TOOLTIP_DATA_TYPE.Macro, function(tooltip, data)
+                local tooltipType, tooltipID = GetNestedTooltipID(data)
+                if tooltipType == 0 then
+                    AddIDLine(tooltip, tooltipID, true)
+                elseif tooltipType == 1 then
+                    AddIDLine(tooltip, tooltipID, false)
+                end
+            end)
+        end
     end
 
-    if TOOLTIP_DATA_TYPE and TOOLTIP_DATA_TYPE.Macro then
-        Tooltip:AddTooltipPostCallOnce(SPELL_ID_POSTCALL_MACRO_KEY, TOOLTIP_DATA_TYPE.Macro, function(tooltip, data)
-            if not IsModifierKeyDown() then
-                return
-            end
-            if not Tooltip:IsGameTooltipFrameSafe(tooltip) then
-                return
-            end
-            if not Tooltip:CanAccessObjectSafe(data) then
-                return
-            end
+    local modifierWasDown = IsModifierKeyDown()
+    RefineUI:RegisterEventCallback("MODIFIER_STATE_CHANGED", function()
+        local modifierIsDown = IsModifierKeyDown()
+        if modifierIsDown == modifierWasDown then
+            return
+        end
 
-            local lineData = data.lines and data.lines[1]
-            local tooltipType = lineData and lineData.tooltipType
-            if tooltipType == 0 then
-                AddIDLine(tooltip, lineData.tooltipID, true)
-            elseif tooltipType == 1 then
-                AddIDLine(tooltip, lineData.tooltipID, false)
-            end
-        end)
-    end
-
-    if TOOLTIP_DATA_TYPE and TOOLTIP_DATA_TYPE.Toy then
-        Tooltip:AddTooltipPostCallOnce(SPELL_ID_POSTCALL_TOY_KEY, TOOLTIP_DATA_TYPE.Toy, function(tooltip, data)
-            if not IsModifierKeyDown() then
-                return
-            end
-            if tooltip ~= GameTooltip then
-                return
-            end
-            AddIDLine(tooltip, GetTooltipDataID(data), true)
-        end)
-    end
+        modifierWasDown = modifierIsDown
+        RefreshVisibleIDTooltips()
+    end, SPELL_ID_MODIFIER_EVENT_KEY)
 end

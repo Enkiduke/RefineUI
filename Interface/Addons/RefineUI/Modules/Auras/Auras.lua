@@ -77,34 +77,66 @@ local function IsSecretValue(v)
     return issecret and issecret(v) or false
 end
 
+local function CanAccessValue(v)
+    if IsSecretValue(v) then
+        return false
+    end
+    local canaccess = _G.canaccessvalue
+    if canaccess then
+        local ok, accessible = pcall(canaccess, v)
+        if not ok or accessible == false then
+            return false
+        end
+    end
+    return true
+end
+
 local function GetAuraFilterFromButtonInfo(buttonInfo)
-    if not buttonInfo then return nil end
+    if not buttonInfo or not CanAccessValue(buttonInfo) then return nil end
     local auraType = buttonInfo.auraType
-    if auraType == "Debuff" or auraType == "DeadlyDebuff" or buttonInfo.isHarmful then
+    if auraType and not IsSecretValue(auraType) then
+        if auraType == "Debuff" or auraType == "DeadlyDebuff" then
+            return "HARMFUL"
+        end
+        if auraType == "Buff" or auraType == "TempEnchant" then
+            return "HELPFUL"
+        end
+    end
+    local isHarmful = buttonInfo.isHarmful
+    if isHarmful and not IsSecretValue(isHarmful) and isHarmful == true then
         return "HARMFUL"
     end
-    if auraType == "Buff" or auraType == "TempEnchant" or buttonInfo.isHelpful then
+    local isHelpful = buttonInfo.isHelpful
+    if isHelpful and not IsSecretValue(isHelpful) and isHelpful == true then
         return "HELPFUL"
     end
     return nil
 end
 
 local function ResolveAuraDataFromButtonInfo(buttonInfo)
-    if not C_UnitAuras or not buttonInfo then return nil, nil end
+    if not C_UnitAuras or not buttonInfo or not CanAccessValue(buttonInfo) then return nil, nil end
 
     local instanceID = buttonInfo.auraInstanceID
-    local filter = GetAuraFilterFromButtonInfo(buttonInfo)
+    if IsSecretValue(instanceID) or not CanAccessValue(instanceID) then
+        instanceID = nil
+    end
 
     if instanceID and C_UnitAuras.GetAuraDataByAuraInstanceID then
-        local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", instanceID)
-        if auraData then
+        local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, "player", instanceID)
+        if ok and auraData and not IsSecretValue(auraData) then
             return auraData, "instanceID"
         end
     end
 
-    if buttonInfo.index and filter and C_UnitAuras.GetAuraDataByIndex then
-        local auraData = C_UnitAuras.GetAuraDataByIndex("player", buttonInfo.index, filter)
-        if auraData then
+    local index = buttonInfo.index
+    if IsSecretValue(index) or not CanAccessValue(index) then
+        index = nil
+    end
+
+    local filter = GetAuraFilterFromButtonInfo(buttonInfo)
+    if index and filter and C_UnitAuras.GetAuraDataByIndex then
+        local ok, auraData = pcall(C_UnitAuras.GetAuraDataByIndex, "player", index, filter)
+        if ok and auraData and not IsSecretValue(auraData) then
             return auraData, "index"
         end
     end
@@ -126,24 +158,33 @@ local function TryGetDebuffColorByTypeName(debuffType)
     return nil
 end
 
-local function GetAuraDispelColorCurve()
-    if Auras._DispelColorCurve ~= nil then
-        return Auras._DispelColorCurve or nil
+function Auras:GetDispelColorCurve(alpha)
+    alpha = alpha or 1
+    Auras._DispelColorCurves = Auras._DispelColorCurves or {}
+
+    local cached = Auras._DispelColorCurves[alpha]
+    if cached ~= nil then
+        return cached or nil
     end
 
     if not _G.C_CurveUtil or not _G.C_CurveUtil.CreateColorCurve then
-        Auras._DispelColorCurve = false
+        Auras._DispelColorCurves[alpha] = false
         return nil
     end
 
     if not _G.Enum or not _G.Enum.LuaCurveType or not _G.Enum.LuaCurveType.Step then
-        Auras._DispelColorCurve = false
+        Auras._DispelColorCurves[alpha] = false
+        return nil
+    end
+
+    if alpha ~= 1 and not _G.CreateColor then
+        Auras._DispelColorCurves[alpha] = false
         return nil
     end
 
     local curve = _G.C_CurveUtil.CreateColorCurve()
     if not curve then
-        Auras._DispelColorCurve = false
+        Auras._DispelColorCurves[alpha] = false
         return nil
     end
 
@@ -161,11 +202,15 @@ local function GetAuraDispelColorCurve()
 
     for dispelID, color in pairs(colorInfo) do
         if color then
-            curve:AddPoint(dispelID, color)
+            local curveColor = color
+            if alpha ~= 1 then
+                curveColor = _G.CreateColor(color.r, color.g, color.b, alpha)
+            end
+            curve:AddPoint(dispelID, curveColor)
         end
     end
 
-    Auras._DispelColorCurve = curve
+    Auras._DispelColorCurves[alpha] = curve
     return curve
 end
 
@@ -173,17 +218,17 @@ local function TryGetDebuffColorByAuraInstanceID(unit, auraInstanceID)
     if not C_UnitAuras or not C_UnitAuras.GetAuraDispelTypeColor then
         return nil
     end
-    if not auraInstanceID or IsSecretValue(auraInstanceID) then
+    if not auraInstanceID or IsSecretValue(auraInstanceID) or not CanAccessValue(auraInstanceID) then
         return nil
     end
 
-    local curve = GetAuraDispelColorCurve()
+    local curve = Auras:GetDispelColorCurve()
     if not curve then
         return nil
     end
 
-    local color = C_UnitAuras.GetAuraDispelTypeColor(unit or "player", auraInstanceID, curve)
-    if color and not IsSecretValue(color) and color.r and color.g and color.b then
+    local ok, color = pcall(C_UnitAuras.GetAuraDispelTypeColor, unit or "player", auraInstanceID, curve)
+    if ok and color and not IsSecretValue(color) and color.r and color.g and color.b then
         return color.r, color.g, color.b, "auraDispelTypeColor"
     end
 
@@ -369,13 +414,20 @@ local function StyleAuraButton(frame, isDebuffFrame)
         if not s.wrapper or not s.wrapper.border then return end
 
         local info = buttonInfo
+        local isInfoAccessible = info and CanAccessValue(info) and not IsSecretValue(info)
         local auraData = nil
         local auraDurationObj = nil
-        local instanceID = info and info.auraInstanceID
-        if info then
+        local instanceID = isInfoAccessible and info.auraInstanceID or nil
+        if IsSecretValue(instanceID) or not CanAccessValue(instanceID) then
+            instanceID = nil
+        end
+        if isInfoAccessible and not instanceID then
             auraData = ResolveAuraDataFromButtonInfo(info)
-            if auraData and not instanceID then
+            if auraData and not IsSecretValue(auraData) and CanAccessValue(auraData) then
                 instanceID = auraData.auraInstanceID
+                if IsSecretValue(instanceID) or not CanAccessValue(instanceID) then
+                    instanceID = nil
+                end
             end
         end
 
@@ -439,7 +491,10 @@ local function StyleAuraButton(frame, isDebuffFrame)
 
             if C_UnitAuras and C_UnitAuras.GetAuraDuration and instanceID then
                 if auraDurationObj == nil then
-                    auraDurationObj = C_UnitAuras.GetAuraDuration("player", instanceID)
+                    local okDur, dur = pcall(C_UnitAuras.GetAuraDuration, "player", instanceID)
+                    if okDur and dur and not IsSecretValue(dur) then
+                        auraDurationObj = dur
+                    end
                 end
                 -- Duration object existence is the combat-safe signal Blizzard expects for SetCooldownFromDurationObject.
                 -- Do not gate this on readable duration values; that can break countdown text in combat.
@@ -498,6 +553,22 @@ end
 ----------------------------------------------------------------------------------------
 function Auras:OnEnable()
     if not Config.Auras.Enable then return end
+    local managedPlayerBuffs = false
+    if type(self.InitializeManagedPlayerBuffs) == "function" then
+        local ok, enabled = pcall(self.InitializeManagedPlayerBuffs, self)
+        managedPlayerBuffs = ok and enabled == true
+        if not ok then
+            self:Error("Managed player-buff initialization failed:", enabled)
+        end
+    end
+
+    if type(self.InitializePlayerDispelOverlay) == "function" then
+        local ok, err = pcall(self.InitializePlayerDispelOverlay, self)
+        if not ok then
+            self:Error("Player dispel overlay initialization failed:", err)
+        end
+    end
+
     if InCombatLockdown and InCombatLockdown() then
         RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
             RegisterDebuffEditModeSettings()
@@ -506,7 +577,7 @@ function Auras:OnEnable()
         RegisterDebuffEditModeSettings()
     end
     
-    if _G.BuffFrame then
+    if _G.BuffFrame and not managedPlayerBuffs then
         if type(_G.BuffFrame.UpdateAuraButtons) == "function" then
             RefineUI:HookOnce(HOOK_KEY.BUFF_UPDATE, _G.BuffFrame, "UpdateAuraButtons", UpdateAuraButtons)
         end

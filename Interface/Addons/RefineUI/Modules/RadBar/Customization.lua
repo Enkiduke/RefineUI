@@ -1,237 +1,105 @@
 ----------------------------------------------------------------------------------------
 -- RadBar Component: Customization
--- Description: Customization mode handlers and drag/drop behavior.
+-- Cursor/grid reconciliation and validated slot edits outside combat.
 ----------------------------------------------------------------------------------------
-
 local _, RefineUI = ...
 local RadBar = RefineUI:GetModule("RadBar")
-if not RadBar then
-    return
-end
+if not RadBar then return end
 
-----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
-
-----------------------------------------------------------------------------------------
--- Lua / WoW Upvalues
-----------------------------------------------------------------------------------------
-local _G = _G
-local ipairs = ipairs
+local Private = RadBar.Private
 local InCombatLockdown = InCombatLockdown
 local GetCursorInfo = GetCursorInfo
-local GetMacroInfo = GetMacroInfo
-local ClearCursor = ClearCursor
-local IsShiftKeyDown = IsShiftKeyDown
-local PickupSpell = PickupSpell
-local PickupItem = PickupItem
-local PickupMacro = PickupMacro
 
-----------------------------------------------------------------------------------------
--- Public Component Methods
-----------------------------------------------------------------------------------------
 function RadBar:CURSOR_CHANGED()
-    if InCombatLockdown() then
-        return
-    end
-
-    local private = self.Private or {}
-    local isSupportedActionType = private.IsSupportedActionType
-
-    local cType = GetCursorInfo()
-    local shouldBindMode = isSupportedActionType and isSupportedActionType(cType)
-    self.Core:SetAttribute("bindMode", shouldBindMode and true or nil)
-    if shouldBindMode then
-        -- Hard guarantee: bind mode never uses fullscreen secure mouse capture.
-        self.Core:Hide()
-        self:StopUpdate()
+    if InCombatLockdown() or not self.Core then return end
+    local bindMode = Private.IsSupportedActionType(GetCursorInfo())
+    self.Core:SetAttribute("bindMode", bindMode and true or nil)
+    if bindMode or self.gridShown then
         self:ShowForCustomization()
-        self:ApplyBindModeVisuals()
-    else
+    elseif self.mode == "customizing" then
         self:HideForCustomization()
     end
 end
 
 function RadBar:ACTIONBAR_SHOWGRID()
-    if InCombatLockdown() then
-        return
-    end
+    self.gridShown = true
     self:CURSOR_CHANGED()
-    if not self.isCustomizing then
-        self:ShowForCustomization()
-    end
 end
 
 function RadBar:ACTIONBAR_HIDEGRID()
-    if InCombatLockdown() then
-        return
-    end
+    self.gridShown = false
     self:CURSOR_CHANGED()
 end
 
 function RadBar:ShowForCustomization()
-    local bindMode = self.Core:GetAttribute("bindMode")
-
-    if self.Content:IsShown() and self.isCustomizing then
-        self:UpdateSlotVisibility()
-        if bindMode then
-            self.Core:Hide()
-            self:StopUpdate()
-            self:ApplyBindModeVisuals()
-        end
-        return
-    end
-
-    self.isCustomizing = true
-
-    self.Content:ClearAllPoints()
-    RefineUI.Point(self.Content, "CENTER", UIParent, "CENTER", 0, 0)
-    self.Content:Show()
-
-    self.CenterButton:EnableMouse(true)
-    for _, btn in ipairs(self.Buttons) do
-        btn:EnableMouse(true)
-    end
-    self:UpdateSlotVisibility()
-    if bindMode then
-        self.Core:Hide() -- Bind mode must never fullscreen-capture mouse input.
-        self:StopUpdate()
-        self.Content:SetAlpha(1)
-        self:ApplyBindModeVisuals()
+    if InCombatLockdown() or not self.Core then return end
+    self.Core:SetAttribute("customizing", true)
+    self.Core:SetAttribute("type", nil)
+    self.Core:SetAttribute("typerelease", nil)
+    self.Core:SetAttribute("macrotext", nil)
+    self.Core:SetAttribute("centerX", UIParent:GetWidth() / 2)
+    self.Core:SetAttribute("centerY", UIParent:GetHeight() / 2)
+    if self.Core:GetAttribute("bindMode") then
+        self.Core:Hide()
     else
         self.Core:Show()
-        self:StartUpdate()
-        self:Fade(self.Content, 1, 0.1)
     end
+    self:SetPresentationMode("customizing")
 end
 
 function RadBar:HideForCustomization()
-    if not self.Core:IsShown() and not self.Content:IsShown() then
-        return
+    if self.mode == "customizing" then
+        self:CloseRing()
     end
-    self.isCustomizing = false
-    self:StopUpdate()
-    self.CenterButton:EnableMouse(false)
-    for _, btn in ipairs(self.Buttons) do
-        btn:EnableMouse(false)
-    end
-    RadBar:Fade(self.Content, 0, 0.1, function(f)
-        self.Core:Hide()
-        f:Hide()
-    end)
 end
 
-function RadBar:SetupDrag(btn, idx)
+function RadBar:SetupDrag(btn, index)
     btn:RegisterForDrag("LeftButton")
     btn:SetScript("OnDragStart", function()
-        if self.Core and self.Core:GetAttribute("bindMode") then
-            return
+        if InCombatLockdown() or GetCursorInfo() or not IsShiftKeyDown() then return end
+        local info = self:GetSlotAction(index)
+        if not self:ResolveAction(info) then return end
+        if info.type == "spell" then
+            PickupSpell(info.value)
+        elseif info.type == "item" then
+            PickupItem(info.value)
+        elseif info.type == "macro" then
+            local _, _, reference = self:ResolveMacro(info.value)
+            if not reference then return end -- Inline macros have no cursor representation.
+            PickupMacro(reference)
+        elseif info.type == "mount" then
+            C_MountJournal.PickupMountByID(info.value)
         end
-        if not InCombatLockdown() and IsShiftKeyDown() then
-            local info
-            if idx == 0 then
-                info = self.db.Rings["Main"].Center
-            else
-                info = self.db.Rings["Main"].Slices[idx]
-            end
-
-            if not info then
-                return
-            end
-            local picked = false
-            if info.type == "spell" then
-                PickupSpell(info.value)
-                picked = GetCursorInfo() ~= nil
-            elseif info.type == "item" then
-                PickupItem(info.value)
-                picked = GetCursorInfo() ~= nil
-            elseif info.type == "macro" then
-                local macroRef = info.value
-                if _G.type(macroRef) == "table" then
-                    macroRef = macroRef.id or macroRef.name
-                end
-                if _G.type(macroRef) == "string" and macroRef:sub(1, 1) == "/" then
-                    picked = false
-                elseif macroRef then
-                    PickupMacro(macroRef)
-                    picked = GetCursorInfo() ~= nil
-                end
-            elseif info.type == "mount" then
-                C_MountJournal.PickupMountByID(info.value)
-                picked = GetCursorInfo() ~= nil
-            end
-
-            if not picked then
-                return
-            end
-
-            if idx == 0 then
-                self.db.Rings["Main"].Center = nil
-            else
-                self.db.Rings["Main"].Slices[idx] = nil -- Clear without shifting others
-            end
-
-            self:BuildRing("Main")
+        if GetCursorInfo() then
+            self:SetSlotAction(index, nil)
         end
     end)
     btn:SetScript("OnReceiveDrag", function()
-        self:HandleDrop(idx)
+        self:HandleDrop(index)
     end)
     btn:SetPassThroughButtons("RightButton")
     btn:SetScript("OnClick", function(_, button)
-        if GetCursorInfo() then
-            self:HandleDrop(idx)
+        if button == "LeftButton" and GetCursorInfo() then
+            self:HandleDrop(index)
         end
     end)
 end
 
-function RadBar:HandleDrop(idx)
-    if InCombatLockdown() then
-        return
+function RadBar:HandleDrop(index)
+    if InCombatLockdown() then return end
+    local cursorType, cursorID, _, spellID = GetCursorInfo()
+    if not Private.IsSupportedActionType(cursorType) then return end
+    local value = cursorID
+    if cursorType == "spell" then
+        value = spellID
+    elseif cursorType == "macro" then
+        if not Private.IsPositiveInteger(cursorID) then return end
+        local name = GetMacroInfo(cursorID)
+        if not Private.IsNonEmptyString(name) then return end
+        value = { name = name }
     end
-
-    local private = self.Private or {}
-    local isSupportedActionType = private.IsSupportedActionType
-
-    local info = { GetCursorInfo() }
-    local cType = info[1]
-    if not isSupportedActionType or not isSupportedActionType(cType) then
-        return
-    end
-
-    local val
-    if cType == "spell" then
-        val = info[4] -- spellID
-    elseif cType == "macro" then
-        local name, icon, body = GetMacroInfo(info[2])
-        if body and body ~= "" then
-            val = {
-                id = info[2],
-                name = name,
-                icon = icon,
-                body = body,
-            }
-        elseif name then
-            val = name
-        end
-    else
-        val = info[2] -- itemID, mountID, etc
-    end
-
-    if not val then
-        return
-    end
-
-    if idx == 0 then
-        self.db.Rings["Main"].Center = { type = cType, value = val }
-    else
-        self.db.Rings["Main"].Slices[idx] = { type = cType, value = val }
-    end
-
+    if not self:SetSlotAction(index, { type = cursorType, value = value }) then return end
     ClearCursor()
-    self:BuildRing("Main")
+    -- Explicit reconciliation also works when cursor events are delivered later.
+    self:CURSOR_CHANGED()
 end

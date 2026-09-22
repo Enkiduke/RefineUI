@@ -30,6 +30,7 @@ local tostring = tostring
 local floor = math.floor
 local abs = math.abs
 local issecretvalue = _G.issecretvalue
+local canaccessvalue = _G.canaccessvalue
 local wipe = wipe
 
 ----------------------------------------------------------------------------------------
@@ -97,11 +98,50 @@ local function IsSecretValue(value)
 end
 
 ----------------------------------------------------------------------------------------
+-- Forbidden Object / Safe Shown Helpers
+----------------------------------------------------------------------------------------
+local function IsForbiddenObject(object)
+    if not object then
+        return false
+    end
+    if type(object) ~= "table" and type(object) ~= "userdata" then
+        return false
+    end
+    if issecretvalue and issecretvalue(object) then
+        return true
+    end
+    if canaccessvalue then
+        local okAccess, accessible = pcall(canaccessvalue, object)
+        if not okAccess or not accessible then
+            return true
+        end
+    end
+    local isForbidden = object.IsForbidden
+    if type(isForbidden) ~= "function" then
+        return false
+    end
+    local ok, forbidden = pcall(isForbidden, object)
+    return not ok or forbidden == true
+end
+
+local function IsFrameShownSafe(frame)
+    if not frame or IsForbiddenObject(frame) then
+        return false
+    end
+    local isShown = frame.IsShown
+    if type(isShown) ~= "function" then
+        return false
+    end
+    local ok, shown = pcall(isShown, frame)
+    return ok and shown == true
+end
+
+----------------------------------------------------------------------------------------
 -- Safe Frame Level / Strata
 ----------------------------------------------------------------------------------------
 local function GetSafeFrameLevel(frame, fallback)
     local fallbackValue = type(fallback) == "number" and fallback or 0
-    if not frame or type(frame.GetFrameLevel) ~= "function" then
+    if not frame or IsForbiddenObject(frame) or type(frame.GetFrameLevel) ~= "function" then
         return fallbackValue
     end
 
@@ -119,7 +159,7 @@ end
 
 local function GetSafeFrameStrata(frame, fallback)
     local fallbackValue = type(fallback) == "string" and fallback or "MEDIUM"
-    if not frame or type(frame.GetFrameStrata) ~= "function" then
+    if not frame or IsForbiddenObject(frame) or type(frame.GetFrameStrata) ~= "function" then
         return fallbackValue
     end
 
@@ -132,7 +172,7 @@ local function GetSafeFrameStrata(frame, fallback)
 end
 
 local function TrySetFrameLevel(frame, level)
-    if not frame or type(frame.SetFrameLevel) ~= "function" then
+    if not frame or IsForbiddenObject(frame) or type(frame.SetFrameLevel) ~= "function" then
         return
     end
     if type(level) ~= "number" or IsUnreadableNumber(level) then
@@ -143,7 +183,7 @@ local function TrySetFrameLevel(frame, level)
 end
 
 local function TrySetFrameStrata(frame, strata)
-    if not frame or type(frame.SetFrameStrata) ~= "function" then
+    if not frame or IsForbiddenObject(frame) or type(frame.SetFrameStrata) ~= "function" then
         return
     end
     if IsSecretValue(strata) or type(strata) ~= "string" or strata == "" then
@@ -186,7 +226,7 @@ end
 -- Compact Frame Detection
 ----------------------------------------------------------------------------------------
 local function IsPartyRaidCompactFrame(frame)
-    if not frame then return false end
+    if not frame or IsForbiddenObject(frame) then return false end
 
     local groupType = frame.groupType
     if not groupType then return false end
@@ -263,7 +303,7 @@ local function ForceRestoreSpacing()
     if InCombatLockdown() or IsEditModeActiveNow() then return end
     for i = 1, 5 do
         local frame = _G["CompactPartyFrameMember"..i]
-        if frame and frame:IsShown() then
+        if frame and not IsForbiddenObject(frame) and IsFrameShownSafe(frame) then
             local point, relTo, relPoint, x, y = frame:GetPoint()
             if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
                  local desiredGap = GetCompactFrameVerticalGap(frame)
@@ -280,7 +320,7 @@ local function ForceRestoreSpacing()
 
     for i = 1, 5 do
         local frame = _G["CompactPartyFramePet"..i]
-        if frame and frame:IsShown() then
+        if frame and not IsForbiddenObject(frame) and IsFrameShownSafe(frame) then
             local point, relTo, relPoint, x, y = frame:GetPoint()
             if (point == "TOP" or point == "TOPLEFT") and (relPoint == "BOTTOM" or relPoint == "BOTTOMLEFT") then
                  local desiredGap = GetCompactFrameVerticalGap(frame)
@@ -304,14 +344,14 @@ local function ForEachCompactPartyFrame(includeHidden, fn)
 
     for i = 1, 5 do
         local frame = _G["CompactPartyFrameMember"..i]
-        if frame and (includeHidden or frame:IsShown()) then
+        if frame and not IsForbiddenObject(frame) and (includeHidden or IsFrameShownSafe(frame)) then
             fn(frame)
         end
     end
 
     for i = 1, 5 do
         local frame = _G["CompactPartyFramePet"..i]
-        if frame and (includeHidden or frame:IsShown()) then
+        if frame and not IsForbiddenObject(frame) and (includeHidden or IsFrameShownSafe(frame)) then
             fn(frame)
         end
     end
@@ -325,7 +365,7 @@ local function ForEachCompactPartyRaidFrame(includeHidden, includePets, fn)
         if not frame or seen[frame] then return end
         seen[frame] = true
         if not IsPartyRaidCompactFrame(frame) then return end
-        if includeHidden or frame:IsShown() then
+        if includeHidden or IsFrameShownSafe(frame) then
             fn(frame)
         end
     end
@@ -372,6 +412,8 @@ P.BuildHookKey           = BuildPartyHookKey
 
 P.IsUnreadableNumber     = IsUnreadableNumber
 P.IsSecretValue          = IsSecretValue
+P.IsForbiddenObject      = IsForbiddenObject
+P.IsFrameShown           = IsFrameShownSafe
 P.GetSafeFrameLevel      = GetSafeFrameLevel
 P.GetSafeFrameStrata     = GetSafeFrameStrata
 P.TrySetFrameLevel       = TrySetFrameLevel

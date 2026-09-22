@@ -7,14 +7,6 @@ local _, RefineUI = ...
 local RadBar = RefineUI:RegisterModule("RadBar")
 
 ----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
-
-----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local InCombatLockdown = InCombatLockdown
@@ -28,7 +20,6 @@ local GetCurrentBindingSet = GetCurrentBindingSet
 -- Constants
 ----------------------------------------------------------------------------------------
 local EVENT_KEY = "RadBar"
-local FALLBACK_BINDING_ACTION = "CLICK RefineUI_RadBar:LeftButton"
 
 ----------------------------------------------------------------------------------------
 -- Internal Shared State
@@ -45,17 +36,7 @@ function RadBar:ResetMainRing()
         return
     end
 
-    local private = self.Private or {}
-    local getDefaultMainRing = private.GetDefaultMainRing
-
-    self.db.Rings = self.db.Rings or {}
-    if getDefaultMainRing then
-        self.db.Rings.Main = getDefaultMainRing()
-    else
-        self.db.Rings.Main = {
-            Slices = {},
-        }
-    end
+    self.db.Rings.Main = self.Private.GetDefaultMainRing()
 
     if self.Core then
         self:BuildRing("Main")
@@ -81,10 +62,12 @@ function RadBar:HandleSlash(msg)
         return
     end
 
-    if self.Core:IsShown() then
-        self.Core:Hide()
+    if self.mode ~= "closed" then
+        self:CloseRing()
+    elseif self.Private.IsSupportedActionType(GetCursorInfo()) then
+        self:CURSOR_CHANGED()
     else
-        self.Core:Show()
+        self:OpenRing()
     end
 end
 
@@ -98,40 +81,23 @@ end
 -- Lifecycle
 ----------------------------------------------------------------------------------------
 function RadBar:OnInitialize()
-    local private = self.Private or {}
-    local getDefaultMainRing = private.GetDefaultMainRing
-    local isLegacyDefaultMainRing = private.IsLegacyDefaultMainRing
-    local bindingAction = private.CLICK_BINDING_ACTION or FALLBACK_BINDING_ACTION
+    local private = self.Private
+    local bindingAction = private.CLICK_BINDING_ACTION
 
     RefineUI.DB = RefineUI.DB or {}
-    self.db = RefineUI.DB.RadBar or {}
+    self.db = type(RefineUI.DB.RadBar) == "table" and RefineUI.DB.RadBar or {}
     RefineUI.DB.RadBar = self.db
 
     if self.db.Enable == nil then
         self.db.Enable = true
     end
 
-    self.db.Rings = self.db.Rings or {}
-    if not self.db.Rings.Main then
-        if getDefaultMainRing then
-            self.db.Rings.Main = getDefaultMainRing()
-        else
-            self.db.Rings.Main = {
-                Slices = {},
-            }
-        end
-    else
-        self.db.Rings.Main.Slices = self.db.Rings.Main.Slices or {}
-        if isLegacyDefaultMainRing and isLegacyDefaultMainRing(self.db.Rings.Main) then
-            if getDefaultMainRing then
-                self.db.Rings.Main = getDefaultMainRing()
-            else
-                self.db.Rings.Main = {
-                    Slices = {},
-                }
-            end
-        end
+    self.db.Rings = type(self.db.Rings) == "table" and self.db.Rings or {}
+    if type(self.db.Rings.Main) ~= "table" or private.IsLegacyDefaultMainRing(self.db.Rings.Main) then
+        self.db.Rings.Main = private.GetDefaultMainRing()
     end
+    local main = self.db.Rings.Main
+    main.Slices = type(main.Slices) == "table" and main.Slices or {}
 
     self.Buttons = self.Buttons or {}
 
@@ -163,33 +129,40 @@ function RadBar:OnEnable()
     end
 
     self:SetupCore()
-    self:BuildRing("Main")
     self:SetupVisuals()
+    self:BuildRing("Main")
 
     RefineUI:OnEvents({
         "CURSOR_CHANGED",
         "ACTIONBAR_SHOWGRID",
         "ACTIONBAR_HIDEGRID",
         "PLAYER_REGEN_ENABLED",
+        "UPDATE_MACROS",
     }, function(event, ...)
         RadBar:HandleEvent(event, ...)
     end, EVENT_KEY)
+    self:CURSOR_CHANGED()
 end
 
 function RadBar:PLAYER_REGEN_ENABLED()
-    if self._pendingBuildRing then
-        local ringName = self._pendingBuildRing
-        self._pendingBuildRing = nil
-        self:BuildRing(ringName)
-    end
-
+    local pendingRing = self._pendingBuildRing
+    self._pendingBuildRing = nil
     if self._pendingResetMainRing then
         self._pendingResetMainRing = nil
         self:ResetMainRing()
+    elseif pendingRing then
+        self:BuildRing(pendingRing)
     end
+
+    -- Cursor/grid events can arrive during lockdown; reconcile current state now.
+    self:CURSOR_CHANGED()
 
     if self._pendingToggle then
         self._pendingToggle = nil
         self:HandleSlash("")
     end
+end
+
+function RadBar:UPDATE_MACROS()
+    self:BuildRing(self.activeRing or "Main")
 end

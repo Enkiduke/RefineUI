@@ -64,8 +64,11 @@ function Util.IsAccessibleValue(v)
     if CoreIsSecret(v) then
         return false
     end
-    if v ~= nil and canaccessvalue and not canaccessvalue(v) then
-        return false
+    if v ~= nil and canaccessvalue then
+        local ok, accessible = pcall(canaccessvalue, v)
+        if not ok or accessible == false then
+            return false
+        end
     end
     return true
 end

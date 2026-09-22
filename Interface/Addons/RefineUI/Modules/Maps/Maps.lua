@@ -22,6 +22,7 @@ function Maps:OnInitialize()
 end
 
 function Maps:OnEnable()
+    if self.SetupWaypoint then self:SetupWaypoint() end
     if self.SetupMinimap then self:SetupMinimap() end
     if self.SetupPortals then self:SetupPortals() end
     if self.SetupWorldMap then self:SetupWorldMap() end

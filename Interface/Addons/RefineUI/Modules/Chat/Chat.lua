@@ -22,10 +22,6 @@ function Chat:ShouldSuspendOptionalEnhancements()
     return self:IsEncounterActive()
 end
 
-function Chat:HasRenderedMessageEnhancements()
-    return self.ShouldUseMessagePipeline and self:ShouldUseMessagePipeline() == true
-end
-
 function Chat:RefreshEncounterGatedFeatures()
     if self.RefreshCopyButtons then
         self:RefreshCopyButtons()

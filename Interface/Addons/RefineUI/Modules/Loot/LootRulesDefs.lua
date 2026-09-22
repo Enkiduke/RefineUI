@@ -207,7 +207,7 @@ LootRules.DEFAULT_RULES = {
         enabled = true,
         action = "KEEP",
         title = "Always Keep BoE / WuE",
-        summary = "Never auto-sell BoE/WuE items.",
+        summary = "Never auto-sell BoE/WuE items, except poor quality junk.",
         options = {},
     },
     {
@@ -350,5 +350,4 @@ LootRules.RULE_OPTION_SCHEMAS = {
         { type = "multi_toggle", key = "usability", label = "Usability", choices = USABILITY_CHOICES },
     },
 }
-
 

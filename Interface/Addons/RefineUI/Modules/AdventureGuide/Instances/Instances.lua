@@ -1,9 +1,9 @@
 ----------------------------------------------------------------------------------------
--- EncounterAchievements Module
+-- AdventureGuideInstances Module
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local EncounterAchievements = RefineUI:RegisterModule("EncounterAchievements")
+local AdventureGuideInstances = RefineUI:RegisterModule("AdventureGuideInstances")
 
 ----------------------------------------------------------------------------------------
 -- Lib Globals
@@ -16,14 +16,14 @@ local type = type
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-EncounterAchievements.KEY_PREFIX = "EncounterAchievements"
-EncounterAchievements.BLIZZARD_ENCOUNTER_ADDON = "Blizzard_EncounterJournal"
-EncounterAchievements.BLIZZARD_ACHIEVEMENT_ADDON = "Blizzard_AchievementUI"
+AdventureGuideInstances.KEY_PREFIX = "AdventureGuideInstances"
+AdventureGuideInstances.BLIZZARD_ENCOUNTER_ADDON = "Blizzard_EncounterJournal"
+AdventureGuideInstances.BLIZZARD_ACHIEVEMENT_ADDON = "Blizzard_AchievementUI"
 
 ----------------------------------------------------------------------------------------
 -- Key Helpers
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:BuildKey(...)
+function AdventureGuideInstances:BuildKey(...)
     local key = self.KEY_PREFIX
     for index = 1, select("#", ...) do
         key = key .. ":" .. tostring(select(index, ...))
@@ -34,14 +34,14 @@ end
 ----------------------------------------------------------------------------------------
 -- State
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:InitializeState()
+function AdventureGuideInstances:InitializeState()
     self.currentInstanceID = nil
     self.customTabActive = false
     self.pendingAchievementUILoadFromTab = false
     self.pendingRowRefreshInstanceID = nil
 end
 
-function EncounterAchievements:GetCurrentJournalInstanceID()
+function AdventureGuideInstances:GetCurrentJournalInstanceID()
     local journal = _G.EncounterJournal
     return journal and journal.instanceID or nil
 end
@@ -49,7 +49,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Runtime Event Handling
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:RegisterRuntimeEvents()
+function AdventureGuideInstances:RegisterRuntimeEvents()
     if self.runtimeEventsRegistered then
         return
     end
@@ -70,6 +70,8 @@ function EncounterAchievements:RegisterRuntimeEvents()
     end, self:BuildKey("Runtime", "ADDON_LOADED"))
 
     RefineUI:RegisterEventCallback("EJ_DIFFICULTY_UPDATE", function()
+        if RefineUI.InstanceCompletion.capturing then return end
+        self:ScheduleCompletionRefresh()
         if self.customTabActive then
             self:RefreshCustomTabContent()
         end
@@ -81,7 +83,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Blizzard Hooks
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:InstallEncounterHooks()
+function AdventureGuideInstances:InstallEncounterHooks()
     if self.hooksInstalled then
         return
     end
@@ -111,6 +113,7 @@ function EncounterAchievements:InstallEncounterHooks()
     if encounterFrame and encounterFrame.HookScript then
         RefineUI:HookScriptOnce(self:BuildKey("HookScript", "EncounterFrame", "OnShow"), encounterFrame, "OnShow", function()
             self:UpdateCustomTabAvailability()
+            self:ScheduleCompletionRefresh()
             if self.customTabActive then
                 self:RefreshCustomTabContent()
             end
@@ -118,6 +121,8 @@ function EncounterAchievements:InstallEncounterHooks()
 
         RefineUI:HookScriptOnce(self:BuildKey("HookScript", "EncounterFrame", "OnHide"), encounterFrame, "OnHide", function()
             self:DeactivateCustomTab()
+            self:CancelCompletionWork()
+            self:CancelPendingInstanceRowBuilds()
         end)
     end
 
@@ -137,14 +142,19 @@ end
 ----------------------------------------------------------------------------------------
 -- Hook Callbacks
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:OnEncounterJournalTabSet(tabID)
+function AdventureGuideInstances:OnEncounterJournalTabSet(tabID)
     if self.customTabActive and not self:IsSupportedContentTab(tabID) then
         self:DeactivateCustomTab()
     end
     self:UpdateCustomTabAvailability()
 end
 
-function EncounterAchievements:OnEncounterJournalHidden()
+function AdventureGuideInstances:OnEncounterJournalHidden()
+    self:CancelCompletionWork()
+    -- Retry incomplete data on the next visit; completed scans are reusable.
+    if self._completionLoot and (not self._completionLoot.finished or self._completionLoot.incomplete or self._completionLoot.hasUnknown) then
+        self._completionLoot = nil
+    end
     self.currentInstanceID = nil
     self.pendingRowRefreshInstanceID = nil
     if self.CancelPendingInstanceRowBuilds then
@@ -153,15 +163,13 @@ function EncounterAchievements:OnEncounterJournalHidden()
     self:DeactivateCustomTab()
 end
 
-function EncounterAchievements:OnEncounterInstanceChanged(instanceID)
+function AdventureGuideInstances:OnEncounterInstanceChanged(instanceID)
     self.currentInstanceID = instanceID
     self:UpdateCustomTabAvailability()
+    self:ScheduleCompletionRefresh()
 
     if not self.customTabActive then
         self.pendingRowRefreshInstanceID = nil
-        if self.CancelPendingInstanceRowBuilds then
-            self:CancelPendingInstanceRowBuilds()
-        end
         return
     end
 
@@ -171,7 +179,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Integration Bootstrap
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:InitializeEncounterJournalIntegration()
+function AdventureGuideInstances:InitializeEncounterJournalIntegration()
     if self.encounterJournalInitialized then
         return
     end
@@ -183,7 +191,14 @@ function EncounterAchievements:InitializeEncounterJournalIntegration()
     self:InitializeData()
     self:EnsureUI()
     self:InstallEncounterHooks()
+    self:InstallCompletionUI()
+    self:InstallGuideInstanceList()
+    self:InstallExpansionCompletionUI()
+    self:InstallGuideLockouts()
+    self:InstallGuideSettings()
+
     self:UpdateCustomTabAvailability()
+    self:ScheduleCompletionRefresh()
 
     self.encounterJournalInitialized = true
 end
@@ -191,9 +206,10 @@ end
 ----------------------------------------------------------------------------------------
 -- Lifecycle
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:OnEnable()
+function AdventureGuideInstances:OnEnable()
     self:InitializeState()
     self:RegisterRuntimeEvents()
+
 
     if type(_G.EncounterJournal) == "table" then
         self:InitializeEncounterJournalIntegration()

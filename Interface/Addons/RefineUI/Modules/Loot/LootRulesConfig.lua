@@ -571,6 +571,10 @@ local function RuleMatches(ruleID, options, context)
         return context.isInEquipmentSet == true
     end
     if ruleID == "sell_always_keep_boe_wue" then
+        -- Grey junk can continue to the junk sell rule, even when BoE/WuE.
+        if context.category == "junk" and ToNumber(context.quality, nil) == ITEM_QUALITY_POOR then
+            return false
+        end
         return context.isBoE == true or context.isWarbound == true
     end
     if ruleID == "sell_always_sell_junk" then
@@ -1008,5 +1012,4 @@ function LootRules:EvaluateRulesForStage(stage, context)
 
     return "KEEP", nil
 end
-
 

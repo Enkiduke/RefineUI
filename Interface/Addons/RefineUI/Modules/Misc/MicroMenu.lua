@@ -280,9 +280,33 @@ local function CreateRefineMicroButton(name, cfg)
     return b
 end
 
+local function EnsureMicroButtonsTable()
+    local tbl = rawget(_G, "MICRO_BUTTONS")
+    if type(tbl) ~= "table" then
+        tbl = {
+            "CharacterMicroButton",
+            _G.ProfessionMicroButton and "ProfessionMicroButton" or (_G.SpellbookMicroButton and "SpellbookMicroButton" or "ProfessionMicroButton"),
+            _G.PlayerSpellsMicroButton and "PlayerSpellsMicroButton" or (_G.TalentMicroButton and "TalentMicroButton" or "PlayerSpellsMicroButton"),
+            "AchievementMicroButton",
+            "QuestLogMicroButton",
+            "HousingMicroButton",
+            "GuildMicroButton",
+            "LFDMicroButton",
+            "CollectionsMicroButton",
+            "EJMicroButton",
+            "StoreMicroButton",
+            "MainMenuMicroButton",
+            "HelpMicroButton",
+        }
+        _G.MICRO_BUTTONS = tbl
+    end
+    return tbl
+end
+
 local function InsertMicroButton(name, afterName)
-    local buttonsTbl = rawget(_G, 'MICRO_BUTTONS')
+    local buttonsTbl = EnsureMicroButtonsTable()
     if type(buttonsTbl) ~= 'table' then return end
+    if indexOf(buttonsTbl, name) then return end
     local idx = indexOf(buttonsTbl, afterName) or #buttonsTbl
     table.insert(buttonsTbl, idx + 1, name)
 end
@@ -322,9 +346,10 @@ local function SkinMicroButton(button)
 end
 
 local function SkinMicroButtons()
-    if not _G.MICRO_BUTTONS then return end
+    local buttonsTbl = EnsureMicroButtonsTable()
+    if type(buttonsTbl) ~= "table" then return end
 
-    for _, name in ipairs(_G.MICRO_BUTTONS) do
+    for _, name in ipairs(buttonsTbl) do
         local button = _G[name]
         if button then
             SkinMicroButton(button)
@@ -890,8 +915,11 @@ function MicroMenu:OnEnable()
 
     if _G.MicroMenuContainer and _G.MicroMenuContainer.Layout then
         RefineUI:HookOnce("MicroMenu:MicroMenuContainer:LayoutButtons", _G.MicroMenuContainer, "Layout", function(self)
+            local buttonsTbl = EnsureMicroButtonsTable()
+            if type(buttonsTbl) ~= "table" then return end
+
             local spacing, width, prev = -2, 0, nil
-            for _, btnName in ipairs(_G.MICRO_BUTTONS) do
+            for _, btnName in ipairs(buttonsTbl) do
                 local b = _G[btnName]
                 if b and b:IsShown() then
                     b:ClearAllPoints()
@@ -904,7 +932,7 @@ function MicroMenu:OnEnable()
                     width, prev = width + b:GetWidth() + spacing, b
                 end
             end
-            local totalWidth = math.max(0, width - spacing)
+            local totalWidth = prev and math.max(0, width - spacing) or 0
             self:SetWidth(totalWidth)
         end)
     end

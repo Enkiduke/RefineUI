@@ -10,6 +10,11 @@ local _, RefineUI = ...
 -- Local config table (assigned to RefineUI.Config at the end)
 local C = {}
 C.Version = 1
+C.AchievementWindow = {
+    CharacterCompletion = false,
+    Sort = "default",
+    Reverse = false,
+}
 
 ----------------------------------------------------------------------------------------
 -- 1. General Settings
@@ -285,11 +290,10 @@ C.Chat = {
     TimestampFormat = "|cff808080[%H:%M]|r ", -- Timestamp format passed to Blizzard chat
     TabsMouseOver = true, -- Only show tabs on mouseover
     CombatLog = true,     -- Skin the Combat Log (Frame 2)
-    History = true,       -- Enable Chat History
-    ChatIcons = true,     -- Add icons to chat links
-    RoleIcons = true,     -- Add class-colored role icons to party/raid chat messages
-    ItemLevelLinks = true, -- Show item level in rendered item hyperlinks
-    ShortChannels = true, -- Shorten rendered channel tags after Blizzard formats the line
+    ShortChannels = true, -- Abbreviate fixed chat type labels while preserving Blizzard links
+    ChatIcons = true,     -- Add icons before supported chat hyperlinks
+    LootIcons = true,     -- Replace money denominations with coin icons
+    RoleIcons = true,     -- Add class-colored group role icons to group chat messages
 }
 
 ----------------------------------------------------------------------------------------
@@ -302,6 +306,41 @@ C.Auras = {
     SafeHidePassiveBuffs = false,
     ShowPassiveBuffsInEditMode = true,
     AllowDebuffTooltipsInCombat = false,
+    PlayerBuffs = {
+        DurationFilter = "ALL",
+        Groups = {
+            Important = {
+                Enable = true,
+                Scale = 1.00,
+                BorderColor = { 1.00, 0.55, 0.10, 1 },
+            },
+            BigDefensive = {
+                Enable = true,
+                Scale = 1.00,
+                BorderColor = { 0.20, 0.75, 1.00, 1 },
+            },
+            ExternalDefensive = {
+                Enable = true,
+                Scale = 1.00,
+                BorderColor = { 1.00, 0.40, 0.85, 1 },
+            },
+            Self = {
+                Enable = true,
+                Scale = 1.00,
+                BorderColor = { 0.12, 0.90, 0.12, 1 },
+            },
+            External = {
+                Enable = true,
+                Scale = 1.00,
+                BorderColor = { 0.35, 0.65, 1.00, 1 },
+            },
+            WeaponEnchant = {
+                Enable = true,
+                Scale = 1.00,
+                BorderColor = { 0.65, 0.25, 0.90, 1 },
+            },
+        },
+    },
 }
 
 ----------------------------------------------------------------------------------------
@@ -445,6 +484,16 @@ C.Maps = {
     ZoomReset = true,
     ResetTime = 5,
     WorldMap = true,
+    Waypoint = {
+        Enable = true,
+        FontSize = 16,
+        IconScale = 1.15,
+        PulseOnChange = true,
+        ShowDestination = true,
+        ColorByDistance = true,
+        NearDistance = 50, -- Yards; green when close, gold otherwise
+        AutoTrack = false, -- Opt in to tracking newly placed Blizzard map pins
+    },
     WorldQuestList = {
         Enable = true,
         Sort = "TIME", -- "TIME" or "NAME"
@@ -627,6 +676,16 @@ C.TalkingHead = {
 ----------------------------------------------------------------------------------------
 -- 19. Quests
 ----------------------------------------------------------------------------------------
+C.AdventureGuide = {
+    ShowCompletedCategories = true,
+    Cards = true,
+    achievements = true,
+    appearances = true,
+    pets = true,
+    mounts = true,
+    toys = true,
+}
+
 C.Quests = {
     Enable = true,
     HeaderSkinning = false,
@@ -636,6 +695,21 @@ C.Quests = {
     AutoComplete = false,
     AutoCollapseMode = "NEVER", -- "NEVER", "COMBAT", "INSTANCE", "RELOAD"
     AutoZoneTrack = true,
+    LegacyCompletionist = {
+        Enable = true,
+        AutoCollapse = true,
+        HideCollected = true,
+        appearances = true,
+        mounts = true,
+        pets = true,
+        achievements = true,
+        toys = true,
+    },
+}
+
+C.MythicPlus = {
+    Enable = true,
+    AutoInsertKeystone = true,
 }
 
 ----------------------------------------------------------------------------------------

@@ -157,17 +157,17 @@ local function ShouldHideCrowdControlAuraFrame(cfg)
 end
 
 local function EnsureCrowdControlAuraFrameHooks(unitFrame)
-    if not unitFrame then
+    if not unitFrame or not IsAccessibleValue(unitFrame) then
         return
     end
 
-    local aurasFrame = unitFrame.AurasFrame
-    if not aurasFrame then
+    local okAuras, aurasFrame = pcall(function() return unitFrame.AurasFrame end)
+    if not okAuras or not aurasFrame or not IsAccessibleValue(aurasFrame) then
         return
     end
 
-    local ccListFrame = aurasFrame.CrowdControlListFrame
-    if not ccListFrame then
+    local okListFrame, ccListFrame = pcall(function() return aurasFrame.CrowdControlListFrame end)
+    if not okListFrame or not ccListFrame or not IsAccessibleValue(ccListFrame) then
         return
     end
 
@@ -189,8 +189,8 @@ local function EnsureCrowdControlAuraFrameHooks(unitFrame)
             return
         end
 
-        local frame = frameObj and frameObj.CrowdControlListFrame
-        if frame and frame:IsShown() then
+        local okFrame, frame = pcall(function() return frameObj and frameObj.CrowdControlListFrame end)
+        if okFrame and frame and IsAccessibleValue(frame) and frame.IsShown and frame:IsShown() then
             frame:Hide()
         end
 
@@ -230,13 +230,17 @@ local function EnsureCrowdControlAuraFrameHooks(unitFrame)
 end
 
 local function SyncCrowdControlAuraFrameVisibility(unitFrame, cfg)
-    if not unitFrame then
+    if not unitFrame or not IsAccessibleValue(unitFrame) then
         return
     end
 
-    local aurasFrame = unitFrame.AurasFrame
-    local ccListFrame = aurasFrame and aurasFrame.CrowdControlListFrame
-    if not aurasFrame or not ccListFrame then
+    local okAuras, aurasFrame = pcall(function() return unitFrame.AurasFrame end)
+    if not okAuras or not aurasFrame or not IsAccessibleValue(aurasFrame) then
+        return
+    end
+
+    local okListFrame, ccListFrame = pcall(function() return aurasFrame.CrowdControlListFrame end)
+    if not okListFrame or not ccListFrame or not IsAccessibleValue(ccListFrame) then
         return
     end
 
@@ -460,17 +464,28 @@ local function IsCastActive(unitFrame, unit)
 end
 
 local function GetAuraFromCrowdControlList(unitFrame)
-    local aurasFrame = unitFrame and unitFrame.AurasFrame
-    local ccList = aurasFrame and aurasFrame.crowdControlList
-    if not ccList then
+    if not unitFrame or not IsAccessibleValue(unitFrame) then
         return nil
     end
 
-    if type(ccList.GetTop) == "function" then
-        local ok, aura = pcall(ccList.GetTop, ccList)
-        if ok and aura then
-            return aura, "blizzard_list"
-        end
+    local okAuras, aurasFrame = pcall(function() return unitFrame.AurasFrame end)
+    if not okAuras or not aurasFrame or not IsAccessibleValue(aurasFrame) then
+        return nil
+    end
+
+    local okList, ccList = pcall(function() return aurasFrame.crowdControlList end)
+    if not okList or not ccList or not IsAccessibleValue(ccList) then
+        return nil
+    end
+
+    local okFn, getTop = pcall(function() return ccList.GetTop end)
+    if not okFn or type(getTop) ~= "function" then
+        return nil
+    end
+
+    local okAura, aura = pcall(getTop, ccList)
+    if okAura and aura and IsAccessibleValue(aura) then
+        return aura, "blizzard_list"
     end
 
     return nil

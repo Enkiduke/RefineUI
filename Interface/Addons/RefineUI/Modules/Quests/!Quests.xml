@@ -3,5 +3,10 @@
     <Script file="AutoCollapse.lua"/>
     <Script file="AutoZoneTrack.lua"/>
     <Script file="Quests.lua"/>
+    <Script file="InstanceTrackerHeader.lua"/>
     <Script file="EditMode.lua"/>
+    <Script file="LegacyCompletionist.lua"/>
+    <Frame name="RefineUICompletionistLineTemplate" inherits="ObjectiveTrackerLineTemplate" virtual="true"/>
+    <Frame name="RefineUICompletionistBlockTemplate" inherits="ObjectiveTrackerBlockTemplate" virtual="true"/>
+    <Script file="LegacyCompletionistUI.lua"/>
 </Ui>

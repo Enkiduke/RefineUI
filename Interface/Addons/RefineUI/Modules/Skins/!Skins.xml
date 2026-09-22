@@ -1,5 +1,6 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
 	<Script file="Skins.lua"/>
+	<Script file="AdventureGuide.lua"/>
 	<Script file="CharacterPanel.lua"/>
 	<Script file="DamageMeter.lua"/>
 	<Script file="GossipFrame.lua"/>

@@ -1,256 +1,179 @@
 ----------------------------------------------------------------------------------------
 -- RadBar Component: Core
--- Description: Secure core frame and bridge callback wiring.
+-- Secure input and the bridge to unprotected presentation.
 ----------------------------------------------------------------------------------------
-
 local _, RefineUI = ...
 local RadBar = RefineUI:GetModule("RadBar")
-if not RadBar then
-    return
-end
+if not RadBar then return end
 
-----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
-
-----------------------------------------------------------------------------------------
--- Lua / WoW Upvalues
-----------------------------------------------------------------------------------------
+local Private = RadBar.Private
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
-local tonumber = tonumber
 
-----------------------------------------------------------------------------------------
--- Secure Environment
-----------------------------------------------------------------------------------------
-
--- Core Logic Snippets
 local SNIPPETS = {
-    -- Constants & Utils
-    INIT = [[
-        TWO_PI = 6.283185307179586
-    ]],
-
-    -- Math: Cursor to Polar Coordinates relative to Content
     GET_POLAR = [[
         local mx, my = self:GetMousePosition()
-        if not mx then return 0, 0 end
-
+        if not mx or not my then return 0, 0 end
         local sw, sh = self:GetWidth(), self:GetHeight()
-        if not sw or not sh or sw <= 0 or sh <= 0 then
-            return 0, 0
-        end
-
-        mx, my = mx * sw, my * sh
-
-        local cx = self:GetAttribute("centerX")
-        local cy = self:GetAttribute("centerY")
-        if not cx or not cy then
-            cx, cy = sw / 2, sh / 2
-        end
-
-        local dx, dy = mx - cx, my - cy
+        if not sw or not sh or sw <= 0 or sh <= 0 then return 0, 0 end
+        local cx = self:GetAttribute("centerX") or sw / 2
+        local cy = self:GetAttribute("centerY") or sh / 2
+        local dx, dy = mx * sw - cx, my * sh - cy
         local angle = math.atan2(dx, dy)
-        if angle < 0 then angle = angle + 6.283185307179586 end
-        local radius = (dx*dx + dy*dy)^0.5
-
-        return angle, radius
+        if angle < 0 then angle = angle + TWO_PI end
+        return angle, (dx * dx + dy * dy)^0.5
     ]],
-
-    -- Proxy OnClick: This runs when the keybind/button is pressed
-    ON_CLICK = [[
-        local bindMode = self:GetAttribute("bindMode")
-
-        if bindMode then
-            self:SetAttribute("type", nil)
-            self:SetAttribute("typerelease", nil)
-            self:SetAttribute("macrotext", nil)
-            return false
-        end
-
-        if button == "RightButton" then
-            if IsControlKeyDown() or IsShiftKeyDown() then
-                local numSlices = self:GetAttribute("numSlices") or 0
-                local angle, radius = self:RunAttribute("GetPolar")
-                local inner = self:GetAttribute("innerRadius") or 45
-
-                local index = 0 -- Default to center
-                if radius > inner and numSlices > 0 then
-                    local sliceAngle = 6.283185307179586 / numSlices
-                    local adjAngle = angle + (sliceAngle / 2)
-                    if adjAngle >= 6.283185307179586 then adjAngle = adjAngle - 6.283185307179586 end
-                    index = math.floor(adjAngle / sliceAngle) + 1
-                end
-
-                local bridge = self:GetFrameRef("Bridge")
-                if bridge then
-                    bridge:CallMethod("Notify", "Unbind", index)
-                end
-                return false
-            end
-
+    GET_SELECTION = [[
+        local angle, radius = self:RunAttribute("GetPolar")
+        local count = self:GetAttribute("numSlices") or 0
+        local inner = self:GetAttribute("innerRadius")
+        if radius <= inner or count <= 0 then return 0 end
+        local sliceAngle = TWO_PI / count
+        return math.floor(((angle + sliceAngle / 2) % TWO_PI) / sliceAngle) + 1
+    ]],
+    CLEAR_ACTION = [[
+        self:SetAttribute("type", nil)
+        self:SetAttribute("typerelease", nil)
+        self:SetAttribute("macrotext", nil)
+    ]],
+    ON_COMBAT = [[
+        if newstate == "combat" and self:GetAttribute("customizing") then
+            self:RunAttribute("ClearAction")
+            self:SetAttribute("customizing", nil)
+            self:SetAttribute("bindMode", nil)
             self:Hide()
             local bridge = self:GetFrameRef("Bridge")
-            if bridge then
-                bridge:CallMethod("Notify", "Hide")
+            if bridge then bridge:CallMethod("Notify", "Hide") end
+        end
+    ]],
+    ON_CLICK = [[
+        -- Every suppressed click must clear release actions as well as press actions.
+        self:RunAttribute("ClearAction")
+        if self:GetAttribute("bindMode") then return false end
+
+        local bridge = self:GetFrameRef("Bridge")
+        if button == "RightButton" then
+            if down and (IsControlKeyDown() or IsShiftKeyDown()) then
+                local index = self:RunAttribute("GetSelection")
+                if bridge then bridge:CallMethod("Notify", "Unbind", index) end
+            elseif not (IsControlKeyDown() or IsShiftKeyDown()) then
+                self:SetAttribute("customizing", nil)
+                self:Hide()
+                if bridge then bridge:CallMethod("Notify", "Hide") end
             end
-            self:SetAttribute("type", nil)
             return false
         end
+        if button ~= "LeftButton" then return false end
 
         if down then
             if not self:IsShown() then
-                self:Show() -- Show immediate to validate mouse data
+                self:Show()
                 local mx, my = self:GetMousePosition()
-
                 local sw, sh = self:GetWidth(), self:GetHeight()
-                if mx then
-                    self:SetAttribute("centerX", mx * sw)
-                    self:SetAttribute("centerY", my * sh)
-                else
-                    self:SetAttribute("centerX", sw * 0.5)
-                    self:SetAttribute("centerY", sh * 0.5)
-                end
+                self:SetAttribute("centerX", mx and mx * sw or sw / 2)
+                self:SetAttribute("centerY", my and my * sh or sh / 2)
             end
-
-            local bridge = self:GetFrameRef("Bridge")
-            if bridge then
-                bridge:CallMethod("Notify", "Show")
-            end
-            return false
-        else
-            if not self:IsShown() then return false end -- Already hidden/cancelled by RightButton
-
-            self:Hide()
-            local bridge = self:GetFrameRef("Bridge")
-            if bridge then
-                bridge:CallMethod("Notify", "Hide")
-            end
-
-            local numSlices = self:GetAttribute("numSlices") or 0
-            local angle, radius = self:RunAttribute("GetPolar")
-            local inner = self:GetAttribute("innerRadius") or 45
-
-            local prefix
-            if radius > inner and numSlices > 0 then
-                local sliceAngle = 6.283185307179586 / numSlices
-                local adjAngle = angle + (sliceAngle / 2)
-                if adjAngle >= 6.283185307179586 then adjAngle = adjAngle - 6.283185307179586 end
-                local index = math.floor(adjAngle / sliceAngle) + 1
-                prefix = "child" .. index .. "-"
-            else
-                -- DEFAULT: CENTER
-                prefix = "center-"
-            end
-
-            local macro = self:GetAttribute(prefix .. "macro")
-            if macro then
-                self:SetAttribute("type", "macro")
-                self:SetAttribute("typerelease", "macro")
-                self:SetAttribute("macrotext", macro)
-                return true -- Trigger the macro execution on release
-            end
-
-            self:SetAttribute("type", nil)
+            self:SetAttribute("customizing", nil)
+            if bridge then bridge:CallMethod("Notify", "Show") end
             return false
         end
+
+        if not self:IsShown() then return false end
+        -- Sample before hiding: selection must use the visible capture frame.
+        local index = self:RunAttribute("GetSelection")
+        local prefix = index == 0 and "center-" or "child" .. index .. "-"
+        local macro = self:GetAttribute(prefix .. "macro")
+        self:SetAttribute("customizing", nil)
+        self:Hide()
+        if bridge then bridge:CallMethod("Notify", "Hide") end
+        if macro then
+            self:SetAttribute("type", "macro")
+            self:SetAttribute("typerelease", "macro")
+            self:SetAttribute("macrotext", macro)
+            return button -- WrapScript's first return value is the forwarded button.
+        end
+        return false
     ]],
 }
 
-----------------------------------------------------------------------------------------
--- Public Component Methods
-----------------------------------------------------------------------------------------
 function RadBar:SetupCore()
-    local private = self.Private or {}
-    local name = private.CORE_FRAME_NAME or "RefineUI_RadBar"
-
-    -- CORE: Fullscreen capture
-    local core = CreateFrame("Button", name, UIParent, "SecureActionButtonTemplate, SecureHandlerAttributeTemplate")
+    if self.Core then return end
+    local core = CreateFrame("Button", Private.CORE_FRAME_NAME, UIParent,
+        "SecureActionButtonTemplate, SecureHandlerStateTemplate")
     core:SetAllPoints(UIParent)
-    core:SetFrameStrata("TOOLTIP") -- Topmost to avoid occlusion by nameplates/UI
+    core:SetFrameStrata("TOOLTIP")
     core:RegisterForClicks("AnyDown", "AnyUp")
     core:Hide()
 
-    -- CONTENT: Detached visual container (allows lingering for fade-out)
     local content = CreateFrame("Frame", nil, UIParent)
-    RefineUI.Size(content, 400, 400)
-    RefineUI.Point(content, "CENTER", UIParent, "CENTER", 0, 0)
-    content:SetFrameStrata("TOOLTIP") -- Above unit frames
+    RefineUI.Size(content, Private.CONTENT_SIZE, Private.CONTENT_SIZE)
+    content:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    content:SetFrameStrata("TOOLTIP")
     content:SetAlpha(0)
     content:EnableMouse(false)
     content:Hide()
     self.Content = content
 
-    -- DIRECTIONAL ARROW: Frame-based to support OnUpdate (Fade)
     local arrow = CreateFrame("Frame", nil, content)
-    RefineUI.Size(arrow, 32, 32) -- Smaller
-    RefineUI.Point(arrow, "CENTER", content, "CENTER", 0, 0)
+    RefineUI.Size(arrow, Private.ARROW_SIZE, Private.ARROW_SIZE)
+    arrow:SetPoint("CENTER", content, "CENTER", 0, 0)
     arrow:SetAlpha(0)
     arrow.Tex = arrow:CreateTexture(nil, "OVERLAY")
     arrow.Tex:SetAllPoints()
     arrow.Tex:SetAtlas("CovenantSanctum-Renown-Arrow")
     content.Arrow = arrow
 
-    -- SECURE ATTRS
-    core:SetAttribute("innerRadius", 35) -- Tighter center
-    core:SetAttribute("bindMode", nil)
-    core:SetAttribute("pressAndHoldAction", 1) -- Robustness attribute
-    core:SetAttribute("centerX", UIParent:GetWidth() * 0.5)
-    core:SetAttribute("centerY", UIParent:GetHeight() * 0.5)
-    core:Execute(SNIPPETS.INIT)
+    core:SetAttribute("innerRadius", Private.INNER_RADIUS)
+    core:SetAttribute("pressAndHoldAction", 1)
+    core:SetAttribute("centerX", UIParent:GetWidth() / 2)
+    core:SetAttribute("centerY", UIParent:GetHeight() / 2)
+    core:Execute("TWO_PI = " .. string.format("%.17g", Private.TWO_PI))
     core:SetAttribute("GetPolar", SNIPPETS.GET_POLAR)
-
-    -- WrapScript
+    core:SetAttribute("GetSelection", SNIPPETS.GET_SELECTION)
+    core:SetAttribute("ClearAction", SNIPPETS.CLEAR_ACTION)
+    core:SetAttribute("_onstate-combat", SNIPPETS.ON_COMBAT)
     core:WrapScript(core, "OnClick", SNIPPETS.ON_CLICK)
 
-    -- Frame refs used by secure snippets must point at a protected frame.
-    -- A plain Frame can become an invalid handle in combat.
+    -- Frame references in secure snippets must point to protected frames.
     local bridge = CreateFrame("Frame", nil, UIParent, "SecureHandlerBaseTemplate")
     core:SetFrameRef("Bridge", bridge)
-
-    -- LUA CALLBACKS
     bridge.Notify = function(_, msg, data)
         if msg == "Show" then
-            RadBar:StartUpdate()
-            local centerX = core:GetAttribute("centerX")
-            local centerY = core:GetAttribute("centerY")
-            if centerX and centerY then
-                RadBar.Content:ClearAllPoints()
-                RadBar.Content:SetPoint("CENTER", UIParent, "BOTTOMLEFT", centerX, centerY)
-            end
-            RadBar.Content:Show()
-            RadBar:Fade(RadBar.Content, 1, 0.05)
-            RadBar:UpdateSlotVisibility()
-            RadBar:UpdateUsabilityVisuals()
+            self:SetPresentationMode("selecting")
         elseif msg == "Hide" then
-            RadBar:StopUpdate()
-            RadBar:Fade(RadBar.Content, 0, 0.2, function(f)
-                f:Hide()
-            end)
-        elseif msg == "Unbind" then
-            if InCombatLockdown() then
-                return
+            self:SetPresentationMode("closed")
+        elseif msg == "Unbind" and not InCombatLockdown() then
+            local index = tonumber(data)
+            if self:SetSlotAction(index, nil) then
+                self:Print("Unbound slot " .. (index == 0 and "Center" or index))
             end
-            local idx = tonumber(data)
-            if not idx then
-                return
-            end
-
-            if idx == 0 then
-                RadBar.db.Rings["Main"].Center = nil
-            else
-                RadBar.db.Rings["Main"].Slices[idx] = nil
-            end
-
-            RadBar:Print("Unbound slot " .. (idx == 0 and "Center" or idx))
-            RadBar:BuildRing("Main")
-            RadBar:UpdateSlotVisibility()
         end
     end
-
     self.Core = core
+    RegisterStateDriver(core, "combat", "[combat] combat; peace")
+end
+
+-- These entry points are for ordinary Lua callers. Combat input stays in snippets.
+function RadBar:OpenRing()
+    if InCombatLockdown() or not self.Core then return end
+    local x, y = GetCursorPosition()
+    local scale = self.Core:GetEffectiveScale()
+    if scale <= 0 then return end
+    self.Core:SetAttribute("bindMode", nil)
+    self.Core:SetAttribute("customizing", nil)
+    self.Core:SetAttribute("centerX", x / scale)
+    self.Core:SetAttribute("centerY", y / scale)
+    self.Core:Show()
+    self:SetPresentationMode("selecting")
+end
+
+function RadBar:CloseRing()
+    if InCombatLockdown() or not self.Core then return end
+    self.Core:SetAttribute("bindMode", nil)
+    self.Core:SetAttribute("customizing", nil)
+    self.Core:SetAttribute("type", nil)
+    self.Core:SetAttribute("typerelease", nil)
+    self.Core:SetAttribute("macrotext", nil)
+    self.Core:Hide()
+    self:SetPresentationMode("closed")
 end

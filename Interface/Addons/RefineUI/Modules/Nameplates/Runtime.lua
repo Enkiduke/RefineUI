@@ -100,6 +100,11 @@ local GetEnemyAuraLayoutConfig
 local IsFriendlyAuraLayoutUnitFrame
 local GetScaledAuraLayoutOffset
 
+local function GetUtil()
+    local private = Nameplates:GetPrivate()
+    return (private and private.Util) or RefineUI.NameplatesUtil
+end
+
 local function IsRuntimeSuppressedNameplate(unitFrame, data)
     if not unitFrame then
         return false
@@ -143,8 +148,7 @@ local function GetAuraVisualInset(auraItemFrame, unitFrame)
         return 0
     end
 
-    local private = Nameplates:GetPrivate()
-    local util = private and private.Util
+    local util = GetUtil()
     if not util or IsFriendlyAuraLayoutUnitFrame(unitFrame, util) ~= false then
         return 0
     end
@@ -159,7 +163,7 @@ local function GetAuraVisualInset(auraItemFrame, unitFrame)
         return 0
     end
 
-    local parent = auraItemFrame:GetParent()
+    local parent = auraItemFrame.GetParent and auraItemFrame:GetParent() or nil
     if parent == aurasFrame.DebuffListFrame then
         return max(0, GetScaledAuraLayoutOffset(auraConfig.DebuffSpacing, 2) * 0.5)
     end
@@ -176,8 +180,7 @@ local function ApplyAuraVisualState(auraItemFrame, aura)
         return
     end
 
-    local private = Nameplates:GetPrivate()
-    local util = private and private.Util
+    local util = GetUtil()
     if not util then
         return
     end
@@ -193,7 +196,21 @@ local function ApplyAuraVisualState(auraItemFrame, aura)
         return
     end
 
-    local isHelpful = util.SafeTableIndex(aura, "isHelpful")
+    local isHelpful
+    if util.IsAccessibleValue(aura) then
+        isHelpful = util.SafeTableIndex(aura, "isHelpful")
+    end
+
+    if isHelpful == nil then
+        local listFrame = auraItemFrame.GetParent and auraItemFrame:GetParent() or nil
+        local aurasMixin = listFrame and listFrame.GetParent and listFrame:GetParent() or nil
+        if aurasMixin and listFrame == aurasMixin.BuffListFrame then
+            isHelpful = true
+        elseif aurasMixin and (listFrame == aurasMixin.DebuffListFrame or listFrame == aurasMixin.CrowdControlListFrame) then
+            isHelpful = false
+        end
+    end
+
     if util.IsSecret(isHelpful) then
         local borderColor = Config.General.BorderColor
         local buffColor = CreateColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
@@ -208,22 +225,31 @@ local function ApplyAuraVisualState(auraItemFrame, aura)
         return
     end
 
-    if isHelpful then
+    if isHelpful == true then
         local borderColor = Config.General.BorderColor
         auraItemFrame.border:SetBackdropBorderColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
         return
     end
 
-    local r, g, b = 0.8, 0.1, 0.1
-    local dispelName = util.SafeTableIndex(aura, "dispelName")
-    if dispelName and _G.DebuffTypeColor then
-        local color = _G.DebuffTypeColor[dispelName]
-        if color then
-            r, g, b = color.r, color.g, color.b
+    if isHelpful == false then
+        local r, g, b = 0.8, 0.1, 0.1
+        local dispelName
+        if util.IsAccessibleValue(aura) then
+            dispelName = util.SafeTableIndex(aura, "dispelName")
         end
+        if dispelName and not util.IsSecret(dispelName) and _G.DebuffTypeColor then
+            local color = _G.DebuffTypeColor[dispelName]
+            if color then
+                r, g, b = color.r, color.g, color.b
+            end
+        end
+
+        auraItemFrame.border:SetBackdropBorderColor(r, g, b)
+        return
     end
 
-    auraItemFrame.border:SetBackdropBorderColor(r, g, b)
+    local borderColor = Config.General.BorderColor
+    auraItemFrame.border:SetBackdropBorderColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
 end
 
 local function QueueAuraVisualRefresh(auraItemFrame, aura)
@@ -231,15 +257,28 @@ local function QueueAuraVisualRefresh(auraItemFrame, aura)
         return
     end
 
-    local auraInstanceID = aura and aura.auraInstanceID
+    local util = GetUtil()
+    local auraInstanceID
+    if util and util.IsAccessibleValue(aura) then
+        auraInstanceID = util.SafeTableIndex(aura, "auraInstanceID")
+        if util.IsSecret(auraInstanceID) then
+            auraInstanceID = nil
+        end
+    end
+
     local timerKey = TIMER_KEY.DEFERRED_AURA_VISUALS .. tostring(auraItemFrame)
     RefineUI:After(timerKey, 0, function()
         if not auraItemFrame or (auraItemFrame.IsForbidden and auraItemFrame:IsForbidden()) then
             return
         end
 
-        if auraInstanceID ~= nil and auraItemFrame.auraInstanceID ~= auraInstanceID then
-            return
+        if auraInstanceID ~= nil then
+            local currentInstanceID = util and util.SafeTableIndex(auraItemFrame, "auraInstanceID")
+            if currentInstanceID ~= nil and not (util and util.IsSecret(currentInstanceID)) then
+                if currentInstanceID ~= auraInstanceID then
+                    return
+                end
+            end
         end
 
         ApplyAuraVisualState(auraItemFrame, aura)
@@ -1077,12 +1116,17 @@ function Nameplates:RegisterRuntimeHooks()
                 or data.CrowdControlSuppressed == true
             )
             if not hasCachedCrowdControl then
-                local aurasFrame = unitFrame.AurasFrame
-                local crowdControlList = aurasFrame and aurasFrame.crowdControlList
                 local hasActiveCrowdControlAura = false
-                if crowdControlList and type(crowdControlList.GetTop) == "function" then
-                    local ok, aura = pcall(crowdControlList.GetTop, crowdControlList)
-                    hasActiveCrowdControlAura = ok and aura ~= nil
+                local okAuras, aurasFrame = pcall(function() return unitFrame.AurasFrame end)
+                if okAuras and aurasFrame and (not util or util.IsAccessibleValue(aurasFrame)) then
+                    local okList, crowdControlList = pcall(function() return aurasFrame.crowdControlList end)
+                    if okList and crowdControlList and (not util or util.IsAccessibleValue(crowdControlList)) then
+                        local okFn, getTop = pcall(function() return crowdControlList.GetTop end)
+                        if okFn and type(getTop) == "function" then
+                            local ok, aura = pcall(getTop, crowdControlList)
+                            hasActiveCrowdControlAura = ok and aura ~= nil and (not util or util.IsAccessibleValue(aura))
+                        end
+                    end
                 end
 
                 if not hasActiveCrowdControlAura then
@@ -1098,7 +1142,7 @@ function Nameplates:RegisterRuntimeHooks()
 
     if _G.NamePlateAuraItemMixin and _G.NamePlateAuraItemMixin.SetAura then
         RefineUI:HookOnce(HOOK_KEY.AURA_ITEM_SET_AURA, _G.NamePlateAuraItemMixin, "SetAura", function(selfFrame, aura)
-            if selfFrame:IsForbidden() then return end
+            if not selfFrame or (selfFrame.IsForbidden and selfFrame:IsForbidden()) then return end
 
             local unitFrame = GetAuraItemUnitFrame(selfFrame)
             if IsRuntimeSuppressedNameplate(unitFrame) then
@@ -1111,7 +1155,7 @@ function Nameplates:RegisterRuntimeHooks()
 
     if _G.NamePlateAurasMixin and _G.NamePlateAurasMixin.RefreshList then
         RefineUI:HookOnce(HOOK_KEY.AURAS_REFRESH_LIST, _G.NamePlateAurasMixin, "RefreshList", function(aurasMixin, listFrame)
-            if aurasMixin:IsForbidden() then return end
+            if not aurasMixin or (aurasMixin.IsForbidden and aurasMixin:IsForbidden()) then return end
 
             local unitFrame = aurasMixin:GetParent()
             if unitFrame and not unitFrame.unit then

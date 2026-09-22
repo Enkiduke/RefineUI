@@ -3,10 +3,8 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local EncounterAchievements = RefineUI:GetModule("EncounterAchievements")
-if not EncounterAchievements then
-    return
-end
+local EncounterAchievements = {}
+RefineUI.InstanceAchievements = EncounterAchievements
 
 ----------------------------------------------------------------------------------------
 -- Lib Globals
@@ -109,10 +107,14 @@ function EncounterAchievements:InitializeData()
     self._categoryPathCache = {}
     self._categoryPathTokenCache = {}
     self._categoryDepthCache = {}
+    self._categoryDescendantsCache = {}
 
     self._instanceCategoryCache = {}
     self._instanceAchievementCache = {}
     self._instanceRowCache = {}
+    self._filteredSourceRows = nil
+    self._filteredBossToken = nil
+    self._filteredRows = nil
 
     self._pendingInstanceRowBuilds = {}
     self._pendingInstanceRowBuildQueue = {}
@@ -272,6 +274,12 @@ function EncounterAchievements:GetBranchRootCategoryID(rootCategoryID, isRaid)
 end
 
 function EncounterAchievements:GetDescendantCategoryIDs(rootCategoryID, includeRoot)
+    local cache = self._categoryDescendantsCache
+    local cached = cache[rootCategoryID]
+    local cacheKey = includeRoot and "withRoot" or "withoutRoot"
+    if cached and cached[cacheKey] then
+        return cached[cacheKey]
+    end
     local graph = self:GetCategoryGraph()
     local rootNode = graph[rootCategoryID]
     if not rootNode then
@@ -279,12 +287,14 @@ function EncounterAchievements:GetDescendantCategoryIDs(rootCategoryID, includeR
     end
 
     local descendants = {}
+    local seen = {}
 
     local function Traverse(categoryID)
         local node = graph[categoryID]
-        if not node then
+        if not node or seen[categoryID] then
             return
         end
+        seen[categoryID] = true
         descendants[#descendants + 1] = categoryID
         for _, childCategoryID in ipairs(node.children) do
             Traverse(childCategoryID)
@@ -299,6 +309,9 @@ function EncounterAchievements:GetDescendantCategoryIDs(rootCategoryID, includeR
         end
     end
 
+    cached = cached or {}
+    cached[cacheKey] = descendants
+    cache[rootCategoryID] = cached
     return descendants
 end
 
@@ -338,8 +351,16 @@ end
 
 function EncounterAchievements:GetCategoryPath(categoryID, separator)
     separator = separator or " > "
+    if categoryID == nil then
+        return ""
+    end
 
-    local cachedPath = self._categoryPathCache and self._categoryPathCache[categoryID]
+    local paths = self._categoryPathCache[separator]
+    if not paths then
+        paths = {}
+        self._categoryPathCache[separator] = paths
+    end
+    local cachedPath = paths[categoryID]
     if type(cachedPath) == "string" then
         return cachedPath
     end
@@ -372,7 +393,7 @@ function EncounterAchievements:GetCategoryPath(categoryID, separator)
     end
 
     local path = table.concat(segments, separator)
-    self._categoryPathCache[categoryID] = path
+    paths[categoryID] = path
     return path
 end
 
@@ -668,6 +689,7 @@ function EncounterAchievements:BuildAchievementRowData(achievementID, name, desc
 end
 
 function EncounterAchievements:GetCachedInstanceAchievementRows(instanceID)
+    self:RestoreSavedRows(instanceID)
     local cachedRows = self._instanceRowCache and self._instanceRowCache[instanceID]
     if type(cachedRows) == "table" then
         return cachedRows.rows or {}, cachedRows.categoryID, false
@@ -675,6 +697,22 @@ function EncounterAchievements:GetCachedInstanceAchievementRows(instanceID)
 
     local pendingBuild = self._pendingInstanceRowBuilds and self._pendingInstanceRowBuilds[instanceID]
     return nil, nil, pendingBuild ~= nil
+end
+
+function EncounterAchievements:RestoreSavedRows(instanceID)
+    if RefineUI.JournalCache and not self._instanceRowCache[instanceID] then
+        self._instanceRowCache[instanceID] = RefineUI.JournalCache:Get("rows", instanceID)
+    end
+end
+
+function EncounterAchievements:SaveRows(instanceID, state)
+    -- Empty or placeholder API results may mean the achievement service is not
+    -- ready. Keep those session-local so they cannot poison subsequent logins.
+    if not RefineUI.JournalCache or #state.rows == 0 then return end
+    for _, row in ipairs(state.rows) do
+        if not row.name or row.name == tostring(row.achievementID) then return end
+    end
+    RefineUI.JournalCache:Put("rows", instanceID, state)
 end
 
 function EncounterAchievements:ProcessPendingRowBuildTask(task, budgetPerTick)
@@ -690,8 +728,14 @@ function EncounterAchievements:ProcessPendingRowBuildTask(task, budgetPerTick)
 
         if task.numAchievements == nil then
             local total = type(GetCategoryNumAchievements) == "function" and GetCategoryNumAchievements(categoryID, true) or 0
+            if type(total) ~= "number" then task.incomplete = true end
             task.numAchievements = (type(total) == "number" and total > 0) and total or 0
             task.achievementIndex = 1
+            -- Empty categories also consume budget so a tick stays bounded.
+            scans = scans + 1
+            if scans >= maxScans then
+                return false
+            end
         end
 
         if task.achievementIndex > task.numAchievements then
@@ -700,6 +744,7 @@ function EncounterAchievements:ProcessPendingRowBuildTask(task, budgetPerTick)
             task.numAchievements = nil
         else
             local achievementID, name, _, _, _, _, _, description, _, icon, rewardText, _, _, _, isStatistic = GetAchievementInfo(categoryID, task.achievementIndex)
+            if type(achievementID) ~= "number" or not name then task.incomplete = true end
             task.achievementIndex = task.achievementIndex + 1
             scans = scans + 1
 
@@ -707,6 +752,7 @@ function EncounterAchievements:ProcessPendingRowBuildTask(task, budgetPerTick)
                 and achievementID > 0
                 and isStatistic ~= true
                 and not task.seenAchievementIDs[achievementID] then
+                task.seenAchievementIDs[achievementID] = true
                 local includeAchievement = true
 
                 if task.mode == "fallback" then
@@ -717,7 +763,6 @@ function EncounterAchievements:ProcessPendingRowBuildTask(task, budgetPerTick)
                 end
 
                 if includeAchievement then
-                    task.seenAchievementIDs[achievementID] = true
                     task.rows[#task.rows + 1] = self:BuildAchievementRowData(
                         achievementID,
                         name,
@@ -741,6 +786,7 @@ function EncounterAchievements:FinishPendingRowBuildTask(task)
     }
 
     self._instanceRowCache[task.instanceID] = state
+    if not task.incomplete then self:SaveRows(task.instanceID, state) end
     self._pendingInstanceRowBuilds[task.instanceID] = nil
 
     for index = #self._pendingInstanceRowBuildQueue, 1, -1 do
@@ -752,8 +798,8 @@ function EncounterAchievements:FinishPendingRowBuildTask(task)
 
     local callbacks = task.callbacks or {}
     for _, callback in ipairs(callbacks) do
-        if type(callback) == "function" then
-            pcall(callback, task.instanceID, state.rows, state.categoryID)
+        if type(callback.callback) == "function" then
+            pcall(callback.callback, task.instanceID, state.rows, state.categoryID)
         end
     end
 end
@@ -772,6 +818,21 @@ function EncounterAchievements:ProcessPendingRowBuildTick()
     end
 
     local isDone = self:ProcessPendingRowBuildTask(task, ASYNC_SCAN_ACHIEVEMENTS_PER_TICK)
+    if isDone and task.mode == "category" and #task.rows == 0 then
+        -- Match the synchronous path when a resolved category has no achievements.
+        task.instanceToken = NormalizeToken(EJ_GetInstanceInfo(task.instanceID))
+        if task.instanceToken ~= "" then
+            task.mode = "fallback"
+            task.categoryIDs = self:BuildScopedFallbackCategoryIDs()
+            task.categoryIndex = 1
+            task.achievementIndex = 1
+            task.numAchievements = nil
+            task.seenAchievementIDs = {}
+            isDone = false
+        end
+    elseif isDone and task.mode == "fallback" and #task.rows > 0 then
+        task.categoryID = nil
+    end
     if isDone then
         self:FinishPendingRowBuildTask(task)
     end
@@ -805,7 +866,7 @@ function EncounterAchievements:CancelPendingInstanceRowBuilds()
     self._pendingInstanceRowBuildQueue = {}
 end
 
-function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid, onComplete)
+function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid, onComplete, owner)
     if type(instanceID) ~= "number" or instanceID <= 0 then
         if type(onComplete) == "function" then
             pcall(onComplete, instanceID, {}, nil)
@@ -813,6 +874,7 @@ function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid
         return false
     end
 
+    self:RestoreSavedRows(instanceID)
     local cachedRows = self._instanceRowCache and self._instanceRowCache[instanceID]
     if type(cachedRows) == "table" then
         if type(onComplete) == "function" then
@@ -821,22 +883,10 @@ function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid
         return true
     end
 
-    local hasForeignPendingTask = false
-    for pendingInstanceID in pairs(self._pendingInstanceRowBuilds) do
-        if pendingInstanceID ~= instanceID then
-            hasForeignPendingTask = true
-            break
-        end
-    end
-
-    if hasForeignPendingTask then
-        self:CancelPendingInstanceRowBuilds()
-    end
-
     local pendingBuild = self._pendingInstanceRowBuilds[instanceID]
     if type(pendingBuild) == "table" then
         if type(onComplete) == "function" then
-            pendingBuild.callbacks[#pendingBuild.callbacks + 1] = onComplete
+            pendingBuild.callbacks[#pendingBuild.callbacks + 1] = { callback = onComplete, owner = owner }
         end
         return false
     end
@@ -890,7 +940,7 @@ function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid
     }
 
     if type(onComplete) == "function" then
-        task.callbacks[#task.callbacks + 1] = onComplete
+        task.callbacks[#task.callbacks + 1] = { callback = onComplete, owner = owner }
     end
 
     self._pendingInstanceRowBuilds[instanceID] = task
@@ -905,6 +955,7 @@ function EncounterAchievements:GetInstanceAchievementRows(instanceID, isRaid)
         return {}, nil
     end
 
+    self:RestoreSavedRows(instanceID)
     local cachedRows = self._instanceRowCache[instanceID]
     if type(cachedRows) == "table" then
         return cachedRows.rows, cachedRows.categoryID
@@ -917,6 +968,7 @@ function EncounterAchievements:GetInstanceAchievementRows(instanceID, isRaid)
             local fallbackRows = self:BuildRowsFromAchievementIDs(fallbackAchievementIDs)
             local fallbackState = { rows = fallbackRows, categoryID = nil }
             self._instanceRowCache[instanceID] = fallbackState
+            self:SaveRows(instanceID, fallbackState)
             return fallbackState.rows, fallbackState.categoryID
         end
 
@@ -942,6 +994,43 @@ function EncounterAchievements:GetInstanceAchievementRows(instanceID, isRaid)
         rows = rows,
         categoryID = categoryID,
     }
+    self:SaveRows(instanceID, self._instanceRowCache[instanceID])
 
     return rows, categoryID
+end
+
+-- Detaching a view must not cancel another consumer's achievement request.
+function EncounterAchievements:ReleaseOwner(owner)
+    for index = #self._pendingInstanceRowBuildQueue, 1, -1 do
+        local task = self._pendingInstanceRowBuildQueue[index]
+        local removed = false
+        for i = #task.callbacks, 1, -1 do
+            if task.callbacks[i].owner == owner then table.remove(task.callbacks, i); removed = true end
+        end
+        if removed and #task.callbacks == 0 then
+            self._pendingInstanceRowBuilds[task.instanceID] = nil
+            table.remove(self._pendingInstanceRowBuildQueue, index)
+        end
+    end
+    if #self._pendingInstanceRowBuildQueue == 0 then self:CancelPendingInstanceRowBuilds() end
+end
+EncounterAchievements:InitializeData()
+
+-- Shared boss attribution uses the same normalization as the Guide's filter.
+function EncounterAchievements:NormalizeCompletionToken(value)
+    return NormalizeToken(value)
+end
+function EncounterAchievements:GetRowBossMatchToken(row)
+    if type(row) ~= "table" then return "" end
+    if not row._bossMatchToken then
+        row._bossMatchToken = NormalizeToken(string.format("%s %s %s", row.name or "", row.description or "", row.categoryPath or ""))
+    end
+    return row._bossMatchToken
+end
+function EncounterAchievements:RowMatchesBossFilter(row, option)
+    if type(option) ~= "table" or option.encounterID == 0 then return true end
+    local token = option.token
+    if type(token) ~= "string" or token == "" then return false end
+    local rowToken = self:GetRowBossMatchToken(row)
+    return rowToken ~= "" and string.find(rowToken, token, 1, true) ~= nil
 end

@@ -1,5 +1,5 @@
 ----------------------------------------------------------------------------------------
--- Chat formatting pipeline for RefineUI
+-- Chat formatting helpers for RefineUI
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
@@ -10,38 +10,50 @@ if not Chat then
 end
 
 ----------------------------------------------------------------------------------------
--- Lib Globals
+-- Lua / WoW Globals
 ----------------------------------------------------------------------------------------
 local _G = _G
-local gsub = string.gsub
 local find = string.find
-local match = string.match
-local strsub = string.sub
-local type = type
-local pcall = pcall
 local format = string.format
-
-----------------------------------------------------------------------------------------
--- WoW Globals
-----------------------------------------------------------------------------------------
-local C_Item = C_Item
-local ChatTypeInfo = ChatTypeInfo
+local gsub = string.gsub
+local match = string.match
+local pairs = pairs
+local pcall = pcall
+local tonumber = tonumber
+local type = type
+local C_ChallengeMode = C_ChallengeMode
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local LEVEL_LINK_PATTERN = "|h%[(%d+)%. .-%]|h"
-local LEVEL_LINK_REPLACEMENT = "|h[%1]|h"
-local ITEM_LEVEL_CACHE = {}
+local KEYSTONE_MAP_NAME_CACHE = {}
+local ORIGINAL_CHAT_FORMATS = {}
+local APPLIED_CHAT_FORMATS = {}
 
-local function canChangeMessage(arg1, id)
-    if id and arg1 == "" then
-        return id
-    end
-end
+local SHORT_CHAT_FORMATS = {
+    CHAT_GUILD_GET = { key = "Guild", fallback = "G", channel = "guild" },
+    CHAT_OFFICER_GET = { key = "Officer", fallback = "O", channel = "officer" },
+    CHAT_PARTY_GET = { key = "Party", fallback = "P", channel = "party" },
+    CHAT_PARTY_LEADER_GET = { key = "PartyLeader", fallback = "PL", channel = "party", leader = true },
+    CHAT_PARTY_GUIDE_GET = { key = "PartyGuide", fallback = "PG", channel = "party", leader = true },
+    CHAT_RAID_GET = { key = "Raid", fallback = "R", channel = "raid" },
+    CHAT_RAID_LEADER_GET = { key = "RaidLeader", fallback = "RL", channel = "raid", leader = true },
+    CHAT_RAID_WARNING_GET = { key = "RaidWarning", fallback = "RW", channel = "raidwarning", warning = true },
+    CHAT_INSTANCE_CHAT_GET = { key = "InstanceChat", fallback = "I", channel = "instance" },
+    CHAT_INSTANCE_CHAT_LEADER_GET = { key = "InstanceChatLeader", fallback = "IL", channel = "instance", leader = true },
+    CHAT_SAY_GET = { key = "SayShort", fallback = "S", channel = "say" },
+    CHAT_YELL_GET = { key = "YellShort", fallback = "Y", channel = "yell" },
+    CHAT_WHISPER_GET = { key = "Whisper", fallback = "W" },
+    CHAT_WHISPER_INFORM_GET = { key = "WhisperInform", fallback = "W2" },
+    CHAT_BN_WHISPER_GET = { key = "BNWhisper", fallback = "BN" },
+    CHAT_BN_WHISPER_INFORM_GET = { key = "BNWhisperInform", fallback = "BN2" },
+}
+
+local LEADER_ICON = "|TInterface\\GroupFrame\\UI-Group-LeaderIcon:0|t"
+local RAID_WARNING_ICON = "|TInterface\\GroupFrame\\UI-GROUP-MAINASSISTICON:0|t"
 
 ----------------------------------------------------------------------------------------
--- Helpers
+-- Secret-value helpers
 ----------------------------------------------------------------------------------------
 function Chat:IsSecretValue(value)
     if RefineUI.IsSecretValue then
@@ -64,158 +76,97 @@ function Chat:IsAccessibleString(value)
     return type(value) == "string"
 end
 
-function Chat:NotSecretValue(value)
-    if self:IsAccessibleValue(value) then
-        return value
-    end
-    return nil
-end
-
 function Chat:MessageIsProtected(message)
-    if self:IsSecretValue(message) or type(message) ~= "string" then
+    if not self:IsAccessibleString(message) then
         return true
     end
 
-    local ok, protected = pcall(function()
-        return message ~= gsub(message, "(:?|?)|K(.-)|k", canChangeMessage)
-    end)
-    if not ok then
-        return true
-    end
-
-    return protected
+    return find(message, "|K", 1, true) ~= nil
 end
 
-local function IsAccessibleString(value)
-    return Chat:IsAccessibleString(value)
+
+----------------------------------------------------------------------------------------
+-- Fixed chat type abbreviations
+----------------------------------------------------------------------------------------
+local function BuildShortChatFormat(definition)
+    local locale = RefineUI.Locale and RefineUI.Locale.Chat or {}
+    local label = locale[definition.key] or definition.fallback
+    if definition.leader then
+        label = label .. LEADER_ICON
+    elseif definition.warning then
+        label = label .. RAID_WARNING_ICON
+    end
+
+    if definition.channel then
+        return format("|Hchannel:%s|h[%s]|h %%s: ", definition.channel, label)
+    end
+
+    return format("[%s] %%s: ", label)
 end
 
-local function SimplifyLevelLinks(message)
-    if not IsAccessibleString(message) then
-        return message
-    end
-    if not find(message, "|h[", 1, true) then
-        return message
-    end
+function Chat:ApplyShortChannelFormats()
+    local enabled = self.db and self.db.ShortChannels ~= false
 
-    local ok, simplified = pcall(gsub, message, LEVEL_LINK_PATTERN, LEVEL_LINK_REPLACEMENT)
-    if ok and IsAccessibleString(simplified) then
-        return simplified
-    end
-    return message
-end
-
-local function StripRealmFromSystemMessage(message)
-    if not IsAccessibleString(message) then
-        return message
-    end
-
-    local realm = type(RefineUI.MyRealm) == "string" and gsub(RefineUI.MyRealm, " ", "") or nil
-    if not realm or realm == "" or not find(message, "-" .. realm, 1, true) then
-        return message
-    end
-
-    local ok, stripped = pcall(gsub, message, "%-" .. realm, "")
-    if ok and IsAccessibleString(stripped) then
-        return stripped
-    end
-    return message
-end
-
-local function GetCachedItemLevel(itemLink)
-    if not IsAccessibleString(itemLink) or itemLink == "" then
-        return nil
-    end
-
-    local cached = ITEM_LEVEL_CACHE[itemLink]
-    if cached ~= nil then
-        return cached or nil
-    end
-
-    if not C_Item or type(C_Item.GetDetailedItemLevelInfo) ~= "function" then
-        ITEM_LEVEL_CACHE[itemLink] = false
-        return nil
-    end
-
-    local ok, itemLevel = pcall(C_Item.GetDetailedItemLevelInfo, itemLink)
-    if ok and type(itemLevel) == "number" and itemLevel > 0 then
-        ITEM_LEVEL_CACHE[itemLink] = itemLevel
-        return itemLevel
-    end
-
-    ITEM_LEVEL_CACHE[itemLink] = false
-    return nil
-end
-
-local function DecorateItemLinksWithLevel(message)
-    if not IsAccessibleString(message) then
-        return message
-    end
-    if not find(message, "|Hitem:", 1, true) then
-        return message
-    end
-
-    local ok, decorated = pcall(gsub, message, "(|Hitem:[^|]+|h)%[([^%]]+)%](|h)", function(linkPrefix, linkText, linkSuffix)
-        if not IsAccessibleString(linkText) or linkText == "" then
-            return linkPrefix .. "[" .. (linkText or "") .. "]" .. linkSuffix
+    for globalName, definition in pairs(SHORT_CHAT_FORMATS) do
+        if ORIGINAL_CHAT_FORMATS[globalName] == nil then
+            ORIGINAL_CHAT_FORMATS[globalName] = _G[globalName] or false
         end
 
-        local itemLink = linkPrefix .. "[" .. linkText .. "]" .. linkSuffix
-        local itemLevel = GetCachedItemLevel(itemLink)
-        if type(itemLevel) ~= "number" then
-            return itemLink
-        end
-
-        local displayName = linkText
-        local legacyLevel, legacyName = match(linkText, "^(%d+)%.%s+(.+)$")
-        if legacyName and legacyLevel then
-            displayName = legacyName
-        else
-            local currentName, currentLevel = match(linkText, "^(.+)%s+%((%d+)%)$")
-            if currentName and currentLevel then
-                displayName = currentName
-            elseif match(linkText, "^%d+$") then
-                return itemLink
+        if enabled and type(ORIGINAL_CHAT_FORMATS[globalName]) == "string" then
+            local abbreviated = BuildShortChatFormat(definition)
+            _G[globalName] = abbreviated
+            APPLIED_CHAT_FORMATS[globalName] = abbreviated
+        elseif APPLIED_CHAT_FORMATS[globalName] then
+            if _G[globalName] == APPLIED_CHAT_FORMATS[globalName] then
+                _G[globalName] = ORIGINAL_CHAT_FORMATS[globalName] or nil
             end
+            APPLIED_CHAT_FORMATS[globalName] = nil
+        end
+    end
+end
+
+----------------------------------------------------------------------------------------
+-- Keystone link decoration
+----------------------------------------------------------------------------------------
+local function GetKeystoneMapName(challengeModeID)
+    local cached = KEYSTONE_MAP_NAME_CACHE[challengeModeID]
+    if cached then
+        return cached
+    end
+
+    if not C_ChallengeMode or type(C_ChallengeMode.GetMapUIInfo) ~= "function" then
+        return nil
+    end
+
+    local ok, name = pcall(C_ChallengeMode.GetMapUIInfo, challengeModeID)
+    if ok and Chat:IsAccessibleString(name) and name ~= "" then
+        KEYSTONE_MAP_NAME_CACHE[challengeModeID] = name
+        return name
+    end
+end
+
+function Chat:DecorateKeystoneLinks(message)
+    if not self:IsAccessibleString(message) or not find(message, "|Hkeystone:", 1, true) then
+        return message
+    end
+
+    local ok, decorated = pcall(gsub, message, "(|Hkeystone:[^|]+|h)(%[[^%]]*%])(|h)", function(linkPrefix, linkText, linkSuffix)
+        local challengeModeID, level = match(linkPrefix, "^|Hkeystone:%d+:(%d+):(%d+)")
+        challengeModeID = tonumber(challengeModeID)
+        level = tonumber(level)
+        if not challengeModeID or challengeModeID <= 0 or not level or level <= 0 then
+            return linkPrefix .. linkText .. linkSuffix
         end
 
-        return linkPrefix .. "[" .. displayName .. " (" .. itemLevel .. ")]" .. linkSuffix
+        local dungeonName = GetKeystoneMapName(challengeModeID)
+        if not dungeonName then
+            return linkPrefix .. linkText .. linkSuffix
+        end
+
+        return linkPrefix .. "[" .. dungeonName .. " +" .. level .. "]" .. linkSuffix
     end)
-    if ok and IsAccessibleString(decorated) then
+    if ok and self:IsAccessibleString(decorated) then
         return decorated
     end
     return message
-end
-
-----------------------------------------------------------------------------------------
--- Rendered Line Edits
-----------------------------------------------------------------------------------------
-function Chat:AddMessageEdits(frame, body, meta)
-    if not IsAccessibleString(body) then
-        return body
-    end
-
-    local edited = SimplifyLevelLinks(body)
-    local infoID = meta and meta.infoID
-    local event = meta and meta.event
-
-    if infoID == (ChatTypeInfo and ChatTypeInfo.SYSTEM and ChatTypeInfo.SYSTEM.id) or event == "CHAT_MSG_SYSTEM" then
-        edited = StripRealmFromSystemMessage(edited)
-    end
-
-    if not self.db or self.db.ItemLevelLinks ~= false then
-        edited = DecorateItemLinksWithLevel(edited)
-    end
-
-    if self.TransformMessageIcons then
-        edited = self:TransformMessageIcons(edited)
-    end
-    if self.TransformRenderedRoleIcons then
-        edited = self:TransformRenderedRoleIcons(edited)
-    end
-    if self.TransformLootMoneyMessage then
-        edited = self:TransformLootMoneyMessage(edited, infoID, event)
-    end
-
-    return edited
 end

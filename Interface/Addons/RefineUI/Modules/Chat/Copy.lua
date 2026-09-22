@@ -1,49 +1,99 @@
 ----------------------------------------------------------------------------------------
--- CopyChat for RefineUI
--- Description: Provides a mechanism to copy text from chat frames.
+-- Chat copy for RefineUI
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
 local Chat = RefineUI:GetModule("Chat")
 
 ----------------------------------------------------------------------------------------
--- Lib Globals
+-- Lua / WoW Globals
 ----------------------------------------------------------------------------------------
 local _G = _G
-local tinsert = table.insert
-local table_concat = table.concat
+local CreateFrame = CreateFrame
+local C_Timer = C_Timer
+local floor = math.floor
+local format = string.format
 local gsub = string.gsub
-local find = string.find
 local pairs = pairs
 local setmetatable = setmetatable
+local table_concat = table.concat
+local type = type
+local UIParent = UIParent
 
 ----------------------------------------------------------------------------------------
--- WoW Globals
+-- Constants
 ----------------------------------------------------------------------------------------
-local CreateFrame = CreateFrame
-local UIParent = _G.UIParent
-local C_Timer = _G.C_Timer
+local MAX_COPY_LINES = 300
+local MAX_COPY_BYTES = 60000
+local PROTECTED_LINE = "|cff808080<protected>|r"
+local RAID_TARGET_PATTERN_1 = "|T[^\\]+\\[^\\]+\\[Uu][Ii]%-[Rr][Aa][Ii][Dd][Tt][Aa][Rr][Gg][Ee][Tt][Ii][Nn][Gg][Ii][Cc][Oo][Nn]_(%d)[^|]+|t"
+local RAID_TARGET_PATTERN_2 = "|T13700([1-8])[^|]+|t"
+local GOLD_ICON_PATTERN = "|TInterface\\MoneyFrame\\UI%-GoldIcon.-|t"
+local SILVER_ICON_PATTERN = "|TInterface\\MoneyFrame\\UI%-SilverIcon.-|t"
+local COPPER_ICON_PATTERN = "|TInterface\\MoneyFrame\\UI%-CopperIcon.-|t"
+local TEXTURE_PATTERN = "|T.-|t"
+local ATLAS_PATTERN = "|A.-|a"
+local HYPERLINK_PATTERN = "|H.-|h(.-)|h"
 
 ----------------------------------------------------------------------------------------
--- Locals
+-- State
 ----------------------------------------------------------------------------------------
 local frame
 local scrollArea
-local _copyIsSetup = false
+local editBox
 local copyButtons = setmetatable({}, { __mode = "k" })
 
--- Patterns for sanitization
-local RAID_TARGET_PATTERN_1 = "|T[^\\]+\\[^\\]+\\[Uu][Ii]%-[Rr][Aa][Ii][Dd][Tt][Aa][Rr][Gg][Ee][Tt][Ii][Nn][Gg][Ii][Cc][Oo][Nn]_(%d)[^|]+|t"
-local RAID_TARGET_REPLACEMENT_1 = "{rt%1}"
-local RAID_TARGET_PATTERN_2 = "|T13700([1-8])[^|]+|t"
-local RAID_TARGET_REPLACEMENT_2 = "{rt%1}"
-local TEXTURE_PATTERN = "|T[^|]+|t"
-local HYPERLINK_PATTERN = "|A[^|]+|a"
-local HAS_TEX = "|T"
-local HAS_ATLAS = "|A"
-
+----------------------------------------------------------------------------------------
+-- Helpers
+----------------------------------------------------------------------------------------
 local function IsCopySuspended()
     return Chat and Chat.ShouldSuspendOptionalEnhancements and Chat:ShouldSuspendOptionalEnhancements() == true
+end
+
+local function IsAccessibleNumber(value)
+    if Chat and Chat.IsAccessibleValue and not Chat:IsAccessibleValue(value) then
+        return false
+    end
+    return type(value) == "number"
+end
+
+local function ClampColorByte(value)
+    if not IsAccessibleNumber(value) then
+        return 255
+    end
+    if value < 0 then value = 0 end
+    if value > 1 then value = 1 end
+    return floor(value * 255 + 0.5)
+end
+
+local function GetColorCode(r, g, b)
+    return format("|cff%02x%02x%02x", ClampColorByte(r), ClampColorByte(g), ClampColorByte(b))
+end
+
+local function MessageIsProtected(message)
+    if Chat and Chat.MessageIsProtected then
+        return Chat:MessageIsProtected(message)
+    end
+    return type(message) ~= "string"
+end
+
+local function SanitizeCopyLine(message, r, g, b)
+    if not Chat:IsAccessibleString(message) or MessageIsProtected(message) then
+        return PROTECTED_LINE
+    end
+
+    local clean = gsub(message, RAID_TARGET_PATTERN_1, "{rt%1}")
+    clean = gsub(clean, RAID_TARGET_PATTERN_2, "{rt%1}")
+    clean = gsub(clean, GOLD_ICON_PATTERN, "g")
+    clean = gsub(clean, SILVER_ICON_PATTERN, "s")
+    clean = gsub(clean, COPPER_ICON_PATTERN, "c")
+    clean = gsub(clean, HYPERLINK_PATTERN, "%1")
+    clean = gsub(clean, TEXTURE_PATTERN, "")
+    clean = gsub(clean, ATLAS_PATTERN, "")
+
+    local baseColor = GetColorCode(r, g, b)
+    clean = gsub(clean, "|r", "|r" .. baseColor)
+    return baseColor .. clean .. "|r"
 end
 
 local function ApplyCopyButtonState(button)
@@ -54,161 +104,153 @@ local function ApplyCopyButtonState(button)
     if IsCopySuspended() then
         button:SetAlpha(0)
         button:Hide()
-        if button.EnableMouse then
-            button:EnableMouse(false)
-        end
+        button:EnableMouse(false)
         return
     end
 
     button:Show()
     button:SetAlpha(0.4)
-    if button.EnableMouse then
-        button:EnableMouse(true)
-    end
+    button:EnableMouse(true)
 end
 
-local function MessageIsProtected(message)
-    if Chat and Chat.MessageIsProtected then
-        return Chat:MessageIsProtected(message)
+local function SelectCopyText()
+    if not editBox or not editBox:IsShown() then
+        return
     end
 
-    local canChangeMessage = function(arg1, id)
-        if id and arg1 == "" then return id end
-    end
-
-    local success, isProtected = pcall(function()
-        return message and (message ~= gsub(message, "(:?|?)|K(.-)|k", canChangeMessage))
-    end)
-
-    if not success then return true end -- Fail safe on secret values
-    return isProtected
-end
-
-local function ScrollDown()
-    if scrollArea and scrollArea.GetVerticalScrollRange then
-        scrollArea:SetVerticalScroll(scrollArea:GetVerticalScrollRange() or 0)
+    editBox:SetFocus()
+    editBox:HighlightText()
+    if scrollArea and scrollArea.SetVerticalScroll then
+        scrollArea:SetVerticalScroll(0)
     end
 end
-
-----------------------------------------------------------------------------------------
--- Functions
-----------------------------------------------------------------------------------------
 
 local function CreateCopyFrame()
+    if frame then
+        return
+    end
+
     frame = CreateFrame("Frame", "RefineUI_ChatCopy", UIParent)
-    -- RefineUI.AddAPI(frame) -- REMOVED
     RefineUI.SetTemplate(frame, "Transparent")
     RefineUI.Size(frame, 600, 400)
     RefineUI.Point(frame, "CENTER", UIParent, "CENTER")
     frame:SetFrameStrata("DIALOG")
     frame:Hide()
 
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -10)
+    title:SetText("Copy Chat — Ctrl+C")
+
     scrollArea = CreateFrame("ScrollFrame", "RefineUI_ChatCopyScroll", frame, "UIPanelScrollFrameTemplate")
     RefineUI.Point(scrollArea, "TOPLEFT", frame, "TOPLEFT", 10, -30)
     RefineUI.Point(scrollArea, "BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 10)
-    -- RefineUI.AddAPI(scrollArea) -- REMOVED
 
-    local editBox = CreateFrame("EditBox", "RefineUI_ChatCopyEditBox", scrollArea)
+    editBox = CreateFrame("EditBox", "RefineUI_ChatCopyEditBox", scrollArea)
     editBox:SetMultiLine(true)
-    editBox:SetMaxLetters(0) -- Unlimited
+    editBox:SetMaxLetters(0)
     editBox:EnableMouse(true)
     editBox:SetAutoFocus(false)
     editBox:SetFontObject("ChatFontNormal")
+    editBox:SetJustifyH("LEFT")
+    editBox:SetJustifyV("TOP")
     editBox:SetWidth(scrollArea:GetWidth() - 25)
-    editBox:SetScript("OnEscapePressed", function() frame:Hide() end)
+    editBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+        frame:Hide()
+    end)
     scrollArea:SetScrollChild(editBox)
 
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", frame, "TOPRIGHT")
     RefineUI.AddAPI(close)
-    
-    local font = frame:CreateFontString(nil, nil, "GameFontNormal")
-    font:Hide()
-    frame.font = font
-
-    return frame, editBox
 end
 
 local function GetChatLines(chatFrame)
-    if not frame then CreateCopyFrame() end
-    local font = frame.font
-    local lines = {}
-    local num = chatFrame:GetNumMessages()
-    
-    for i = 1, num do
-        local line = chatFrame:GetMessageInfo(i)
-        if line and not MessageIsProtected(line) then
-            font:SetFormattedText("%s \n", line)
-            local cleanLine = font:GetText() or ""
-            tinsert(lines, cleanLine)
+    local reverseLines = {}
+    local bytesUsed = 0
+    local count = chatFrame:GetNumMessages()
+    local first = math.max(1, count - MAX_COPY_LINES + 1)
+
+    for index = count, first, -1 do
+        local message, r, g, b = chatFrame:GetMessageInfo(index)
+        local line = SanitizeCopyLine(message, r, g, b)
+        local separatorBytes = #reverseLines > 0 and 1 or 0
+        if bytesUsed + separatorBytes + #line > MAX_COPY_BYTES then
+            break
         end
+
+        reverseLines[#reverseLines + 1] = line
+        bytesUsed = bytesUsed + separatorBytes + #line
     end
 
-    local text = table_concat(lines)
-    
-    -- Sanitize
-    if find(text, HAS_TEX, 1, true) then
-        text = gsub(text, RAID_TARGET_PATTERN_1, RAID_TARGET_REPLACEMENT_1)
-        text = gsub(text, RAID_TARGET_PATTERN_2, RAID_TARGET_REPLACEMENT_2)
-        text = gsub(text, TEXTURE_PATTERN, "")
+    local lines = {}
+    for index = #reverseLines, 1, -1 do
+        lines[#lines + 1] = reverseLines[index]
     end
-    
-    if find(text, HAS_ATLAS, 1, true) then
-        text = gsub(text, HYPERLINK_PATTERN, "")
-    end
-    
-    return text
+    return table_concat(lines, "\n")
 end
 
-function Chat:SetupCopy()
-    if _copyIsSetup then
+local function ShowCopyFrame(chatFrame)
+    if IsCopySuspended() then
         return
     end
 
-    for i = 1, NUM_CHAT_WINDOWS do
-        local cf = _G["ChatFrame"..i]
-        local btn = CreateFrame("Button", nil, cf)
-        RefineUI.Size(btn, 20, 20)
-        btn:SetAlpha(0.4)
-        RefineUI.Point(btn, "BOTTOMRIGHT", cf, "BOTTOMRIGHT", 2, -2)
-        
-        local tex = btn:CreateTexture(nil, "OVERLAY")
-        tex:SetAllPoints()
-        tex:SetTexture(RefineUI.Media.Textures.ChatCopy)
-        tex:SetVertexColor(1, 0.824, 0)
-        
-        btn:SetScript("OnEnter", function(self)
-            if IsCopySuspended() then
-                return
-            end
-            self:SetAlpha(1)
-        end)
-        btn:SetScript("OnLeave", function(self)
-            if IsCopySuspended() then
-                return
-            end
-            self:SetAlpha(0.4)
-        end)
-        
-        btn:SetScript("OnClick", function()
-            if IsCopySuspended() then
-                return
-            end
-            if not frame then CreateCopyFrame() end
-            
-            local text = GetChatLines(cf)
-            local editBox = _G["RefineUI_ChatCopyEditBox"]
-            editBox:SetText(text)
-            frame:Show()
-            
-            C_Timer.After(0.1, ScrollDown)
-        end)
+    CreateCopyFrame()
+    editBox:SetText(GetChatLines(chatFrame))
+    frame:Show()
+    C_Timer.After(0, SelectCopyText)
+end
 
-        copyButtons[cf] = btn
-        ApplyCopyButtonState(btn)
+local function CreateCopyButton(chatFrame)
+    if not chatFrame or copyButtons[chatFrame] then
+        return
     end
 
-    _copyIsSetup = true
+    local button = CreateFrame("Button", nil, chatFrame)
+    RefineUI.Size(button, 20, 20)
+    RefineUI.Point(button, "BOTTOMRIGHT", chatFrame, "BOTTOMRIGHT", 2, -2)
+
+    local texture = button:CreateTexture(nil, "OVERLAY")
+    texture:SetAllPoints()
+    texture:SetTexture(RefineUI.Media.Textures.ChatCopy)
+    texture:SetVertexColor(1, 0.824, 0)
+
+    button:SetScript("OnEnter", function(self)
+        if not IsCopySuspended() then
+            self:SetAlpha(1)
+        end
+    end)
+    button:SetScript("OnLeave", function(self)
+        if not IsCopySuspended() then
+            self:SetAlpha(0.4)
+        end
+    end)
+    button:SetScript("OnClick", function()
+        ShowCopyFrame(chatFrame)
+    end)
+
+    copyButtons[chatFrame] = button
+    ApplyCopyButtonState(button)
+end
+
+----------------------------------------------------------------------------------------
+-- Public API
+----------------------------------------------------------------------------------------
+function Chat:SetupCopyForFrame(chatFrame)
+    CreateCopyButton(chatFrame)
+end
+
+function Chat:SetupCopy()
+    local chatFrames = _G.CHAT_FRAMES
+    if chatFrames then
+        for _, frameName in pairs(chatFrames) do
+            CreateCopyButton(_G[frameName])
+        end
+    end
+
+    for index = 1, _G.NUM_CHAT_WINDOWS do
+        CreateCopyButton(_G["ChatFrame" .. index])
+    end
 end
 
 function Chat:GetCopyButton(chatFrame)
@@ -220,7 +262,7 @@ function Chat:RefreshCopyButtons()
         ApplyCopyButtonState(button)
     end
 
-    if IsCopySuspended() and frame and frame.Hide then
+    if IsCopySuspended() and frame then
         frame:Hide()
     end
 end

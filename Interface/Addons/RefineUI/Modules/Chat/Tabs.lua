@@ -14,15 +14,16 @@ end
 ----------------------------------------------------------------------------------------
 local _G = _G
 local ipairs = ipairs
-local type = type
 local setmetatable = setmetatable
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
-local Ambiguate = Ambiguate
 local CHAT_FRAMES = CHAT_FRAMES
+local FCF_DockUpdate = FCF_DockUpdate
+local InCombatLockdown = InCombatLockdown
 local NUM_CHAT_WINDOWS = NUM_CHAT_WINDOWS
+local UnitAffectingCombat = UnitAffectingCombat
 local hooksecurefunc = hooksecurefunc
 
 ----------------------------------------------------------------------------------------
@@ -32,6 +33,8 @@ local TAB_GOLD_R = 1
 local TAB_GOLD_G = 0.82
 local TAB_GOLD_B = 0
 local TAB_REFRESH_TIMER_KEY = "Chat:Tabs:Refresh"
+local TAB_DOCK_REFRESH_TIMER_KEY = "Chat:Tabs:DockRefresh"
+local TAB_DOCK_REFRESH_REGEN_KEY = "Chat:Tabs:DockRefresh:PLAYER_REGEN_ENABLED"
 
 ----------------------------------------------------------------------------------------
 -- State
@@ -39,6 +42,7 @@ local TAB_REFRESH_TIMER_KEY = "Chat:Tabs:Refresh"
 local tabFontHooked = setmetatable({}, { __mode = "k" })
 local tabColorHookInstalled = false
 local tabRefreshQueued = false
+local tabDockRefreshQueued = false
 
 ----------------------------------------------------------------------------------------
 -- Helpers
@@ -60,6 +64,11 @@ local function ForEachChatTab(callback)
             callback(tab)
         end
     end
+end
+
+local function IsPlayerInCombat()
+    return (InCombatLockdown and InCombatLockdown())
+        or (UnitAffectingCombat and UnitAffectingCombat("player"))
 end
 
 local function GetTabChatFrame(tab)
@@ -119,23 +128,6 @@ local function ApplyTabFontStyle(tab)
     return fontString
 end
 
-local function GetSafeWhisperName(chatFrame)
-    if not chatFrame then
-        return nil
-    end
-
-    local name = chatFrame.name
-    if not Chat:IsAccessibleString(name) then
-        return nil
-    end
-
-    if Ambiguate then
-        return Ambiguate(name, "none")
-    end
-
-    return name
-end
-
 local function UpdateTabTextColor(tab, selected)
     local fontString = ApplyTabFontStyle(tab)
     if not fontString then
@@ -149,7 +141,7 @@ local function UpdateTabTextColor(tab, selected)
     end
 end
 
-local function UpdateTabLabel(tab, selected)
+local function UpdateTabStyle(tab, selected)
     if not tab then
         return
     end
@@ -167,19 +159,13 @@ local function UpdateTabLabel(tab, selected)
         return
     end
 
-    local chatFrame = GetTabChatFrame(tab)
-    local whisperName = GetSafeWhisperName(chatFrame)
-    if whisperName and not selected then
-        tab:SetText(whisperName)
-    end
-
     UpdateTabTextColor(tab, selected)
     ApplyTabVisibility(tab)
 end
 
 local function RefreshTabs(instant)
     ForEachChatTab(function(tab)
-        UpdateTabLabel(tab, IsTabSelected(tab))
+        UpdateTabStyle(tab, IsTabSelected(tab))
         ApplyTabVisibility(tab, instant)
     end)
 end
@@ -196,6 +182,26 @@ local function QueueRefreshTabs()
     end)
 end
 
+local function RefreshDockWhenSafe()
+    if IsPlayerInCombat() then
+        RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", RefreshDockWhenSafe, TAB_DOCK_REFRESH_REGEN_KEY)
+        return
+    end
+
+    RefineUI:OffEvent("PLAYER_REGEN_ENABLED", TAB_DOCK_REFRESH_REGEN_KEY)
+    tabDockRefreshQueued = false
+    FCF_DockUpdate()
+end
+
+local function QueueDockRefresh()
+    if tabDockRefreshQueued or not FCF_DockUpdate then
+        return
+    end
+
+    tabDockRefreshQueued = true
+    RefineUI:After(TAB_DOCK_REFRESH_TIMER_KEY, 0, RefreshDockWhenSafe)
+end
+
 local function InstallTabColorHook()
     if tabColorHookInstalled then
         return
@@ -203,7 +209,7 @@ local function InstallTabColorHook()
 
     tabColorHookInstalled = true
     RefineUI:HookOnce("Chat:Tabs:FCFTab_UpdateColors", "FCFTab_UpdateColors", function(tab, selected)
-        UpdateTabLabel(tab, selected)
+        UpdateTabStyle(tab, selected)
     end)
     RefineUI:HookOnce("Chat:Tabs:FCF_StartAlertFlash", "FCF_StartAlertFlash", function()
         QueueRefreshTabs()
@@ -219,6 +225,7 @@ local function InstallTabColorHook()
     end)
     RefineUI:HookOnce("Chat:Tabs:FCF_OpenTemporaryWindow", "FCF_OpenTemporaryWindow", function()
         QueueRefreshTabs()
+        QueueDockRefresh()
     end)
 end
 
@@ -237,9 +244,10 @@ function Chat:SetupTabsVisualsOnly()
 
     ForEachChatTab(function(tab)
         ApplyTabFontStyle(tab)
-        UpdateTabLabel(tab, IsTabSelected(tab))
+        UpdateTabStyle(tab, IsTabSelected(tab))
     end)
     self:UpdateTabAlpha(true)
+    QueueDockRefresh()
 end
 
 function Chat:SetupTabs()

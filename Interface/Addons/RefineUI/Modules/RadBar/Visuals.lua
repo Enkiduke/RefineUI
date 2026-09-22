@@ -1,59 +1,35 @@
 ----------------------------------------------------------------------------------------
 -- RadBar Component: Visuals
--- Description: Updater, fades/highlights, pointer tracking, and slot visibility.
+-- Presentation modes, shared slot rendering, and an idle-aware animation updater.
 ----------------------------------------------------------------------------------------
-
 local _, RefineUI = ...
 local RadBar = RefineUI:GetModule("RadBar")
-if not RadBar then
-    return
-end
+if not RadBar then return end
 
-----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
-
-----------------------------------------------------------------------------------------
--- Lua / WoW Upvalues
-----------------------------------------------------------------------------------------
-local pairs = pairs
-local next = next
-local ipairs = ipairs
+local Private = RadBar.Private
 local math = math
-local CreateFrame = CreateFrame
-local GetCursorInfo = GetCursorInfo
-local GetCursorPosition = GetCursorPosition
 
-----------------------------------------------------------------------------------------
--- Public Component Methods
-----------------------------------------------------------------------------------------
 function RadBar:SetupVisuals()
-    -- Keep updater independent from secure core visibility.
-    -- Secure OnClick hides self.Core before fade completion; parenting to UIParent
-    -- ensures queued fades/highlights continue to completion.
+    if self.Updater then return end
+    -- Independent of the secure frame so closing animations can finish.
     self.Updater = CreateFrame("Frame", nil, UIParent)
     self.Updater:Hide()
+    self.mode = "closed"
+    self.isCustomizing = false
     self.cursorTracking = false
     self.updateAccumulator = 0
     self.updateInterval = 1 / 120
     self.usabilityAccumulator = 0
     self.usabilityInterval = 0.1
-    self.ActiveFades = self.ActiveFades or {}
-    self.HighlightAnims = self.HighlightAnims or {}
-    self.bindVisualsApplied = nil
+    self.ActiveFades = {}
+    self.HighlightAnims = {}
     self.Updater:SetScript("OnUpdate", function(_, elapsed)
         self:UpdateVisuals(elapsed)
     end)
 end
 
 function RadBar:EnsureUpdater()
-    if self.Updater and not self.Updater:IsShown() then
-        self.Updater:Show()
-    end
+    if self.Updater and not self.Updater:IsShown() then self.Updater:Show() end
 end
 
 function RadBar:StartUpdate()
@@ -63,7 +39,9 @@ end
 
 function RadBar:StopUpdate()
     self.cursorTracking = false
+    self.updateAccumulator = 0
     self.usabilityAccumulator = 0
+    self.Content.Arrow:SetAlpha(0)
     self:Select(nil)
     self:UpdateUsabilityVisuals(true)
     if not next(self.ActiveFades) and not next(self.HighlightAnims) then
@@ -71,280 +49,165 @@ function RadBar:StopUpdate()
     end
 end
 
-function RadBar:UpdateSlotVisibility()
-    local private = self.Private or {}
-    local isSupportedActionType = private.IsSupportedActionType
-    local getDefaultBorderColor = private.GetDefaultBorderColor
-    local bindEmptySlotAtlas = private.BIND_EMPTY_SLOT_ATLAS or "cdm-empty"
-    local bindEmptyIconScale = private.BIND_EMPTY_ICON_SCALE or 1.15
-    local iconTexMin = private.ICON_TEX_MIN or 0.08
-    local iconTexMax = private.ICON_TEX_MAX or 0.92
-    local defaultEmptyIcon = private.DEFAULT_EMPTY_ICON or 134400
+-- Presentation only: safe to call from a secure bridge during combat.
+-- All protected frame mutations belong to Core/Customization, never fades.
+function RadBar:SetPresentationMode(mode)
+    self.mode = mode
+    self.isCustomizing = mode == "customizing"
+    self:StopUpdate()
+    self:ClearAnimationQueues()
+    self.sel = nil
 
-    local cType = GetCursorInfo()
-    local customizing = self.isCustomizing or (isSupportedActionType and isSupportedActionType(cType))
-    local bindMode = self.Core and self.Core:GetAttribute("bindMode")
+    for index = 0, Private.SLOT_COUNT do
+        local btn = index == 0 and self.CenterButton or self.Buttons[index]
+        if btn then
+            btn:EnableMouse(self.isCustomizing)
+            self:SetSlotHighlight(btn, false, true)
+        end
+    end
 
-    local defaultR, defaultG, defaultB, defaultA
-    if getDefaultBorderColor then
-        defaultR, defaultG, defaultB, defaultA = getDefaultBorderColor()
+    if mode == "closed" then
+        self:Fade(self.Content, 0, 0.1, function(frame)
+            if self.mode == "closed" then frame:Hide() end
+        end)
+        return
+    end
+
+    self.Content:ClearAllPoints()
+    self.Content:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
+        self.Core:GetAttribute("centerX"), self.Core:GetAttribute("centerY"))
+    self.Content:Show()
+    self:UpdateSlotVisibility()
+    if self.isCustomizing and self.Core:GetAttribute("bindMode") then
+        self:ApplyBindModeVisuals()
     else
-        defaultR, defaultG, defaultB, defaultA = 0.3, 0.3, 0.3, 1
+        self:StartUpdate()
+        self:UpdatePointerVisuals()
+        self:UpdateUsabilityVisuals()
+        self:Fade(self.Content, 1, mode == "selecting" and 0.05 or 0.1)
     end
+end
 
-    if self.CenterButton then
-        local hasCenter = self.Core:GetAttribute("center-macro")
-        self.CenterButton:SetShown(customizing or hasCenter)
-        if bindMode and not hasCenter then
-            self.CenterButton.Icon:SetAtlas(bindEmptySlotAtlas)
-            self.CenterButton.Icon:SetTexCoord(0, 1, 0, 1)
-            self.CenterButton.Icon:SetScale(bindEmptyIconScale)
-            self.CenterButton.Icon:SetAlpha(1)
-            if self.CenterButton.RefineBorder then
-                self.CenterButton.RefineBorder:SetBackdropBorderColor(
-                    defaultR,
-                    defaultG,
-                    defaultB,
-                    defaultA
-                )
-            end
-        else
-            self.CenterButton.Icon:SetScale(1)
-            if not hasCenter then
-                self.CenterButton.Icon:SetTexture(defaultEmptyIcon)
-            end
-            self.CenterButton.Icon:SetTexCoord(iconTexMin, iconTexMax, iconTexMin, iconTexMax)
-            if bindMode then
-                self.CenterButton.Icon:SetAlpha(1)
-            elseif customizing and not hasCenter then
-                self.CenterButton.Icon:SetAlpha(0.4) -- More visible drop target
-            end
-            if self.CenterButton.RefineBorder then
-                self.CenterButton.RefineBorder:SetBackdropBorderColor(defaultR, defaultG, defaultB, defaultA)
-            end
-        end
-        if not bindMode and not hasCenter and not customizing then
-            self.CenterButton.Icon:SetAlpha(0.1)
-        elseif not bindMode and customizing and not hasCenter then
-            self.CenterButton.Icon:SetAlpha(0.4) -- More visible drop target
-        end
-        self:SetIconUsabilityColor(self.CenterButton.Icon, true)
+function RadBar:UpdateSlotAppearance(btn)
+    local bindMode = self.isCustomizing and self.Core:GetAttribute("bindMode")
+    btn:SetShown(self.isCustomizing or btn.HasAction)
+    btn:EnableMouse(self.isCustomizing)
+    if bindMode and not btn.HasAction then
+        btn.Icon:SetAtlas(Private.BIND_EMPTY_SLOT_ATLAS)
+        btn.Icon:SetTexCoord(0, 1, 0, 1)
+        btn.Icon:SetScale(Private.BIND_EMPTY_ICON_SCALE)
+        btn.Icon:SetAlpha(1)
+    else
+        -- Always restore texture after an empty-slot atlas, including newly filled slots.
+        btn.Icon:SetTexture(btn.ActionIcon)
+        btn.Icon:SetTexCoord(Private.ICON_TEX_MIN, Private.ICON_TEX_MAX,
+            Private.ICON_TEX_MIN, Private.ICON_TEX_MAX)
+        btn.Icon:SetScale(1)
+        btn.Icon:SetAlpha(btn.HasAction and 1 or (self.isCustomizing and 0.4 or 0.1))
     end
+end
 
-    for i, btn in ipairs(self.Buttons) do
-        local hasAction = self.Core:GetAttribute("child" .. i .. "-macro")
-        btn:SetShown(customizing or hasAction)
-        if bindMode and not hasAction then
-            btn.Icon:SetAtlas(bindEmptySlotAtlas)
-            btn.Icon:SetTexCoord(0, 1, 0, 1)
-            btn.Icon:SetScale(bindEmptyIconScale)
-            btn.Icon:SetAlpha(1)
-            if btn.RefineBorder then
-                btn.RefineBorder:SetBackdropBorderColor(defaultR, defaultG, defaultB, defaultA)
-            end
-        else
-            btn.Icon:SetScale(1)
-            if not hasAction then
-                btn.Icon:SetTexture(defaultEmptyIcon)
-            end
-            btn.Icon:SetTexCoord(iconTexMin, iconTexMax, iconTexMin, iconTexMax)
-            if bindMode then
-                btn.Icon:SetAlpha(1)
-            elseif customizing and not hasAction then
-                btn.Icon:SetAlpha(0.4) -- More visible drop target
-            end
-            if btn.RefineBorder then
-                btn.RefineBorder:SetBackdropBorderColor(defaultR, defaultG, defaultB, defaultA)
-            end
-        end
-        if not bindMode and not hasAction and not customizing then
-            btn.Icon:SetAlpha(0.1)
-        elseif not bindMode and customizing and not hasAction then
-            btn.Icon:SetAlpha(0.4) -- More visible drop target
-        end
-        self:SetIconUsabilityColor(btn.Icon, true)
+function RadBar:UpdateSlotVisibility()
+    for index = 0, Private.SLOT_COUNT do
+        local btn = index == 0 and self.CenterButton or self.Buttons[index]
+        if btn then self:UpdateSlotAppearance(btn) end
     end
+    self:Select(self.sel, true)
 end
 
 function RadBar:ClearAnimationQueues()
-    if self.ActiveFades then
-        for frame in pairs(self.ActiveFades) do
-            self.ActiveFades[frame] = nil
-        end
-    end
-
-    if self.HighlightAnims then
-        for btn in pairs(self.HighlightAnims) do
-            self.HighlightAnims[btn] = nil
-        end
-    end
+    for frame in pairs(self.ActiveFades) do self.ActiveFades[frame] = nil end
+    for btn in pairs(self.HighlightAnims) do self.HighlightAnims[btn] = nil end
 end
 
 function RadBar:ApplyBindModeVisuals()
-    if not self.Core or not self.Content then
-        return
-    end
     self:ClearAnimationQueues()
-    self.Core:Hide()
-    local content = self.Content
-    content:SetAlpha(1)
-    content.Arrow:SetAlpha(0)
+    self.cursorTracking = false
     self.sel = nil
-
-    if self.CenterButton then
-        self.CenterButton:SetScale(1)
-        self.CenterButton:SetAlpha(1)
-        self.CenterButton.Icon:SetAlpha(1)
-        if self.CenterButton.glow then
-            self.CenterButton.glow:Hide()
-            if self.CenterButton.glow.PulseAnim then
-                self.CenterButton.glow.PulseAnim:Stop()
-            end
-        end
+    self.Content:SetAlpha(1)
+    self.Content.Arrow:SetAlpha(0)
+    for index = 0, Private.SLOT_COUNT do
+        local btn = index == 0 and self.CenterButton or self.Buttons[index]
+        if btn then self:SetSlotHighlight(btn, false, true) end
     end
-
-    for _, btn in ipairs(self.Buttons) do
-        btn:SetScale(1)
-        btn:SetAlpha(1)
-        btn.Icon:SetAlpha(1)
-        if btn.glow then
-            btn.glow:Hide()
-            if btn.glow.PulseAnim then
-                btn.glow.PulseAnim:Stop()
-            end
-        end
-    end
-
     self:UpdateSlotVisibility()
     self:UpdateUsabilityVisuals(true)
-
-    if self.Updater and not self.cursorTracking then
-        self.Updater:Hide()
-    end
+    self.Updater:Hide()
 end
 
 function RadBar:Fade(frame, target, duration, callback)
-    if not frame then
-        return
-    end
-
+    if not frame then return end
+    -- Replacement also cancels the previous callback for immediate transitions.
+    self.ActiveFades[frame] = nil
     duration = duration or 0.2
     if duration <= 0 then
         frame:SetAlpha(target)
-        if callback then
-            callback(frame)
-        end
+        if callback then callback(frame) end
         return
     end
-
     self.ActiveFades[frame] = {
-        startAlpha = frame:GetAlpha(),
-        targetAlpha = target,
-        duration = duration,
-        elapsed = 0,
-        callback = callback,
+        startAlpha = frame:GetAlpha(), targetAlpha = target,
+        duration = duration, elapsed = 0, callback = callback,
     }
     self:EnsureUpdater()
 end
 
 function RadBar:SmoothHighlight(btn, targetScale, targetAlpha, duration)
-    if not btn then
-        return
-    end
-
     duration = duration or 0.1
     if duration <= 0 then
+        self.HighlightAnims[btn] = nil
         btn:SetScale(targetScale)
         btn:SetAlpha(targetAlpha)
         return
     end
-
     local current = self.HighlightAnims[btn]
-    if current and current.targetScale == targetScale and current.targetAlpha == targetAlpha then
-        return
-    end
-
+    if current and current.targetScale == targetScale and current.targetAlpha == targetAlpha then return end
+    if not current and btn:GetScale() == targetScale and btn:GetAlpha() == targetAlpha then return end
     self.HighlightAnims[btn] = {
-        startScale = btn:GetScale(),
-        startAlpha = btn:GetAlpha(),
-        targetScale = targetScale,
-        targetAlpha = targetAlpha,
-        duration = duration,
-        elapsed = 0,
+        startScale = btn:GetScale(), startAlpha = btn:GetAlpha(),
+        targetScale = targetScale, targetAlpha = targetAlpha,
+        duration = duration, elapsed = 0,
     }
     self:EnsureUpdater()
 end
 
 function RadBar:ProcessFades(elapsed)
-    if not next(self.ActiveFades) then
-        return
-    end
-
     for frame, state in pairs(self.ActiveFades) do
         state.elapsed = state.elapsed + elapsed
         local progress = math.min(1, state.elapsed / state.duration)
         frame:SetAlpha(state.startAlpha + (state.targetAlpha - state.startAlpha) * progress)
-
         if progress >= 1 then
             self.ActiveFades[frame] = nil
-            local callback = state.callback
-            if callback then
-                callback(frame)
-            end
+            if state.callback then state.callback(frame) end
         end
     end
 end
 
 function RadBar:ProcessHighlights(elapsed)
-    if not next(self.HighlightAnims) then
-        return
-    end
-
     for btn, state in pairs(self.HighlightAnims) do
         state.elapsed = state.elapsed + elapsed
         local progress = math.min(1, state.elapsed / state.duration)
         btn:SetScale(state.startScale + (state.targetScale - state.startScale) * progress)
         btn:SetAlpha(state.startAlpha + (state.targetAlpha - state.startAlpha) * progress)
-
-        if progress >= 1 then
-            self.HighlightAnims[btn] = nil
-        end
+        if progress >= 1 then self.HighlightAnims[btn] = nil end
     end
 end
 
 function RadBar:UpdateVisuals(elapsed)
-    elapsed = elapsed or 0
-
-    local bindMode = self.Core:GetAttribute("bindMode")
-    if bindMode then
-        if not self.bindVisualsApplied then
-            self:ApplyBindModeVisuals()
-            self.bindVisualsApplied = true
+    if self.cursorTracking then
+        self.updateAccumulator = self.updateAccumulator + elapsed
+        self.usabilityAccumulator = self.usabilityAccumulator + elapsed
+        if self.updateAccumulator >= self.updateInterval then
+            self.updateAccumulator = self.updateAccumulator % self.updateInterval
+            self:UpdatePointerVisuals()
         end
-        self.usabilityAccumulator = 0
-    else
-        self.bindVisualsApplied = nil
-
-        if self.cursorTracking then
-            self.updateAccumulator = self.updateAccumulator + elapsed
-            self.usabilityAccumulator = self.usabilityAccumulator + elapsed
-            if self.updateAccumulator >= self.updateInterval then
-                self.updateAccumulator = 0
-                self:UpdatePointerVisuals()
-            end
-            if self.usabilityAccumulator >= self.usabilityInterval then
-                self.usabilityAccumulator = 0
-                self:UpdateUsabilityVisuals()
-            end
-        else
-            self.updateAccumulator = 0
-            self.usabilityAccumulator = 0
+        if self.usabilityAccumulator >= self.usabilityInterval then
+            self.usabilityAccumulator = self.usabilityAccumulator % self.usabilityInterval
+            self:UpdateUsabilityVisuals()
         end
     end
-
     self:ProcessFades(elapsed)
     self:ProcessHighlights(elapsed)
-
     if not self.cursorTracking and not next(self.ActiveFades) and not next(self.HighlightAnims) then
         self.Updater:Hide()
     end
@@ -352,123 +215,62 @@ end
 
 function RadBar:UpdatePointerVisuals()
     local x, y = GetCursorPosition()
-    local s = self.Core:GetEffectiveScale()
-    if s == 0 then
-        return
-    end
-    x, y = x / s, y / s
-
-    local cx, cy = self.Content:GetCenter()
-    if not cx then
-        return
-    end
-
-    local dx, dy = x - cx, y - cy
-    local r = (dx * dx + dy * dy) ^ 0.5
-    local a = math.atan2(dx, dy)
-    local TP = math.pi * 2
-    if a < 0 then
-        a = a + TP
-    end
-
-    local num = self.Core:GetAttribute("numSlices") or 0
-    local inner = self.Core:GetAttribute("innerRadius")
-    local idx = nil
-    if r <= inner then
-        idx = 0
-        self.Content.Arrow:SetAlpha(0)
-    elseif num > 0 then
-        local sA = TP / num
-        local adA = a + (sA / 2)
-        if adA >= TP then
-            adA = adA - TP
+    local scale = self.Core:GetEffectiveScale()
+    if scale <= 0 then return end
+    -- Mirror the restricted GetMousePosition normalization, including its bounds
+    -- check and arithmetic order, so exact sector edges agree at every UI scale.
+    local left, bottom, width, height = self.Core:GetRect()
+    local angle, radius = 0, 0
+    if width and height and width > 0 and height > 0 then
+        x, y = x / scale - left, y / scale - bottom
+        if x >= 0 and x <= width and y >= 0 and y <= height then
+            local dx = x / width * self.Core:GetWidth() - self.Core:GetAttribute("centerX")
+            local dy = y / height * self.Core:GetHeight() - self.Core:GetAttribute("centerY")
+            radius = (dx * dx + dy * dy)^0.5
+            angle = math.atan2(dx, dy)
+            if angle < 0 then angle = angle + Private.TWO_PI end
         end
-        idx = math.floor(adA / sA) + 1
-
-        -- Smooth Arrow Following (Only if slot has action or customizing)
-        local hasAction = self.Core:GetAttribute("child" .. idx .. "-macro")
-        if hasAction or self.isCustomizing then
-            local arrowRadius = 50 -- Tightened orbit
-            local content = self.Content
-            content.Arrow:SetPoint("CENTER", content, "CENTER", math.sin(a) * arrowRadius, math.cos(a) * arrowRadius)
-            content.Arrow.Tex:SetRotation(-a - (math.pi / 2))
-            content.Arrow:SetAlpha(0.8)
-        else
-            self.Content.Arrow:SetAlpha(0)
-        end
+    end
+    local index = Private.GetSelection(angle, radius,
+        self.Core:GetAttribute("innerRadius"), self.Core:GetAttribute("numSlices") or 0)
+    local btn = index == 0 and self.CenterButton or self.Buttons[index]
+    local arrow = self.Content.Arrow
+    if index > 0 and btn and (btn.HasAction or self.isCustomizing) then
+        arrow:SetPoint("CENTER", self.Content, "CENTER",
+            math.sin(angle) * Private.ARROW_RADIUS, math.cos(angle) * Private.ARROW_RADIUS)
+        arrow.Tex:SetRotation(-angle - math.pi / 2)
+        arrow:SetAlpha(0.8)
     else
-        self.Content.Arrow:SetAlpha(0)
+        arrow:SetAlpha(0)
     end
-
-    self:Select(idx)
+    self:Select(index)
 end
 
-function RadBar:Select(idx)
-    if self.sel == idx then
-        return
-    end
-    self.sel = idx
-    local content = self.Content
-
-    local private = self.Private or {}
-    local getDefaultBorderColor = private.GetDefaultBorderColor
-    local defaultR, defaultG, defaultB, defaultA
-    if getDefaultBorderColor then
-        defaultR, defaultG, defaultB, defaultA = getDefaultBorderColor()
-    else
-        defaultR, defaultG, defaultB, defaultA = 0.3, 0.3, 0.3, 1
-    end
-
-    -- Center
-    if idx == 0 then
-        self:SmoothHighlight(self.CenterButton, 1.1, 1, 0.1)
-        if self.CenterButton.RefineBorder then
-            self.CenterButton.RefineBorder:SetBackdropBorderColor(1, 0.82, 0, 1)
-        end
-        if self.CenterButton.glow then
-            self.CenterButton.glow:Show()
-            if self.CenterButton.glow.PulseAnim then
-                self.CenterButton.glow.PulseAnim:Play()
-            end
-        end
-        self:Fade(content.Arrow, 0, 0.1)
-    else
-        self:SmoothHighlight(self.CenterButton, 1.0, 0.6, 0.1)
-        if self.CenterButton.RefineBorder then
-            self.CenterButton.RefineBorder:SetBackdropBorderColor(defaultR, defaultG, defaultB, defaultA)
-        end
-        if self.CenterButton.glow then
-            self.CenterButton.glow:Hide()
-            if self.CenterButton.glow.PulseAnim then
-                self.CenterButton.glow.PulseAnim:Stop()
-            end
-        end
-    end
-
-    -- Arrow & Slices
-    for i, btn in ipairs(self.Buttons) do
-        if i == idx then
-            self:SmoothHighlight(btn, 1.1, 1, 0.1)
-            if btn.RefineBorder then
-                btn.RefineBorder:SetBackdropBorderColor(1, 0.82, 0, 1)
-            end
-            if btn.glow then
-                btn.glow:Show()
-                if btn.glow.PulseAnim then
-                    btn.glow.PulseAnim:Play()
-                end
-            end
+function RadBar:SetSlotHighlight(btn, selected, immediate)
+    local neutral = self.mode == "closed" or (self.isCustomizing and self.Core:GetAttribute("bindMode"))
+    selected = not neutral and selected and (btn.HasAction or self.isCustomizing)
+    local alpha = (neutral or selected) and 1 or (btn.SlotIndex == 0 and 0.6 or 0.5)
+    self:SmoothHighlight(btn, selected and 1.1 or 1, alpha, immediate and 0 or 0.1)
+    if btn.RefineBorder then
+        if selected then
+            btn.RefineBorder:SetBackdropBorderColor(1, 0.82, 0, 1)
         else
-            self:SmoothHighlight(btn, 1.0, 0.5, 0.1)
-            if btn.RefineBorder then
-                btn.RefineBorder:SetBackdropBorderColor(defaultR, defaultG, defaultB, defaultA)
-            end
-            if btn.glow then
-                btn.glow:Hide()
-                if btn.glow.PulseAnim then
-                    btn.glow.PulseAnim:Stop()
-                end
-            end
+            btn.RefineBorder:SetBackdropBorderColor(Private.GetDefaultBorderColor())
         end
+    end
+    if btn.glow then
+        btn.glow:SetShown(selected and true or false)
+        if btn.glow.PulseAnim then
+            if selected then btn.glow.PulseAnim:Play() else btn.glow.PulseAnim:Stop() end
+        end
+    end
+end
+
+function RadBar:Select(index, force)
+    if self.sel == index and not force then return end
+    self.sel = index
+    for slot = 0, Private.SLOT_COUNT do
+        local btn = slot == 0 and self.CenterButton or self.Buttons[slot]
+        if btn then self:SetSlotHighlight(btn, slot == index) end
     end
 end

@@ -51,6 +51,7 @@ local BAG_STATUS_ICON_SUBLEVEL = 7
 local BAG_STATUS_ICON_OFFSET_X = 4
 local BAG_STATUS_ICON_OFFSET_Y = -8
 local BAG_STATUS_ICON_ATLAS_UNKNOWN = "UI-QuestTracker-Objective-Fail"
+local BAG_STATUS_ICON_ATLAS_KNOWN = "UI-QuestTracker-Tracker-Check"
 local BAG_UNKNOWN_ICON_SIZE = 16
 local BAG_UNKNOWN_ICON_INSET_X = 2
 local BAG_UNKNOWN_ICON_INSET_Y = 2
@@ -66,6 +67,8 @@ local COLLECTIBLE_CACHE_INVALIDATION_EVENTS = {
     "NEW_TOY_ADDED",
     "TOYS_UPDATED",
     "TRANSMOG_COLLECTION_UPDATED",
+    "TRANSMOG_COLLECTION_SOURCE_ADDED",
+    "TRANSMOG_COLLECTION_SOURCE_REMOVED",
 }
 local FRAME_BORDER_CACHE = setmetatable({}, { __mode = "k" })
 local ITEM_LEVEL_CACHE = {}
@@ -192,6 +195,10 @@ local function CacheCollectibleKnownState(itemLink, itemID, applicable, known)
 end
 
 local function ResolveCollectibleKnownState(itemLink, itemID)
+    local isToken, tokenKnown = RefineUI:GetTokenAppearanceStatus(itemLink, itemID)
+    if isToken then
+        return tokenKnown ~= nil, tokenKnown
+    end
     local cachedApplicable, cachedKnown = GetCachedCollectibleKnownState(itemLink, itemID)
     if cachedApplicable ~= nil then
         return cachedApplicable, cachedKnown
@@ -242,12 +249,36 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
         RequestItemDataByIDOnce(itemID)
     end
 
-    if itemLink and C_TransmogCollection and C_TransmogCollection.GetItemInfo and C_TransmogCollection.GetSourceInfo then
-        local sourceID = select(2, C_TransmogCollection.GetItemInfo(itemLink))
-        if sourceID then
-            local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
-            if sourceInfo then
-                return CacheCollectibleKnownState(itemLink, itemID, true, sourceInfo.isCollected == true)
+    if itemLink and C_TransmogCollection and C_TransmogCollection.GetItemInfo then
+        local appearanceID, sourceID = C_TransmogCollection.GetItemInfo(itemLink)
+        if type(appearanceID) == "number" and appearanceID > 0
+            and type(sourceID) == "number" and sourceID > 0 then
+            -- An exact modified source can be uncollected while another source
+            -- for the same visual is owned. Use the shared account-wide resolver
+            -- so Journal icons agree with completion totals.
+            local collections = RefineUI.Collections
+            if collections and type(collections.IsAppearanceCollected) == "function" then
+                local known = collections:IsAppearanceCollected(appearanceID, sourceID)
+                if known ~= nil then
+                    return CacheCollectibleKnownState(itemLink, itemID, true, known)
+                end
+
+                -- A positive exact-source result is conclusive. A negative is
+                -- not, so leave unresolved ownership uncached for the next pass.
+                if C_TransmogCollection.GetSourceInfo then
+                    local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
+                    if sourceInfo and sourceInfo.isCollected == true then
+                        return CacheCollectibleKnownState(itemLink, itemID, true, true)
+                    end
+                end
+                return false, nil
+            end
+
+            if C_TransmogCollection.GetSourceInfo then
+                local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
+                if sourceInfo then
+                    return CacheCollectibleKnownState(itemLink, itemID, true, sourceInfo.isCollected == true)
+                end
             end
         end
     end
@@ -433,6 +464,13 @@ local function ResolveBagStatusAtlas(frame)
         return nil
     end
 
+    -- Token collection status takes precedence over the generic quest-item marker.
+    if RefineUI.TokenAppearanceData[info.itemID] then
+        local _, known = RefineUI:GetTokenAppearanceStatus(info.hyperlink, info.itemID)
+        if known == nil then return nil end
+        return known and BAG_STATUS_ICON_ATLAS_KNOWN or BAG_STATUS_ICON_ATLAS_UNKNOWN
+    end
+
     if C_Container.GetContainerItemQuestInfo then
         local questInfo = C_Container.GetContainerItemQuestInfo(bagID, slotID)
         if questInfo then
@@ -484,7 +522,7 @@ local function UpdateBagStatusIcon(frame)
         icon:SetParent(iconParent)
     end
 
-    if atlas == BAG_STATUS_ICON_ATLAS_UNKNOWN then
+    if atlas == BAG_STATUS_ICON_ATLAS_UNKNOWN or atlas == BAG_STATUS_ICON_ATLAS_KNOWN then
         icon:SetSize(BAG_UNKNOWN_ICON_SIZE, BAG_UNKNOWN_ICON_SIZE)
         icon:ClearAllPoints()
         icon:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", BAG_UNKNOWN_ICON_INSET_X, BAG_UNKNOWN_ICON_INSET_Y)
@@ -500,6 +538,14 @@ local function UpdateBagStatusIcon(frame)
         return
     end
     icon:Show()
+end
+
+function Borders:RefreshTokenStatusIcons()
+    for frame, cache in pairs(FRAME_BORDER_CACHE) do
+        if RefineUI.TokenAppearanceData[cache.itemID] and frame:IsShown() then
+            UpdateBagStatusIcon(frame)
+        end
+    end
 end
 
 function Borders:GetIterButton(a, b)

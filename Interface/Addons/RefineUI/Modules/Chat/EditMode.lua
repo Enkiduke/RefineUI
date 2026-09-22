@@ -38,14 +38,17 @@ local function GetChatConfig()
     if type(Chat.db.TimestampFormat) ~= "string" or Chat.db.TimestampFormat == "" then
         Chat.db.TimestampFormat = TIMESTAMP_FORMATS[1].value
     end
-    if Chat.db.ItemLevelLinks == nil then
-        Chat.db.ItemLevelLinks = true
-    end
-    if Chat.db.RoleIcons == nil then
-        Chat.db.RoleIcons = true
+    if Chat.db.ShortChannels == nil then
+        Chat.db.ShortChannels = true
     end
     if Chat.db.ChatIcons == nil then
         Chat.db.ChatIcons = true
+    end
+    if Chat.db.LootIcons == nil then
+        Chat.db.LootIcons = true
+    end
+    if Chat.db.RoleIcons == nil then
+        Chat.db.RoleIcons = true
     end
     return Chat.db
 end
@@ -107,11 +110,11 @@ function Chat:RefreshRuntimeSettings(opts)
         self:ApplyTimestampSetting()
     end
 
-    if self.SetupIcons then
-        self:SetupIcons()
+    if self.ApplyShortChannelFormats then
+        self:ApplyShortChannelFormats()
     end
-    if self.SetupRoleIcons then
-        self:SetupRoleIcons()
+    if self.SetupMessageEnhancements then
+        self:SetupMessageEnhancements()
     end
 end
 
@@ -159,24 +162,13 @@ function Chat:InitializeEditModeSettings()
         },
         {
             kind = settingType.Checkbox,
-            name = "Show Item-Level In Links",
+            name = "Short Channel Names",
             default = true,
             get = function()
-                return GetChatConfig().ItemLevelLinks ~= false
+                return GetChatConfig().ShortChannels ~= false
             end,
             set = function(_, value)
-                GetChatConfig().ItemLevelLinks = value and true or false
-            end,
-        },
-        {
-            kind = settingType.Checkbox,
-            name = "Show Role Icons",
-            default = true,
-            get = function()
-                return GetChatConfig().RoleIcons ~= false
-            end,
-            set = function(_, value)
-                GetChatConfig().RoleIcons = value and true or false
+                GetChatConfig().ShortChannels = value and true or false
                 Chat:RefreshRuntimeSettings()
             end,
         },
@@ -189,6 +181,30 @@ function Chat:InitializeEditModeSettings()
             end,
             set = function(_, value)
                 GetChatConfig().ChatIcons = value and true or false
+                Chat:RefreshRuntimeSettings()
+            end,
+        },
+        {
+            kind = settingType.Checkbox,
+            name = "Show Loot Money Icons",
+            default = true,
+            get = function()
+                return GetChatConfig().LootIcons ~= false
+            end,
+            set = function(_, value)
+                GetChatConfig().LootIcons = value and true or false
+                Chat:RefreshRuntimeSettings()
+            end,
+        },
+        {
+            kind = settingType.Checkbox,
+            name = "Show Group Role Icons",
+            default = true,
+            get = function()
+                return GetChatConfig().RoleIcons ~= false
+            end,
+            set = function(_, value)
+                GetChatConfig().RoleIcons = value and true or false
                 Chat:RefreshRuntimeSettings()
             end,
         },

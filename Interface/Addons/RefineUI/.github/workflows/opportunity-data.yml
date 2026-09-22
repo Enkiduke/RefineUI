@@ -1,0 +1,57 @@
+name: Opportunity data
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 8 * * 1'
+  pull_request:
+    paths:
+      - 'Tools/opportunities/**'
+      - 'Modules/AdventureGuide/Opportunities/**'
+      - 'Tests/*pportunit*'
+      - '.github/workflows/opportunity-data.yml'
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r Tools/opportunities/requirements.txt
+      - run: python Tests/test_opportunity_generator.py
+      - run: python Tools/RunLuaTests.py
+      - run: python Tools/opportunities/update.py
+      - run: python Tools/opportunities/check_catalog.py
+      - run: git diff --exit-code -- Modules/AdventureGuide/Opportunities/Data.lua Modules/AdventureGuide/Opportunities/CollectionData.lua Modules/AdventureGuide/Opportunities/Data.json Modules/AdventureGuide/Opportunities/Catalog.json.gz Tools/opportunities/sources.lock.json
+  propose-update:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r Tools/opportunities/requirements.txt
+      - run: python Tools/opportunities/update.py --update
+      - run: python Tools/opportunities/check_catalog.py
+      - run: python Tests/test_opportunity_generator.py && python Tools/RunLuaTests.py
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/opportunity-data
+          title: Update generated Opportunity data
+          commit-message: Update generated Opportunity data
+          body: |
+            Regenerates the supported acquisition subset from a pinned ATT revision.
+            Review the coverage and exclusion changes in Data.json before merging.
+          add-paths: |
+            Modules/AdventureGuide/Opportunities/Data.lua
+            Modules/AdventureGuide/Opportunities/CollectionData.lua
+            Modules/AdventureGuide/Opportunities/Data.json
+            Modules/AdventureGuide/Opportunities/Catalog.json.gz
+            Tools/opportunities/sources.lock.json

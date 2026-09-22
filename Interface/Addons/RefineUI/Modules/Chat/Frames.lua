@@ -89,6 +89,7 @@ local EDITBOX_ACTIVE_ALPHA = 1
 local EDITBOX_ANCHOR_X = 6
 local EDITBOX_ANCHOR_Y = 28
 local MAX_CHAT_EDITBOX_SCAN = 40
+local AUTO_SCROLL_DELAY = 15
 local function BuildChatFramesHookKey(owner, method, suffix)
 	local ownerId
 	if type(owner) == "table" and owner.GetName then
@@ -112,6 +113,37 @@ local function BuildChatFramesTimerKey(owner, suffix)
         ownerId = tostring(owner)
     end
     return "ChatFrames:" .. ownerId .. ":Timer:" .. suffix
+end
+
+local function QueueAutoScrollToBottom(chatFrame)
+    if not chatFrame or not chatFrame.AtBottom or not chatFrame.ScrollToBottom then
+        return
+    end
+
+    local timerKey = BuildChatFramesTimerKey(chatFrame, "AutoScroll")
+    if chatFrame:AtBottom() then
+        RefineUI:CancelTimer(timerKey)
+        return
+    end
+
+    RefineUI:After(timerKey, AUTO_SCROLL_DELAY, function()
+        if chatFrame and chatFrame.AtBottom and chatFrame.ScrollToBottom and not chatFrame:AtBottom() then
+            chatFrame:ScrollToBottom()
+        end
+    end)
+end
+
+local function InstallChatAutoScroll(chatFrame)
+    if not chatFrame then
+        return
+    end
+
+    RefineUI:HookScriptOnce(
+        BuildChatFramesHookKey(chatFrame, "OnMouseWheel", "AutoScroll"),
+        chatFrame,
+        "OnMouseWheel",
+        QueueAutoScrollToBottom
+    )
 end
 
 local function GetEditBoxHeight(fontSize)
@@ -676,6 +708,9 @@ local function SetChatStyle(frame, options)
 	chatFrame:SetClampedToScreen(false)
 	chatFrame:SetFading(false)
     ApplyChatFrameTypography(chatFrame, fontSize)
+    if not visualOnly then
+        InstallChatAutoScroll(chatFrame)
+    end
 
     -- Keep Blizzard's native chat edit box ownership. Encounter-time whisper and
     -- temporary chat windows run through protected header/layout paths.
@@ -945,6 +980,9 @@ local function SetupTempChat()
         RefreshEditBoxVisualState(frame.editBox)
         HookEditBoxBorderColor()
     end
+    if Chat.SetupCopyForFrame then
+        Chat:SetupCopyForFrame(frame)
+    end
 end
 
 ----------------------------------------------------------------------------------------
@@ -1058,17 +1096,14 @@ function Chat:OnEnable()
         return
     end
 
-    if self.SetupIcons then
-        self:SetupIcons()
-    end
-    if self.SetupLootIcons then
-        self:SetupLootIcons()
-    end
-    if self.SetupRoleIcons then
-        self:SetupRoleIcons()
-    end
     if self.InitializeEditModeSettings then
         self:InitializeEditModeSettings()
+    end
+    if self.ApplyShortChannelFormats then
+        self:ApplyShortChannelFormats()
+    end
+    if self.SetupMessageEnhancements then
+        self:SetupMessageEnhancements()
     end
     if self.InstallMessagePipeline then
         self:InstallMessagePipeline()

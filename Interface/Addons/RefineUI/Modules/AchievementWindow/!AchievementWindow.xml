@@ -1,0 +1,11 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Script file="InstanceData.lua"/>
+    <Script file="ExpansionData.lua"/>
+    <Script file="DecorData.lua"/>
+    <Script file="AchievementWindow.lua"/>
+    <Script file="Filters.lua"/>
+    <Script file="Menu.lua"/>
+    <Script file="Search.lua"/>
+    <Script file="AlmostCompleted.lua"/>
+    <Script file="AlmostCache.lua"/>
+</Ui>

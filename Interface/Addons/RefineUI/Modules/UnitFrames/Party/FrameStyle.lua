@@ -44,6 +44,21 @@ local IsEditModeActiveNow    = P.IsEditModeActive
 local IsPartyRaidCompactFrame = P.IsCompactFrame
 local IsCompactPetUnitToken   = P.IsPetUnit
 local GetCompactPetOwnerClassColor = P.GetPetOwnerClassColor
+local IsForbiddenObject       = P.IsForbiddenObject or function(object)
+    if not object then return false end
+    if type(object) ~= "table" and type(object) ~= "userdata" then return false end
+    local isForbidden = object.IsForbidden
+    if type(isForbidden) ~= "function" then return false end
+    local ok, forbidden = pcall(isForbidden, object)
+    return not ok or forbidden == true
+end
+local IsFrameShownSafe        = P.IsFrameShown or function(frame)
+    if not frame or IsForbiddenObject(frame) then return false end
+    local isShown = frame.IsShown
+    if type(isShown) ~= "function" then return false end
+    local ok, shown = pcall(isShown, frame)
+    return ok and shown == true
+end
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -57,12 +72,12 @@ local TEXTURE_RAID_TARGET_ICONS = [[Interface\TargetingFrame\UI-RaidTargetingIco
 local PARTY_RAID_ICON_SIZE = 24
 
 local function QueuePartyDeferred(frame, suffix, delay, fn)
-    if not frame or frame:IsForbidden() or type(fn) ~= "function" then
+    if not frame or IsForbiddenObject(frame) or type(fn) ~= "function" then
         return
     end
 
     RefineUI:After(BuildPartyHookKey(frame, "Deferred:" .. suffix), delay, function()
-        if frame and not frame:IsForbidden() then
+        if frame and not IsForbiddenObject(frame) then
             fn(frame)
         end
     end)
@@ -72,7 +87,7 @@ end
 -- Health Bar Texture
 ----------------------------------------------------------------------------------------
 local function ApplyCompactHealthTexture(frame)
-    if not frame or frame:IsForbidden() or not frame.healthBar then return end
+    if not frame or IsForbiddenObject(frame) or not frame.healthBar then return end
 
     local healthBar = frame.healthBar
     healthBar:SetStatusBarTexture(TEXTURE_COMPACT_HEALTH)
@@ -88,14 +103,14 @@ end
 -- Border Layout
 ----------------------------------------------------------------------------------------
 local function UpdateCompactPartyBorderLayout(frame)
-    if not frame or frame:IsForbidden() or not frame.healthBar then return end
+    if not frame or IsForbiddenObject(frame) or not frame.healthBar then return end
     if IsEditModeActiveNow() then return end
 
     local data = GetPartyData(frame)
     local borderHost = data.healthBarBorderHost
-    if not borderHost or (borderHost.IsForbidden and borderHost:IsForbidden()) then return end
+    if not borderHost or IsForbiddenObject(borderHost) then return end
 
-    local powerBarShown = frame.powerBar and frame.powerBar:IsShown()
+    local powerBarShown = IsFrameShownSafe(frame.powerBar)
     local powerBarUsedHeight = 0
     local rawPowerBarUsedHeight = frame.powerBarUsedHeight
     if not IsUnreadableNumber(rawPowerBarUsedHeight) then

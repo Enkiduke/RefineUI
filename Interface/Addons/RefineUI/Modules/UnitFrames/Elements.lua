@@ -637,7 +637,12 @@ local function UpdateAuraSkin(button, auraData)
     local didSetCooldown = false
 
     if C_UnitAuras and C_UnitAuras.GetAuraDuration and auraInstanceID and button.unit then
-        auraDurationObj = C_UnitAuras.GetAuraDuration(button.unit, auraInstanceID)
+        if not (issecretvalue and issecretvalue(auraInstanceID)) then
+            local okDur, dur = pcall(C_UnitAuras.GetAuraDuration, button.unit, auraInstanceID)
+            if okDur and dur and not (issecretvalue and issecretvalue(dur)) then
+                auraDurationObj = dur
+            end
+        end
         if auraDurationObj and type(cooldown.SetCooldownFromDurationObject) == "function" then
             local ok = pcall(cooldown.SetCooldownFromDurationObject, cooldown, auraDurationObj)
             if ok then
@@ -789,8 +794,8 @@ local function GetTargetFocusPlayerDebuffAuraSet(frame, scratch)
 
     scratch = scratch or GetTargetFocusAuraScratch(frame)
     local allowedAuraInstanceIDs = WipeTable(scratch.playerDebuffAuraSet)
-    local auraDataList = C_UnitAuras.GetUnitAuras(frame.unit, "HARMFUL|PLAYER")
-    if type(auraDataList) ~= "table" or #auraDataList == 0 then
+    local ok, auraDataList = pcall(C_UnitAuras.GetUnitAuras, frame.unit, "HARMFUL|PLAYER")
+    if not ok or type(auraDataList) ~= "table" or #auraDataList == 0 then
         return allowedAuraInstanceIDs
     end
 

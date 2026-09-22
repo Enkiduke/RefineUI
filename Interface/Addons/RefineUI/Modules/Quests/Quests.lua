@@ -206,6 +206,7 @@ end
 ----------------------------------------------------------------------------------------
 function Quests:SkinHeader(Frame)
     local HeaderBar = CreateFrame("StatusBar", nil, Frame)
+    Frame.RefineUIHeaderBar = HeaderBar
     RefineUI.Size(HeaderBar, 232, 6)
     RefineUI.Point(HeaderBar, "TOP", Frame, -16, -18)
     HeaderBar:SetFrameLevel(Frame:GetFrameLevel() - 1)
@@ -312,6 +313,9 @@ function Quests:HookTrackers()
             RefineUI:HookOnce(BuildQuestHookKey(tracker, "GetTimerBar", i), tracker, "GetTimerBar", function(t, k) self:SkinTimerBar(t, k) end)
             RefineUI:HookOnce(BuildQuestHookKey(tracker, "Update", i), tracker, "Update", function()
                 self:ApplyObjectiveTrackerFonts()
+                if tracker == _G.ScenarioObjectiveTracker and self.ApplyInstanceTrackerHeader then
+                    self:ApplyInstanceTrackerHeader()
+                end
             end)
             RefineUI:HookOnce(BuildQuestHookKey(tracker, "AddBlock", i), tracker, "AddBlock", function()
                 self:ApplyObjectiveTrackerFonts()
@@ -638,6 +642,11 @@ function Quests:CreateSettingsButton()
                 local module = RefineUI:GetModule("AutoCollapse")
                 if module and module.UpdateState then module:UpdateState() end
             end)
+            local legacy = RefineUI:GetModule("LegacyCompletionist")
+            if legacy and legacy.AddSettings then
+                rootDescription:CreateDivider()
+                legacy:AddSettings(rootDescription)
+            end
         end)
     end)
     
@@ -660,6 +669,9 @@ function Quests:OnInitialize()
     end
     
     self:HookTrackers()
+    if self.InitializeInstanceTrackerHeader then
+        self:InitializeInstanceTrackerHeader()
+    end
     self:ApplyObjectiveTrackerFonts()
     RefineUI:HookOnce("Quests:ObjectiveTracker_Update", "ObjectiveTracker_Update", function()
         self:ApplyObjectiveTrackerFonts()

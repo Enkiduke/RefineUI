@@ -38,6 +38,21 @@ local IsSecretValue = P.IsSecretValue
 local GetSafeFrameLevel  = P.GetSafeFrameLevel
 local GetSafeFrameStrata = P.GetSafeFrameStrata
 local IsPartyRaidCompactFrame = P.IsCompactFrame
+local IsForbiddenObject   = P.IsForbiddenObject or function(object)
+    if not object then return false end
+    if type(object) ~= "table" and type(object) ~= "userdata" then return false end
+    local isForbidden = object.IsForbidden
+    if type(isForbidden) ~= "function" then return false end
+    local ok, forbidden = pcall(isForbidden, object)
+    return not ok or forbidden == true
+end
+local IsFrameShownSafe    = P.IsFrameShown or function(frame)
+    if not frame or IsForbiddenObject(frame) then return false end
+    local isShown = frame.IsShown
+    if type(isShown) ~= "function" then return false end
+    local ok, shown = pcall(isShown, frame)
+    return ok and shown == true
+end
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -335,7 +350,7 @@ local function BuildCompactImportantLayoutToken(frame, importantBuffFrames, stri
     if type(frame.buffFrames) == "table" then
         for index = 1, #frame.buffFrames do
             local buffFrame = frame.buffFrames[index]
-            if buffFrame and buffFrame:IsShown() then
+            if IsFrameShownSafe(buffFrame) then
                 local token = GetComparableCompactAuraIdentity(buffFrame)
                 if not token then
                     WipeArray(parts, 0)
@@ -610,7 +625,7 @@ local function ApplyCompactAuraSpacingToCurrentPoint(auraFrame)
 end
 
 local function EnsureCompactAuraSpacing(ownerFrame, auraFrame, containerType, containerIndex)
-    if not auraFrame or auraFrame:IsForbidden() then
+    if not auraFrame or IsForbiddenObject(auraFrame) then
         return
     end
 
@@ -661,12 +676,12 @@ local function EnsureCompactAuraSpacing(ownerFrame, auraFrame, containerType, co
 end
 
 local function ApplyCompactAuraSpacingForFrame(frame)
-    if not frame or frame:IsForbidden() then return end
+    if not frame or IsForbiddenObject(frame) then return end
     if not IsPartyRaidCompactFrame(frame) then return end
 
     if type(frame.buffFrames) == "table" then
         for index, buffFrame in ipairs(frame.buffFrames) do
-            if buffFrame then
+            if buffFrame and not IsForbiddenObject(buffFrame) then
                 EnsureCompactAuraSpacing(frame, buffFrame, COMPACT_AURA_CONTAINER_BUFF, index)
             end
         end
@@ -674,7 +689,7 @@ local function ApplyCompactAuraSpacingForFrame(frame)
 
     if type(frame.debuffFrames) == "table" then
         for index, debuffFrame in ipairs(frame.debuffFrames) do
-            if debuffFrame then
+            if debuffFrame and not IsForbiddenObject(debuffFrame) then
                 EnsureCompactAuraSpacing(frame, debuffFrame, COMPACT_AURA_CONTAINER_DEBUFF, index)
             end
         end
@@ -682,7 +697,7 @@ local function ApplyCompactAuraSpacingForFrame(frame)
 
     if type(frame.dispelDebuffFrames) == "table" then
         for index, dispelFrame in ipairs(frame.dispelDebuffFrames) do
-            if dispelFrame then
+            if dispelFrame and not IsForbiddenObject(dispelFrame) then
                 EnsureCompactAuraSpacing(frame, dispelFrame, COMPACT_AURA_CONTAINER_DISPEL, index)
             end
         end
@@ -775,7 +790,7 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
         frameData.importantMembershipToken = "none"
         frameData.importantLayoutToken = "none"
         for _, buffFrame in ipairs(frame.buffFrames) do
-            if buffFrame and buffFrame:IsShown() then
+            if IsFrameShownSafe(buffFrame) then
                 ApplyCompactAuraSpacingToCurrentPoint(buffFrame)
             end
         end
@@ -851,7 +866,7 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
                 buffFrame:ClearAllPoints()
                 buffFrame:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", x, y)
                 data.spacingAdjusting = false
-            elseif not buffFrame:IsShown() then
+            elseif not IsFrameShownSafe(buffFrame) then
                 buffFrame:Show()
             end
 
@@ -888,7 +903,7 @@ local function ApplyCompactImportantBuffLayout(frame, importantBuffFrames)
     local seqIndex = 0
     for _, buffFrame in ipairs(frame.buffFrames) do
         local data = GetPartyAuraData(buffFrame)
-        if buffFrame and buffFrame:IsShown() and not data.isInImportantAnchor then
+        if IsFrameShownSafe(buffFrame) and not data.isInImportantAnchor then
             local iconWidth = buffFrame:GetWidth() or 0
             local iconHeight = buffFrame:GetHeight() or iconWidth
 
@@ -968,7 +983,7 @@ local function InvalidateCompactAuraLayoutState(frame)
 end
 
 local function PrewarmAuraHelpersForFrame(frame)
-    if not frame or frame:IsForbidden() or InCombatLockdown() then
+    if not frame or IsForbiddenObject(frame) or InCombatLockdown() then
         return
     end
     if not IsPartyRaidCompactFrame(frame) then

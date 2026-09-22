@@ -1,10 +1,10 @@
 ----------------------------------------------------------------------------------------
--- EncounterAchievements UI
+-- AdventureGuideInstances UI
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local EncounterAchievements = RefineUI:GetModule("EncounterAchievements")
-if not EncounterAchievements then
+local AdventureGuideInstances = RefineUI:GetModule("AdventureGuideInstances")
+if not AdventureGuideInstances then
     return
 end
 
@@ -71,7 +71,7 @@ end
 ----------------------------------------------------------------------------------------
 -- UI Creation
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:CreateCustomSideTab(infoFrame)
+function AdventureGuideInstances:CreateCustomSideTab(infoFrame)
     if self.customTabButton or not infoFrame then
         return
     end
@@ -110,7 +110,7 @@ function EncounterAchievements:CreateCustomSideTab(infoFrame)
     self.customTabButton = tab
 end
 
-function EncounterAchievements:CreateCustomPanel(infoFrame)
+function AdventureGuideInstances:CreateCustomPanel(infoFrame)
     if self.customPanel or not infoFrame or not infoFrame.detailsScroll then
         return
     end
@@ -175,7 +175,7 @@ function EncounterAchievements:CreateCustomPanel(infoFrame)
     self.customPanel = panel
 end
 
-function EncounterAchievements:InstallNativeVisibilityGuards(infoFrame)
+function AdventureGuideInstances:InstallNativeVisibilityGuards(infoFrame)
     if self.nativeVisibilityGuardsInstalled or not infoFrame then
         return
     end
@@ -206,7 +206,7 @@ function EncounterAchievements:InstallNativeVisibilityGuards(infoFrame)
     self.nativeVisibilityGuardsInstalled = true
 end
 
-function EncounterAchievements:EnsureUI()
+function AdventureGuideInstances:EnsureUI()
     if self.uiInitialized then
         return
     end
@@ -223,7 +223,7 @@ function EncounterAchievements:EnsureUI()
     self.uiInitialized = self.customTabButton ~= nil and self.customPanel ~= nil
 end
 
-function EncounterAchievements:GetCurrentJournalEncounterID()
+function AdventureGuideInstances:GetCurrentJournalEncounterID()
     local journal = _G.EncounterJournal
     local encounterID = journal and journal.encounterID or nil
     if type(encounterID) == "number" and encounterID > 0 then
@@ -232,7 +232,7 @@ function EncounterAchievements:GetCurrentJournalEncounterID()
     return nil
 end
 
-function EncounterAchievements:GetBossFilterAllLabel()
+function AdventureGuideInstances:GetBossFilterAllLabel()
     local allLabel = _G.ALL or "All"
     local bossLabel = _G.BOSSES or "Bosses"
     if type(allLabel) ~= "string" or allLabel == "" then
@@ -244,7 +244,7 @@ function EncounterAchievements:GetBossFilterAllLabel()
     return format("%s %s", allLabel, bossLabel)
 end
 
-function EncounterAchievements:BuildBossFilterOptions()
+function AdventureGuideInstances:BuildBossFilterOptions()
     local options = {}
     local optionMap = {}
 
@@ -284,7 +284,7 @@ function EncounterAchievements:BuildBossFilterOptions()
     return options, optionMap
 end
 
-function EncounterAchievements:EnsureBossFilterState(instanceID)
+function AdventureGuideInstances:EnsureBossFilterState(instanceID)
     if self.bossFilterInstanceID ~= instanceID then
         self.bossFilterInstanceID = instanceID
         self.currentBossFilterOptions = nil
@@ -311,7 +311,7 @@ function EncounterAchievements:EnsureBossFilterState(instanceID)
     end
 end
 
-function EncounterAchievements:GetSelectedBossFilterOption()
+function AdventureGuideInstances:GetSelectedBossFilterOption()
     local options = self.currentBossFilterOptions
     if type(options) ~= "table" then
         return nil
@@ -327,7 +327,7 @@ function EncounterAchievements:GetSelectedBossFilterOption()
     return options[1]
 end
 
-function EncounterAchievements:SetupBossFilterDropdown()
+function AdventureGuideInstances:SetupBossFilterDropdown()
     local panel = self.customPanel
     local dropdown = panel and panel.BossDropdown
     if not dropdown or not dropdown.SetupMenu then
@@ -335,6 +335,10 @@ function EncounterAchievements:SetupBossFilterDropdown()
     end
 
     local options = self.currentBossFilterOptions or {}
+    if dropdown.encounterAchievementOptions == options then
+        return
+    end
+    dropdown.encounterAchievementOptions = options
     dropdown:SetupMenu(function(_, rootDescription)
         rootDescription:SetTag("MENU_EJ_BOSS_FILTER")
 
@@ -353,7 +357,7 @@ function EncounterAchievements:SetupBossFilterDropdown()
     end)
 end
 
-function EncounterAchievements:UpdateBossFilterDropdownText()
+function AdventureGuideInstances:UpdateBossFilterDropdownText()
     local panel = self.customPanel
     local dropdown = panel and panel.BossDropdown
     if not dropdown then
@@ -367,36 +371,7 @@ function EncounterAchievements:UpdateBossFilterDropdownText()
     end
 end
 
-function EncounterAchievements:GetRowBossMatchToken(row)
-    if type(row) ~= "table" then
-        return ""
-    end
-
-    if type(row._bossMatchToken) == "string" then
-        return row._bossMatchToken
-    end
-
-    local sourceText = format("%s %s %s", row.name or "", row.description or "", row.categoryPath or "")
-    local token = NormalizeTextToken(sourceText)
-    row._bossMatchToken = token
-    return token
-end
-
-function EncounterAchievements:RowMatchesBossFilter(row, selectedOption)
-    if type(selectedOption) ~= "table" or selectedOption.encounterID == BOSS_FILTER_ALL then
-        return true
-    end
-
-    local bossToken = selectedOption.token
-    if type(bossToken) ~= "string" or bossToken == "" then
-        return false
-    end
-
-    local rowToken = self:GetRowBossMatchToken(row)
-    return rowToken ~= "" and string.find(rowToken, bossToken, 1, true) ~= nil
-end
-
-function EncounterAchievements:FilterRowsByBoss(rows)
+function AdventureGuideInstances:FilterRowsByBoss(rows)
     if type(rows) ~= "table" then
         return {}
     end
@@ -406,6 +381,9 @@ function EncounterAchievements:FilterRowsByBoss(rows)
         return rows
     end
 
+    if self._filteredSourceRows == rows and self._filteredBossToken == selectedOption.token then
+        return self._filteredRows
+    end
     local filtered = {}
     for index = 1, #rows do
         local row = rows[index]
@@ -414,10 +392,13 @@ function EncounterAchievements:FilterRowsByBoss(rows)
         end
     end
 
+    self._filteredSourceRows = rows
+    self._filteredBossToken = selectedOption.token
+    self._filteredRows = filtered
     return filtered
 end
 
-function EncounterAchievements:ResetBossFilterSelection()
+function AdventureGuideInstances:ResetBossFilterSelection()
     self.selectedBossFilterEncounterID = nil
     self.bossFilterUserSelected = false
 end
@@ -425,7 +406,7 @@ end
 ----------------------------------------------------------------------------------------
 -- UI Helpers
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:ShowNativeDifficultyByCurrentTab()
+function AdventureGuideInstances:ShowNativeDifficultyByCurrentTab()
     local _, _, infoFrame = GetEncounterFrames()
     if not infoFrame or not infoFrame.difficulty then
         return
@@ -438,7 +419,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Panel State
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:SetCustomTabSelected(selected)
+function AdventureGuideInstances:SetCustomTabSelected(selected)
     local tab = self.customTabButton
     if not tab then
         return
@@ -463,7 +444,7 @@ function EncounterAchievements:SetCustomTabSelected(selected)
     end
 end
 
-function EncounterAchievements:ClearNativeTabSelection()
+function AdventureGuideInstances:ClearNativeTabSelection()
     local _, _, infoFrame = GetEncounterFrames()
     if not infoFrame then
         return
@@ -483,7 +464,7 @@ function EncounterAchievements:ClearNativeTabSelection()
     end
 end
 
-function EncounterAchievements:HideNativeEncounterContent()
+function AdventureGuideInstances:HideNativeEncounterContent()
     local _, encounterFrame, infoFrame = GetEncounterFrames()
     if not infoFrame then
         return
@@ -542,7 +523,7 @@ function EncounterAchievements:HideNativeEncounterContent()
     end
 end
 
-function EncounterAchievements:ShowNativeEncounterContent()
+function AdventureGuideInstances:ShowNativeEncounterContent()
     local journal, encounterFrame, infoFrame = GetEncounterFrames()
     if not journal or not encounterFrame or not infoFrame then
         return
@@ -596,7 +577,7 @@ function EncounterAchievements:ShowNativeEncounterContent()
     end
 end
 
-function EncounterAchievements:SetPanelHeader(instanceName, achievementCount, categoryID, totalCount)
+function AdventureGuideInstances:SetPanelHeader(instanceName, achievementCount, categoryID, totalCount)
     local panel = self.customPanel
     if not panel then
         return
@@ -626,7 +607,7 @@ function EncounterAchievements:SetPanelHeader(instanceName, achievementCount, ca
     panel.MetaText:SetText(table.concat(metaParts, "  |  "))
 end
 
-function EncounterAchievements:SetPanelEmptyState(message, hideList)
+function AdventureGuideInstances:SetPanelEmptyState(message, hideList)
     local panel = self.customPanel
     if not panel then
         return
@@ -648,7 +629,7 @@ function EncounterAchievements:SetPanelEmptyState(message, hideList)
     end
 end
 
-function EncounterAchievements:EnsureAchievementListView()
+function AdventureGuideInstances:EnsureAchievementListView()
     if self.customScrollViewInitialized then
         return true
     end
@@ -690,7 +671,7 @@ function EncounterAchievements:EnsureAchievementListView()
     return true
 end
 
-function EncounterAchievements:PopulateAchievementRows(rows, instanceID)
+function AdventureGuideInstances:PopulateAchievementRows(rows, instanceID)
     local panel = self.customPanel
     if not panel then
         return
@@ -701,14 +682,12 @@ function EncounterAchievements:PopulateAchievementRows(rows, instanceID)
         return
     end
 
+    -- Keep a fresh provider for ScrollBox refresh semantics, but reuse immutable
+    -- element data instead of allocating a wrapper for every row on each refresh.
     local dataProvider = _G.CreateDataProvider()
     for index = 1, #rows do
         local row = rows[index]
-        dataProvider:Insert({
-            index = index,
-            row = row,
-            achievementID = row.achievementID,
-        })
+        dataProvider:Insert(row)
     end
 
     panel.ScrollBox:SetDataProvider(dataProvider)
@@ -722,7 +701,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Public UI Methods
 ----------------------------------------------------------------------------------------
-function EncounterAchievements:IsSupportedContentTab(tabID)
+function AdventureGuideInstances:IsSupportedContentTab(tabID)
     local journal = _G.EncounterJournal
     if not journal then
         return false
@@ -739,7 +718,7 @@ function EncounterAchievements:IsSupportedContentTab(tabID)
     return selectedTabID == dungeonTabID or selectedTabID == raidTabID
 end
 
-function EncounterAchievements:UpdateCustomTabAvailability()
+function AdventureGuideInstances:UpdateCustomTabAvailability()
     self:EnsureUI()
 
     local journal, encounterFrame, _ = GetEncounterFrames()
@@ -767,7 +746,7 @@ function EncounterAchievements:UpdateCustomTabAvailability()
     end
 end
 
-function EncounterAchievements:ActivateCustomTab()
+function AdventureGuideInstances:ActivateCustomTab()
     if not self.customTabAvailable then
         return
     end
@@ -788,7 +767,7 @@ function EncounterAchievements:ActivateCustomTab()
     self:RefreshCustomTabContent()
 end
 
-function EncounterAchievements:DeactivateCustomTab()
+function AdventureGuideInstances:DeactivateCustomTab()
     if not self.customTabActive then
         self:SetCustomTabSelected(false)
         if self.customPanel then
@@ -805,14 +784,14 @@ function EncounterAchievements:DeactivateCustomTab()
         self.customPanel:Hide()
     end
 
-    if self.CancelPendingInstanceRowBuilds then
+    if self.CancelPendingInstanceRowBuilds and not self:IsCompletionVisible() then
         self:CancelPendingInstanceRowBuilds()
     end
 
     self:ShowNativeEncounterContent()
 end
 
-function EncounterAchievements:RefreshCustomTabContent()
+function AdventureGuideInstances:RefreshCustomTabContent()
     if not self.customTabActive then
         return
     end
@@ -852,6 +831,10 @@ function EncounterAchievements:RefreshCustomTabContent()
                     self:RefreshCustomTabContent()
                 end
             end)
+            -- The no-timer path can complete and render inside the callback.
+            if self:GetCachedInstanceAchievementRows(instanceID) then
+                return
+            end
         end
 
         self:SetPanelHeader(instanceName, 0, nil)
@@ -890,9 +873,16 @@ function EncounterAchievements:RefreshCustomTabContent()
                 self.pendingAchievementUILoadFromTab = true
                 _G.C_Timer.After(0, function()
                     self.pendingAchievementUILoadFromTab = false
-                    self:EnsureAchievementUILoaded()
+                    if not self.customTabActive then
+                        return
+                    end
+                    local loaded = self:EnsureAchievementUILoaded()
                     if self.customTabActive and self.currentInstanceID == instanceID then
-                        self:RefreshCustomTabContent()
+                        if loaded then
+                            self:RefreshCustomTabContent()
+                        else
+                            self:SetPanelEmptyState(EMPTY_STATE_NO_UI, true)
+                        end
                     end
                 end)
             end
@@ -911,7 +901,7 @@ function EncounterAchievements:RefreshCustomTabContent()
     self:PopulateAchievementRows(filteredRows, instanceID)
 end
 
-function EncounterAchievements:OnAchievementsTabClicked()
+function AdventureGuideInstances:OnAchievementsTabClicked()
     if not self.customTabAvailable then
         return
     end

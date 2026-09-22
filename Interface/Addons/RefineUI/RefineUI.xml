@@ -29,6 +29,12 @@
     <Script file="Core\Scheduler.lua"/>
     <Script file="Core\Style.lua"/>
     <Script file="Core\Commands.lua"/>
+    <Script file="Core\JournalCache.lua"/>
+    <Script file="Core\Collections.lua"/>
+    <Script file="Core\InstanceAchievements.lua"/>
+    <Script file="Core\InstanceCompletion.lua"/>
+    <Script file="Core\TokenAppearanceData.lua"/>
+    <Script file="Core\TokenAppearances.lua"/>
     <!-- Modules -->
     <Include file="Modules\!Modules.xml"/>
 </Ui>

@@ -31,7 +31,6 @@ local ACTION_BARS_SKINNED_BUTTONS_REGISTRY = "ActionBarsSkinnedButtons"
 local ACTION_BARS_BUTTON_BAR_KEY_REGISTRY = "ActionBarsButtonBarKey"
 local ACTION_BARS_ACTION_BUTTONS_REGISTRY = "ActionBarsActionButtons"
 local ACTION_BARS_PAGED_BUTTONS_REGISTRY = "ActionBarsPagedButtons"
-local ACTION_BARS_STATEFUL_BUTTONS_REGISTRY = "ActionBarsStatefulButtons"
 local ACTION_BARS_PET_BUTTONS_REGISTRY = "ActionBarsPetButtons"
 local ACTION_BARS_STANCE_BUTTONS_REGISTRY = "ActionBarsStanceButtons"
 
@@ -52,6 +51,7 @@ local BAR_KEY_TO_PREFIX = {
     MultiBar7 = "MultiBar7Button",
     PetActionBar = "PetActionButton",
     StanceBar = "StanceButton",
+    ExtraAction = "ExtraActionButton",
 }
 
 local BUTTON_GROUPS = {
@@ -96,28 +96,16 @@ private.SkinnedButtons = private.SkinnedButtons or RefineUI:CreateDataRegistry(A
 private.ButtonBarKeyCache = private.ButtonBarKeyCache or RefineUI:CreateDataRegistry(ACTION_BARS_BUTTON_BAR_KEY_REGISTRY, "k")
 private.ActionButtons = private.ActionButtons or RefineUI:CreateDataRegistry(ACTION_BARS_ACTION_BUTTONS_REGISTRY, "k")
 private.PagedButtons = private.PagedButtons or RefineUI:CreateDataRegistry(ACTION_BARS_PAGED_BUTTONS_REGISTRY, "k")
-private.StateTrackedButtons = private.StateTrackedButtons or RefineUI:CreateDataRegistry(ACTION_BARS_STATEFUL_BUTTONS_REGISTRY, "k")
 private.PetButtons = private.PetButtons or RefineUI:CreateDataRegistry(ACTION_BARS_PET_BUTTONS_REGISTRY, "k")
 private.StanceButtons = private.StanceButtons or RefineUI:CreateDataRegistry(ACTION_BARS_STANCE_BUTTONS_REGISTRY, "k")
 private.DeferredManager = private.DeferredManager or {
     PressButtons = {},
     CooldownButtons = {},
     StateButtons = {},
-    UsabilityButtons = {},
     RangeButtons = {},
-}
-private.ActionResyncDebug = private.ActionResyncDebug or {
-    queued = 0,
-    executed = 0,
-    totalButtonsTouched = 0,
-    lastReason = nil,
-    fullPasses = 0,
-    cooldownPasses = 0,
-    rangePasses = 0,
 }
 private.actionbarsSetup = private.actionbarsSetup or false
 private.deferredFlushScheduled = private.deferredFlushScheduled or false
-private.fullResyncPendingSetup = private.fullResyncPendingSetup or false
 private.pendingActionSlotRefresh = private.pendingActionSlotRefresh or {}
 private.pendingActionPageRefresh = private.pendingActionPageRefresh or false
 private.pendingAllActionRefresh = private.pendingAllActionRefresh or false
@@ -146,8 +134,6 @@ private.COOLDOWN_VISUAL = {
     normalAlpha = 0.25,
     alphaStep = 0.01,
 }
-
-ActionBars.SkinnedButtons = private.SkinnedButtons
 
 ----------------------------------------------------------------------------------------
 -- Shared Helpers
@@ -225,8 +211,6 @@ function private.RegisterButtonCollections(button)
         return
     end
 
-    private.StateTrackedButtons[button] = true
-
     if barKey == BAR_KEY.PET then
         private.PetButtons[button] = true
         return
@@ -244,8 +228,8 @@ function private.RegisterButtonCollections(button)
 end
 
 function private.RefreshButton(button, refreshCooldown, refreshState, forceState, hasTarget)
-    if not button or not button:IsVisible() then
-        return false
+    if not button:IsVisible() then
+        return
     end
 
     if refreshCooldown then
@@ -254,64 +238,25 @@ function private.RefreshButton(button, refreshCooldown, refreshState, forceState
     if refreshState then
         private.RefreshButtonState(button, forceState == true, hasTarget)
     end
-
-    return true
 end
 
 function private.RefreshButtonCollection(buttons, refreshCooldown, refreshState, forceState)
-    if not buttons or not next(buttons) then
-        return 0
+    if not next(buttons) then
+        return
     end
 
-    local hasTargetValue
-    local touched = 0
+    local hasTarget = refreshState and UnitExists("target")
     for button in pairs(buttons) do
-        if refreshState and hasTargetValue == nil and button and button:IsVisible() then
-            hasTargetValue = UnitExists("target")
-        end
-
-        if private.RefreshButton(button, refreshCooldown, refreshState, forceState, hasTargetValue) then
-            touched = touched + 1
-        end
+        private.RefreshButton(button, refreshCooldown, refreshState, forceState, hasTarget)
     end
-
-    return touched
-end
-
-function private.RefreshButtonUsabilityCollection(buttons, forceState)
-    if not buttons or not next(buttons) then
-        return 0
-    end
-
-    local touched = 0
-    for button in pairs(buttons) do
-        if button and button:IsVisible() then
-            private.RefreshButtonUsability(button, forceState == true)
-            touched = touched + 1
-        end
-    end
-
-    return touched
 end
 
 function private.RefreshButtonRangeCollection(buttons, forceState, hasTarget)
-    if not buttons or not next(buttons) then
-        return 0
-    end
-
-    local hasTargetValue = hasTarget
-    local touched = 0
     for button in pairs(buttons) do
-        if button and button:IsVisible() then
-            if hasTargetValue == nil then
-                hasTargetValue = UnitExists("target")
-            end
-            private.RefreshButtonRange(button, forceState == true, hasTargetValue)
-            touched = touched + 1
+        if button:IsVisible() then
+            private.RefreshButtonRange(button, forceState == true, hasTarget)
         end
     end
-
-    return touched
 end
 
 function private.IsHotkeyEnabledForButton(button)
@@ -328,6 +273,16 @@ function private.IsHotkeyEnabledForButton(button)
     return db.ShowHotkeys[barKey] == true
 end
 
+function private.ApplyHotkeyVisibility(button, hotkey)
+    if private.IsHotkeyEnabledForButton(button) then
+        hotkey:SetAlpha(1)
+        hotkey:Show()
+    else
+        hotkey:SetAlpha(0)
+        hotkey:Hide()
+    end
+end
+
 function private.ForEachButtonCooldownFrame(button, callback)
     if not button or not callback then
         return
@@ -342,8 +297,4 @@ function private.ForEachButtonCooldownFrame(button, callback)
     if button.lossOfControlCooldown then
         callback(button.lossOfControlCooldown, "lossOfControlCooldown")
     end
-end
-
-function private.IsActionResyncDebugEnabled()
-    return type(RefineUI.IsObservabilityEnabled) == "function" and RefineUI:IsObservabilityEnabled()
 end

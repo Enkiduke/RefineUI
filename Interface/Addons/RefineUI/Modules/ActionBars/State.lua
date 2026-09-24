@@ -13,8 +13,9 @@ end
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local C_ActionBar = C_ActionBar
-local C_CurveUtil = C_CurveUtil
-local Enum = Enum
+local C_Spell = C_Spell
+local C_Timer = C_Timer
+local GetPetActionCooldown = GetPetActionCooldown
 local GetPetActionInfo = GetPetActionInfo
 local GetPetActionSlotUsable = GetPetActionSlotUsable
 local GetShapeshiftFormInfo = GetShapeshiftFormInfo
@@ -28,19 +29,13 @@ local math_abs, next, pairs, type, wipe = math.abs, next, pairs, type, wipe
 ----------------------------------------------------------------------------------------
 local private = ActionBars.Private
 local visual = private.COOLDOWN_VISUAL
-local COOLDOWN_TIME_MULTIPLIER = 1000
-local AlphaCurve = C_CurveUtil.CreateCurve()
-AlphaCurve:SetType(Enum.LuaCurveType.Linear)
-AlphaCurve:AddPoint(0, 1)
-AlphaCurve:AddPoint(visual.gcdDuration, visual.normalAlpha)
-AlphaCurve:AddPoint(3600, visual.normalAlpha)
+local GCD_SPELL_ID = 61304
 
 local COOLDOWN_FRAME_MASK = {
     NORMAL = 1,
     CHARGE = 2,
     LOSS_OF_CONTROL = 4,
 }
-local DEFERRED_FLUSH_TIMER_KEY = "ActionBars:DeferredFlush"
 
 local function IsCooldownFrameVisible(frame)
     return frame and frame.IsShown and frame:IsShown()
@@ -72,46 +67,43 @@ local function IsCooldownVisualExcluded(button)
     return private.GetBarKeyForButton(button) == private.BAR_KEY.STANCE
 end
 
-local function GetCooldownRemainingSeconds(frame)
-    if not frame or not frame.GetCooldownTimes then
-        return nil, nil, nil
+-- Read timing from the cooldown APIs, not the Blizzard cooldown frame: once combat feeds
+-- the frame secret values, its Cooldown secret aspect sticks until SetToDefaults().
+local function GetCooldownRemainingSeconds(button)
+    local startTime, duration, isOnGCD
+    if button.action then
+        local info = C_ActionBar.GetActionCooldown(button.action)
+        if info then
+            startTime, duration, isOnGCD = info.startTime, info.duration, info.isOnGCD
+        end
+    elseif private.GetBarKeyForButton(button) == private.BAR_KEY.PET then
+        startTime, duration = GetPetActionCooldown(button:GetID())
     end
 
-    local okTimes, startTime, duration = pcall(frame.GetCooldownTimes, frame)
-    if not okTimes then
-        return nil, nil, nil
+    if isOnGCD and (RefineUI:IsSecretValue(startTime) or RefineUI:IsSecretValue(duration)) then
+        local info = C_Spell.GetSpellCooldown(GCD_SPELL_ID)
+        if info then
+            startTime, duration = info.startTime, info.duration
+        end
     end
 
-    if RefineUI:IsSecretValue(startTime) or RefineUI:IsSecretValue(duration) then
-        return nil, nil, nil
+    if RefineUI:IsSecretValue(startTime) or RefineUI:IsSecretValue(duration)
+        or type(startTime) ~= "number" or type(duration) ~= "number" or duration <= 0 then
+        return nil, nil
     end
 
-    if type(startTime) ~= "number" or type(duration) ~= "number" or duration <= 0 then
-        return nil, nil, nil
-    end
-
-    local remaining = (startTime + duration) - (GetTime() * COOLDOWN_TIME_MULTIPLIER)
+    local remaining = (startTime + duration) - GetTime()
     if remaining <= 0 then
-        return 0, startTime, duration / COOLDOWN_TIME_MULTIPLIER
+        return 0, startTime
     end
 
-    return remaining / COOLDOWN_TIME_MULTIPLIER, startTime, duration / COOLDOWN_TIME_MULTIPLIER
-end
-
-local function ClearTableEntries(map)
-    if wipe then
-        wipe(map)
-        return
-    end
-    for key in pairs(map) do
-        map[key] = nil
-    end
+    return remaining, startTime
 end
 
 local function ClearPendingActionRefresh()
     private.pendingAllActionRefresh = false
     private.pendingActionPageRefresh = false
-    ClearTableEntries(private.pendingActionSlotRefresh)
+    wipe(private.pendingActionSlotRefresh)
 end
 
 ----------------------------------------------------------------------------------------
@@ -119,12 +111,6 @@ end
 ----------------------------------------------------------------------------------------
 local function SetButtonCooldownAlpha(button, alpha)
     if not button or not button.icon then
-        return
-    end
-
-    if type(RefineUI.IsSecretValue) == "function" and RefineUI:IsSecretValue(alpha) then
-        button.icon:SetAlpha(alpha)
-        private.GetButtonState(button).lastCooldownAlpha = nil
         return
     end
 
@@ -138,42 +124,14 @@ local function SetButtonCooldownAlpha(button, alpha)
     state.lastCooldownAlpha = alpha
 end
 
-local function TryApplyDurationObjectAlpha(button, state, frameMask, previousMask, previousMode)
-    if not button or not button.action or not C_ActionBar or not C_ActionBar.GetActionCooldownDuration then
-        return nil
-    end
-
-    local cooldownDuration = C_ActionBar.GetActionCooldownDuration(button.action)
-    if not cooldownDuration or not cooldownDuration.EvaluateRemainingDuration then
-        return nil
-    end
-
-    local alpha = cooldownDuration:EvaluateRemainingDuration(AlphaCurve)
-    local mode = "durationObject"
-    if previousMask == frameMask and previousMode == mode then
-        local lastAlpha = state.lastCooldownAlpha
-        if lastAlpha and not RefineUI:IsSecretValue(alpha) and math_abs(lastAlpha - alpha) < visual.alphaEpsilon then
-            return true, false
-        end
-    end
-
-    SetButtonCooldownAlpha(button, alpha)
-    state.cooldownVisualMode = mode
-    return true, true
-end
-
 local function ResetButtonCooldownVisual(button, hideShade)
     if not button then
         return
     end
     local state = private.GetButtonState(button)
-    if private.StopCooldownIconFade then
-        private.StopCooldownIconFade(button)
-    end
-    if button.icon then
-        SetButtonCooldownAlpha(button, 1)
-    end
-    if hideShade and private.SetCooldownShadeVisible then
+    private.StopCooldownIconFade(button)
+    SetButtonCooldownAlpha(button, 1)
+    if hideShade then
         private.SetCooldownShadeVisible(button, false)
     end
     state.cooldownFadeToken = nil
@@ -189,16 +147,13 @@ function private.UpdateCooldownState(button, frameMask)
     frameMask = frameMask or GetCooldownFrameMask(button)
     local previousMask = state.cooldownFrameMask
     local previousMode = state.cooldownVisualMode
-    local normalShown = HasCooldownFrameFlag(frameMask, COOLDOWN_FRAME_MASK.NORMAL)
-    local chargeShown = HasCooldownFrameFlag(frameMask, COOLDOWN_FRAME_MASK.CHARGE)
-    local locShown = HasCooldownFrameFlag(frameMask, COOLDOWN_FRAME_MASK.LOSS_OF_CONTROL)
     state.cooldownFrameMask = frameMask
 
-    if not normalShown and not chargeShown and not locShown then
+    if IsResetCooldownMask(frameMask) then
         if previousMask == frameMask and previousMode == "reset" then
             return false, false
         end
-        if previousMode == "fade" and private.StopCooldownIconFade then
+        if previousMode == "fade" then
             private.StopCooldownIconFade(button)
         end
         SetButtonCooldownAlpha(button, 1)
@@ -207,38 +162,21 @@ function private.UpdateCooldownState(button, frameMask)
         return false, true
     end
 
-    if chargeShown and not normalShown and not locShown then
-        if previousMask == frameMask and previousMode == "reset" then
-            return false, false
-        end
-        if previousMode == "fade" and private.StopCooldownIconFade then
-            private.StopCooldownIconFade(button)
-        end
-        SetButtonCooldownAlpha(button, 1)
-        state.cooldownFadeToken = nil
-        state.cooldownVisualMode = "reset"
-        return false, true
-    end
-
-    if normalShown then
-        local remainingSeconds, startTime = GetCooldownRemainingSeconds(button.cooldown)
+    if HasCooldownFrameFlag(frameMask, COOLDOWN_FRAME_MASK.NORMAL) then
+        local remainingSeconds, startTime = GetCooldownRemainingSeconds(button)
         if remainingSeconds and remainingSeconds > 0 then
             if remainingSeconds <= visual.gcdDuration then
                 if previousMask == frameMask and previousMode == "fade" and state.cooldownFadeToken == startTime then
                     return true, false
                 end
 
-                if private.StartCooldownIconFade then
-                    private.StartCooldownIconFade(button, remainingSeconds)
-                else
-                    SetButtonCooldownAlpha(button, visual.normalAlpha)
-                end
+                private.StartCooldownIconFade(button, remainingSeconds)
                 state.cooldownFadeToken = startTime
                 state.cooldownVisualMode = "fade"
                 return true, true
             end
 
-            if previousMode == "fade" and private.StopCooldownIconFade then
+            if previousMode == "fade" then
                 private.StopCooldownIconFade(button)
             end
             state.cooldownFadeToken = nil
@@ -251,24 +189,13 @@ function private.UpdateCooldownState(button, frameMask)
             state.cooldownVisualMode = "hold"
             return true, true
         end
-
-        if remainingSeconds == nil then
-            if previousMode == "fade" and private.StopCooldownIconFade then
-                private.StopCooldownIconFade(button)
-            end
-            state.cooldownFadeToken = nil
-            local hasVisual, changed = TryApplyDurationObjectAlpha(button, state, frameMask, previousMask, previousMode)
-            if hasVisual ~= nil then
-                return hasVisual, changed
-            end
-        end
     end
 
     if previousMask == frameMask and previousMode == "normal" then
         return true, false
     end
 
-    if previousMode == "fade" and private.StopCooldownIconFade then
+    if previousMode == "fade" then
         private.StopCooldownIconFade(button)
     end
     SetButtonCooldownAlpha(button, visual.normalAlpha)
@@ -294,12 +221,7 @@ function private.HandleButtonCooldownUpdate(button, frameMask)
         end
         return
     end
-    if private.SetCooldownShadeVisible then
-        private.SetCooldownShadeVisible(button, true)
-    end
-    if changed and private.IsActionResyncDebugEnabled() then
-        private.ActionResyncDebug.cooldownPasses = private.ActionResyncDebug.cooldownPasses + 1
-    end
+    private.SetCooldownShadeVisible(button, true)
 end
 
 ----------------------------------------------------------------------------------------
@@ -423,12 +345,7 @@ function private.RefreshButtonUsability(button, force, isUsable, notEnoughMana)
         return
     end
 
-    local state = private.GetButtonState(button)
-    if isUsable ~= nil or notEnoughMana ~= nil then
-        state.usabilityState = GetExplicitUsabilityState(button, isUsable, notEnoughMana)
-    else
-        state.usabilityState = GetButtonUsabilityState(button)
-    end
+    private.GetButtonState(button).usabilityState = GetExplicitUsabilityState(button, isUsable, notEnoughMana)
     ApplyResolvedRenderState(button, force)
 end
 
@@ -449,10 +366,6 @@ function private.ApplyRangeIndicatorState(button, checksRange, inRange)
     local state = private.GetButtonState(button)
     state.rangeState = (checksRange and inRange == false) and "oor" or "normal"
     ApplyResolvedRenderState(button, false)
-
-    if private.IsActionResyncDebugEnabled() then
-        private.ActionResyncDebug.rangePasses = private.ActionResyncDebug.rangePasses + 1
-    end
 end
 
 ----------------------------------------------------------------------------------------
@@ -499,26 +412,6 @@ function private.FlushDeferredUpdates()
         button = next(deferred.StateButtons)
     end
 
-    button = next(deferred.UsabilityButtons)
-    while button do
-        deferred.UsabilityButtons[button] = nil
-        local state = private.ButtonState[button]
-        if button:IsVisible() then
-            local pendingIsUsable
-            local pendingNotEnoughMana
-            if state then
-                pendingIsUsable = state.pendingUsabilityIsUsable
-                pendingNotEnoughMana = state.pendingUsabilityNotEnoughMana
-            end
-            private.RefreshButtonUsability(button, true, pendingIsUsable, pendingNotEnoughMana)
-        end
-        if state then
-            state.pendingUsabilityIsUsable = nil
-            state.pendingUsabilityNotEnoughMana = nil
-        end
-        button = next(deferred.UsabilityButtons)
-    end
-
     button = next(deferred.RangeButtons)
     while button do
         deferred.RangeButtons[button] = nil
@@ -538,7 +431,7 @@ function private.ScheduleDeferredFlush()
     end
 
     private.deferredFlushScheduled = true
-    RefineUI:After(DEFERRED_FLUSH_TIMER_KEY, 0, RunDeferredFlush)
+    C_Timer.After(0, RunDeferredFlush)
 end
 
 function private.QueueDeferredPress(button, pressed)
@@ -577,39 +470,10 @@ function private.QueueDeferredStateUpdate(button)
         return
     end
     local state = private.GetButtonState(button)
-    private.DeferredManager.UsabilityButtons[button] = nil
     private.DeferredManager.RangeButtons[button] = nil
-    state.pendingUsabilityIsUsable = nil
-    state.pendingUsabilityNotEnoughMana = nil
     state.pendingRangeChecks = nil
     state.pendingRangeInRange = nil
     private.DeferredManager.StateButtons[button] = true
-    private.ScheduleDeferredFlush()
-end
-
-function private.QueueDeferredUsabilityUpdate(button, isUsable, notEnoughMana)
-    if not button or not private.SkinnedButtons[button] or private.DeferredManager.StateButtons[button] then
-        return
-    end
-
-    local nextUsabilityState = GetExplicitUsabilityState(button, isUsable, notEnoughMana)
-    local state = private.GetButtonState(button)
-    if private.DeferredManager.UsabilityButtons[button]
-        and state.pendingUsabilityIsUsable == isUsable
-        and state.pendingUsabilityNotEnoughMana == notEnoughMana then
-        return
-    end
-
-    if state.usabilityState == nextUsabilityState then
-        private.DeferredManager.UsabilityButtons[button] = nil
-        state.pendingUsabilityIsUsable = nil
-        state.pendingUsabilityNotEnoughMana = nil
-        return
-    end
-
-    state.pendingUsabilityIsUsable = isUsable
-    state.pendingUsabilityNotEnoughMana = notEnoughMana
-    private.DeferredManager.UsabilityButtons[button] = true
     private.ScheduleDeferredFlush()
 end
 
@@ -651,12 +515,12 @@ function ActionBars:RunActionButtonRefresh()
     private.pendingAllActionRefresh = false
     private.pendingActionPageRefresh = false
     if not private.actionbarsSetup or not next(private.ActionButtons) then
-        ClearTableEntries(pendingSlots)
+        wipe(pendingSlots)
         return
     end
     if refreshAll then
         private.RefreshButtonCollection(private.ActionButtons, true, true, true)
-        ClearTableEntries(pendingSlots)
+        wipe(pendingSlots)
         return
     end
     local hasTarget
@@ -680,7 +544,7 @@ function ActionBars:RunActionButtonRefresh()
         end
     end
 
-    ClearTableEntries(pendingSlots)
+    wipe(pendingSlots)
 end
 
 local function RunQueuedActionButtonRefresh()
@@ -706,63 +570,22 @@ end
 local function RunQueuedFullResync()
     ActionBars:RunFullResync()
 end
-function ActionBars:GetActionResyncDebugSnapshot()
-    local debugState = private.ActionResyncDebug
-    local averageButtonsTouched = 0
-    if debugState.executed > 0 then
-        averageButtonsTouched = debugState.totalButtonsTouched / debugState.executed
-    end
-
-    return {
-        queued = debugState.queued,
-        executed = debugState.executed,
-        averageButtonsTouched = averageButtonsTouched,
-        lastReason = debugState.lastReason,
-        fullPasses = debugState.fullPasses,
-        cooldownPasses = debugState.cooldownPasses,
-        rangePasses = debugState.rangePasses,
-    }
-end
 
 function ActionBars:RunFullResync()
+    if not private.actionbarsSetup then
+        return
+    end
+    private.RefreshButtonCollection(private.SkinnedButtons, true, true, true)
+end
+
+function ActionBars:QueueFullResync()
     if not private.actionbarsSetup or not next(private.SkinnedButtons) then
         return
     end
-    local debugEnabled = private.IsActionResyncDebugEnabled()
-    local touched = private.RefreshButtonCollection(private.SkinnedButtons, true, true, true)
-    if debugEnabled then
-        local debugState = private.ActionResyncDebug
-        debugState.executed = debugState.executed + 1
-        debugState.totalButtonsTouched = debugState.totalButtonsTouched + touched
-        debugState.fullPasses = debugState.fullPasses + 1
-    end
-end
 
-function ActionBars:QueueFullResync(reason)
-    if not private.actionbarsSetup then
-        private.fullResyncPendingSetup = true
-        return
-    end
-
-    if not next(private.SkinnedButtons) then
-        return
-    end
-
-    if private.IsActionResyncDebugEnabled() then
-        local debugState = private.ActionResyncDebug
-        debugState.queued = debugState.queued + 1
-        debugState.lastReason = reason or "UNKNOWN"
-    end
     RefineUI:CancelDebounce(private.DEBOUNCE_KEY.ACTION_BUTTON_REFRESH)
     ClearPendingActionRefresh()
     RefineUI:Debounce(private.DEBOUNCE_KEY.FULL_RESYNC, private.ACTION_FULL_RESYNC_DEBOUNCE, RunQueuedFullResync)
-end
-
-function ActionBars:RefreshAllButtonStates(force)
-    if not private.actionbarsSetup or not next(private.StateTrackedButtons) then
-        return
-    end
-    private.RefreshButtonCollection(private.StateTrackedButtons, false, true, force == true)
 end
 
 function ActionBars:RefreshCombatButtonStates(force)
@@ -770,11 +593,8 @@ function ActionBars:RefreshCombatButtonStates(force)
         return
     end
 
-    local hasTarget = UnitExists("target")
-    private.RefreshButtonUsabilityCollection(private.ActionButtons, force == true)
-    private.RefreshButtonRangeCollection(private.ActionButtons, force == true, hasTarget)
-    private.RefreshButtonUsabilityCollection(private.PetButtons, force == true)
-    private.RefreshButtonRangeCollection(private.PetButtons, force == true, hasTarget)
+    private.RefreshButtonCollection(private.ActionButtons, false, true, force)
+    private.RefreshButtonCollection(private.PetButtons, false, true, force)
 end
 
 function ActionBars:RefreshTargetButtonRanges(force)

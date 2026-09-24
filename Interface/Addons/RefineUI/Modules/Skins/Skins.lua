@@ -3,7 +3,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local Skins = RefineUI:RegisterModule("Skins")
+local Skins = RefineUI:RegisterModule("Skins", "Skins")
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases

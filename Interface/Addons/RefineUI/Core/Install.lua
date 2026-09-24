@@ -122,21 +122,6 @@ local function HasAnyManagedLayout()
     return false
 end
 
-local function GetManagedLayoutTierByName(layoutName)
-    local managedLayoutNames = RefineUI.ManagedLayoutNames
-    if type(layoutName) ~= "string" or type(managedLayoutNames) ~= "table" then
-        return nil
-    end
-
-    for tierKey, managedName in pairs(managedLayoutNames) do
-        if managedName == layoutName then
-            return tierKey
-        end
-    end
-
-    return nil
-end
-
 function Install:GetDB()
     return RefineUI.DB
 end
@@ -320,7 +305,7 @@ end
 
 function Install:RestoreDefaults()
     local db = self:GetDB()
-    local defaults = RefineUI.DefaultConfig or RefineUI.Defaults
+    local defaults = RefineUI.DefaultConfig
     if not db or not defaults then
         return false, "Defaults are not available."
     end
@@ -567,7 +552,7 @@ function Install:CheckInstalledLayout()
         return
     end
 
-    local activeTier = GetManagedLayoutTierByName(activeLayout)
+    local activeTier = RefineUI:GetManagedLayoutTier(activeLayout)
     EditMode:EnsureRefineUILayout(false, false, {
         onBlocked = function()
             -- Login while in combat can delay layout verification until later.

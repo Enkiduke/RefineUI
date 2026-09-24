@@ -300,18 +300,22 @@ function RefineUI:GetLayoutDefaults(tierKey)
     return CopyLayoutDefaults(defaults)
 end
 
-function RefineUI:IsManagedLayoutName(layoutName)
+function RefineUI:GetManagedLayoutTier(layoutName)
     if type(layoutName) ~= "string" or layoutName == "" then
-        return false
+        return nil
     end
 
-    for _, managedName in pairs(MANAGED_LAYOUT_NAME) do
+    for tierKey, managedName in pairs(MANAGED_LAYOUT_NAME) do
         if managedName == layoutName then
-            return true
+            return tierKey
         end
     end
 
-    return false
+    return nil
+end
+
+function RefineUI:IsManagedLayoutName(layoutName)
+    return self:GetManagedLayoutTier(layoutName) ~= nil
 end
 
 function RefineUI:GetLayoutTierFromDimensions(width, height)

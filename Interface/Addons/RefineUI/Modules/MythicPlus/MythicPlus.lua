@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local MythicPlus = RefineUI:RegisterModule("MythicPlus")
+local MythicPlus = RefineUI:RegisterModule("MythicPlus", "MythicPlus")
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues

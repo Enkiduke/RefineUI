@@ -19,9 +19,12 @@ local wipe = wipe
 ----------------------------------------------------------------------------------------
 -- State
 ----------------------------------------------------------------------------------------
-local eventFrame = CreateFrame("Frame")
+local eventFrame = CreateFrame("Frame") -- unfiltered events for global callbacks
 local handlers = {}  -- handlers[event] = { map = {}, count = 0, ordered = {}, dirty = false }
 local unitHandlers = {} -- unitHandlers[event] = { map = { [unitToken] = bucket }, count = 0 }
+-- unitFrames[unitToken] = frame using RegisterUnitEvent, so the client drops other
+-- units' events before Lua runs. One frame per token: a frame filters at most two units.
+local unitFrames = {}
 
 RefineUI.Observability = RefineUI.Observability or {
     enabled = false,
@@ -103,10 +106,6 @@ local function getEventListenerCount(event)
     end
 
     return count
-end
-
-local function hasHandlers(event)
-    return getEventListenerCount(event) > 0
 end
 
 local function incrementCounter(map, key)
@@ -210,8 +209,7 @@ end
 
 local function dispatch(_, event, ...)
     local bucket = handlers[event]
-    local unitState = unitHandlers[event]
-    if (not bucket or bucket.count == 0) and (not unitState or unitState.count == 0) then
+    if not bucket or bucket.count == 0 then
         return
     end
 
@@ -220,22 +218,33 @@ local function dispatch(_, event, ...)
     end
 
     dispatchBucket(bucket, event, ...)
-
-    if unitState and unitState.count > 0 then
-        local unitToken = ...
-        if type(unitToken) == "string" and (not issecretvalue or not issecretvalue(unitToken)) then
-            local unitBucket = unitState.map[unitToken]
-            if unitBucket and unitBucket.count > 0 then
-                if observability.enabled then
-                    incrementCounter(observability.events.fired, makeUnitEventKey(event, unitToken))
-                end
-                dispatchBucket(unitBucket, event, ...)
-            end
-        end
-    end
 end
 
 eventFrame:SetScript("OnEvent", dispatch)
+
+local function getUnitFrame(unitToken)
+    local frame = unitFrames[unitToken]
+    if frame then
+        return frame
+    end
+
+    frame = CreateFrame("Frame")
+    frame:SetScript("OnEvent", function(_, event, ...)
+        local unitState = unitHandlers[event]
+        local bucket = unitState and unitState.map[unitToken]
+        if not bucket or bucket.count == 0 then
+            return
+        end
+
+        if observability.enabled then
+            incrementCounter(observability.events.fired, makeUnitEventKey(event, unitToken))
+        end
+
+        dispatchBucket(bucket, event, ...)
+    end)
+    unitFrames[unitToken] = frame
+    return frame
+end
 
 ----------------------------------------------------------------------------------------
 -- Public API
@@ -250,7 +259,7 @@ function RefineUI:RegisterEventCallback(event, fn, key)
     if type(fn) ~= "function" or not event then return end
     key = key or tostring(fn)
 
-    if getEventListenerCount(event) == 0 then
+    if not handlers[event] then
         eventFrame:RegisterEvent(event)
     end
 
@@ -281,11 +290,11 @@ function RefineUI:RegisterUnitEventCallback(event, unitToken, fn, key)
     if type(unitToken) ~= "string" or unitToken == "" then return end
     key = key or tostring(fn)
 
-    if getEventListenerCount(event) == 0 then
-        eventFrame:RegisterEvent(event)
+    local bucket, unitState = getUnitBucket(event, unitToken, true)
+    if bucket.count == 0 then
+        getUnitFrame(unitToken):RegisterUnitEvent(event, unitToken)
     end
 
-    local bucket, unitState = getUnitBucket(event, unitToken, true)
     if bucket.map[key] == nil then
         bucket.count = bucket.count + 1
         unitState.count = unitState.count + 1
@@ -357,9 +366,7 @@ function RefineUI:OffEvent(event, key)
 
     if key == nil then
         handlers[event] = nil
-        if getEventListenerCount(event) <= 0 then
-            eventFrame:UnregisterEvent(event)
-        end
+        eventFrame:UnregisterEvent(event)
         if observability.enabled then
             trackHandlerCount(event)
         end
@@ -374,9 +381,7 @@ function RefineUI:OffEvent(event, key)
 
     if bucket.count <= 0 then
         handlers[event] = nil
-        if getEventListenerCount(event) <= 0 then
-            eventFrame:UnregisterEvent(event)
-        end
+        eventFrame:UnregisterEvent(event)
         if observability.enabled then
             trackHandlerCount(event)
         end
@@ -410,27 +415,17 @@ function RefineUI:OffUnitEvent(event, unitToken, key)
 
     if bucket.count <= 0 or key == nil then
         unitState.map[unitToken] = nil
+        unitFrames[unitToken]:UnregisterEvent(event)
     end
 
     if unitState.count <= 0 then
         unitHandlers[event] = nil
     end
 
-    if getEventListenerCount(event) <= 0 then
-        eventFrame:UnregisterEvent(event)
-    end
-
     if observability.enabled then
         trackHandlerCount(event)
         trackUnitHandlerCount(event, unitToken)
     end
-end
-
---- Check if an event has any handlers registered
--- @param event string The WoW event name
--- @return boolean
-function RefineUI:HasEventHandlers(event)
-    return hasHandlers(event)
 end
 
 local function copyTable(src)

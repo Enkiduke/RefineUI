@@ -3,7 +3,13 @@
 -- Description: Auto-confirms selected loot and delete confirmation dialogs.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
-local AutoConfirm = RefineUI:RegisterModule("AutoConfirm")
+local AutoConfirm = RefineUI:RegisterModule("AutoConfirm", function(cfg)
+    local loot = cfg.Loot
+    if type(loot) ~= "table" or loot.Enable == false then
+        return false
+    end
+    return loot.AutoConfirm ~= false
+end)
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)

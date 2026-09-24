@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local CDM = RefineUI:RegisterModule("CDM")
+local CDM = RefineUI:RegisterModule("CDM", "CDM")
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
@@ -111,12 +111,20 @@ end
 
 CDM.TRACKER_BUCKETS = { "Left", "Right", "Bottom", "Radial" }
 CDM.NOT_TRACKED_KEY = "NotTracked"
+CDM.EXTERNAL_CATEGORY_KEYS = {
+    TRINKETS = "Trinkets",
+    RACIALS = "Racials",
+    CONSUMABLES = "Consumables",
+}
 CDM.BUCKET_LABELS = {
     Left = "Left",
     Right = "Right",
     Bottom = "Bottom",
     Radial = "Radial",
-    NotTracked = "Not Tracked",
+    Trinkets = "Equipped Trinkets",
+    Racials = "Racial Abilities",
+    Consumables = "Combat Consumables",
+    NotTracked = "Spells/Buffs (Untracked)",
 }
 CDM.TRACKER_FRAME_NAMES = {
     Left = "RefineUI_CDM_LeftTracker",

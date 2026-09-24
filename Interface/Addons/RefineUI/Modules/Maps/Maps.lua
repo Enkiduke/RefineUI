@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local Maps = RefineUI:RegisterModule("Maps")
+local Maps = RefineUI:RegisterModule("Maps", "Maps")
 
 ----------------------------------------------------------------------------------------
 -- Lib Globals

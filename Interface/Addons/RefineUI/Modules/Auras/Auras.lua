@@ -1,5 +1,5 @@
 local _, RefineUI = ...
-local Auras = RefineUI:RegisterModule("Auras")
+local Auras = RefineUI:RegisterModule("Auras", "Auras")
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)

@@ -43,6 +43,10 @@ local tabFontHooked = setmetatable({}, { __mode = "k" })
 local tabColorHookInstalled = false
 local tabRefreshQueued = false
 local tabDockRefreshQueued = false
+-- Set when Blizzard restyles a tab. FCFDock_UpdateTabs recolors every docked tab
+-- when it does real work, but returns early (and is often called every frame from
+-- the dock's OnUpdate) when nothing changed.
+local tabsRestyled = false
 
 ----------------------------------------------------------------------------------------
 -- Helpers
@@ -128,12 +132,7 @@ local function ApplyTabFontStyle(tab)
     return fontString
 end
 
-local function UpdateTabTextColor(tab, selected)
-    local fontString = ApplyTabFontStyle(tab)
-    if not fontString then
-        return
-    end
-
+local function UpdateTabTextColor(fontString, selected)
     if selected then
         fontString:SetTextColor(TAB_GOLD_R, TAB_GOLD_G, TAB_GOLD_B)
     else
@@ -159,7 +158,7 @@ local function UpdateTabStyle(tab, selected)
         return
     end
 
-    UpdateTabTextColor(tab, selected)
+    UpdateTabTextColor(fontString, selected)
     ApplyTabVisibility(tab)
 end
 
@@ -209,6 +208,7 @@ local function InstallTabColorHook()
 
     tabColorHookInstalled = true
     RefineUI:HookOnce("Chat:Tabs:FCFTab_UpdateColors", "FCFTab_UpdateColors", function(tab, selected)
+        tabsRestyled = true
         UpdateTabStyle(tab, selected)
     end)
     RefineUI:HookOnce("Chat:Tabs:FCF_StartAlertFlash", "FCF_StartAlertFlash", function()
@@ -218,7 +218,10 @@ local function InstallTabColorHook()
         QueueRefreshTabs()
     end)
     RefineUI:HookOnce("Chat:Tabs:FCFDock_UpdateTabs", "FCFDock_UpdateTabs", function()
-        QueueRefreshTabs()
+        if tabsRestyled then
+            tabsRestyled = false
+            QueueRefreshTabs()
+        end
     end)
     RefineUI:HookOnce("Chat:Tabs:FCFDock_SelectWindow", "FCFDock_SelectWindow", function()
         QueueRefreshTabs()

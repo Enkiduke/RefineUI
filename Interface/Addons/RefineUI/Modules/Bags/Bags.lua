@@ -7,10 +7,6 @@ local _, RefineUI = ...
 local Bags = RefineUI:GetModule("Bags")
 if not Bags then return end
 
-if type(RefineUI.IsModuleStartupEnabled) == "function" and not RefineUI:IsModuleStartupEnabled("Bags") then
-    return
-end
-
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
@@ -1257,10 +1253,12 @@ function Bags.WarmSlotPool(desiredCount)
     end
 
     desiredCount = desiredCount or GetDesiredSlotPoolSize()
+    if slotCount >= desiredCount then return end
+
     local guard = desiredCount + 96
     local warmedSlots = {}
 
-    while #Bags.slotPool < desiredCount and guard > 0 do
+    while slotCount < desiredCount and guard > 0 do
         local slot = AcquireSlot()
         if not slot then break end
         table.insert(warmedSlots, slot)
@@ -1312,6 +1310,7 @@ local bagBindingFrame = CreateFrame("Frame", "RefineUI_BagsBindingRouter")
 local bagBindingRefreshPending = false
 local OpenBags
 local RequestUpdate
+local FlushQueuedBagRefresh
 local pendingRefreshOptions = {}
 
 local function ResolveBagSyncMode(requestedMode)
@@ -1341,6 +1340,12 @@ OpenBags = function()
     end
 
     local inCombat = InCombatLockdown()
+
+    -- Refreshes are deferred while hidden; build and render once on open.
+    if not inCombat and (Bags._snapshotDirty or Bags._pendingSnapshotRefresh) then
+        FlushQueuedBagRefresh()
+        return
+    end
 
     if Bags._snapshot and Bags.RenderBagSnapshot then
         Bags.RenderBagSnapshot(Frame, Bags._snapshot, {
@@ -1514,9 +1519,14 @@ local function InstallBlizzardBagHooks()
     InstallHook("Bags:CloseBag", "CloseBag", "close")
 end
 
-local function FlushQueuedBagRefresh()
+FlushQueuedBagRefresh = function()
     if RefineUI.CancelDebounce then
         RefineUI:CancelDebounce(BAG_REFRESH_DEBOUNCE_KEY)
+    end
+
+    -- Keep merged options pending until the bags open; the first snapshot still builds at login.
+    if not Frame:IsShown() and Bags._snapshot then
+        return
     end
 
     local refreshOpts = pendingRefreshOptions
@@ -1650,7 +1660,7 @@ local function OnBagEvent(event, ...)
     end
 end
 
-RefineUI:OnEvents({
+local BAG_EVENTS = {
     "PLAYER_ENTERING_WORLD",
     "PLAYER_REGEN_ENABLED",
     "UPDATE_BINDINGS",
@@ -1664,7 +1674,7 @@ RefineUI:OnEvents({
     "QUEST_REMOVED",
     "QUEST_TURNED_IN",
     "QUEST_LOG_UPDATE",
-}, OnBagEvent, BAG_EVENT_KEY_PREFIX)
+}
 
 ----------------------------------------------------------------------------------------
 -- Interaction
@@ -1762,9 +1772,30 @@ end
 -- Initialization
 ----------------------------------------------------------------------------------------
 
-table.insert(UISpecialFrames, "RefineUI_Bags")
+function Bags:OnEnable()
+    RefineUI:OnEvents(BAG_EVENTS, OnBagEvent, BAG_EVENT_KEY_PREFIX)
 
-SLASH_REFINEUIBAGS1 = "/bags"
-SlashCmdList["REFINEUIBAGS"] = function()
-    ToggleBags()
+    table.insert(UISpecialFrames, "RefineUI_Bags")
+
+    SLASH_REFINEUIBAGS1 = "/bags"
+    SlashCmdList["REFINEUIBAGS"] = function()
+        ToggleBags()
+    end
+
+    if Bags.InitializeEditMode then
+        Bags.InitializeEditMode()
+    end
+
+    if Bags.HookCategoryManagerToDialog then
+        Bags.HookCategoryManagerToDialog()
+        C_Timer.After(1, function()
+            Bags.HookCategoryManagerToDialog()
+        end)
+    end
+
+    if Bags.UpdateReagentWindowState then
+        C_Timer.After(0, function()
+            Bags.UpdateReagentWindowState()
+        end)
+    end
 end

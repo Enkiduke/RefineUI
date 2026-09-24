@@ -67,8 +67,23 @@ local function setJobEnabledState(job, enabled)
     return true
 end
 
+-- Tracked from regen events so combat-gated jobs do not keep OnUpdate alive
+-- while they cannot run. Predicate jobs are unknown until run and keep it alive.
+local inCombatState = InCombatLockdown()
+
+local function hasRunnableJob()
+    rebuildEnabledJobList()
+    for i = 1, #enabledJobList do
+        local job = enabledJobList[i]
+        if not (job.combatOnly and not inCombatState) and not (job.oocOnly and inCombatState) then
+            return true
+        end
+    end
+    return false
+end
+
 local function setFrameActiveIfNeeded()
-    if enabledJobCount > 0 then
+    if enabledJobCount > 0 and hasRunnableJob() then
         schedulerFrame:Show()
     else
         schedulerFrame:Hide()
@@ -237,5 +252,15 @@ function RefineUI:RunUpdateJobNow(key)
     runJob(job, 0)
     return true
 end
+
+RefineUI:RegisterEventCallback("PLAYER_REGEN_DISABLED", function()
+    inCombatState = true
+    setFrameActiveIfNeeded()
+end, "Core:Scheduler:RegenDisabled")
+
+RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
+    inCombatState = false
+    setFrameActiveIfNeeded()
+end, "Core:Scheduler:RegenEnabled")
 
 RefineUI.SchedulerFrame = schedulerFrame

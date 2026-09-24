@@ -3,7 +3,7 @@
 -- Description: Bag-adjacent settings button and loot settings context menu.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
-local LootSettings = RefineUI:RegisterModule("LootSettings")
+local LootSettings = RefineUI:RegisterModule("LootSettings", "Loot")
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)

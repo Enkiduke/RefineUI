@@ -4,7 +4,7 @@
 
 local _, RefineUI = ...
 
-local Chat = RefineUI:RegisterModule("Chat")
+local Chat = RefineUI:RegisterModule("Chat", "Chat")
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals

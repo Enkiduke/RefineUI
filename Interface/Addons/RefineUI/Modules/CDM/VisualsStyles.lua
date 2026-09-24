@@ -211,6 +211,31 @@ function CDM:GetDefaultBorderColor()
 end
 
 
+function CDM:GetCooldownDefaultBorderColor(cooldownID)
+    if not IsUsableCooldownID(cooldownID) then
+        return self:GetDefaultBorderColor()
+    end
+
+    if self.GetDefaultAbilityBorderColor then
+        local color = self:GetDefaultAbilityBorderColor(cooldownID)
+        if color then
+            return color
+        end
+
+        local info = ResolveCooldownInfo(nil, cooldownID)
+        local spellID = self.ResolveCooldownSpellID and self:ResolveCooldownSpellID(info)
+        if not IsSecret(spellID) and type(spellID) == "number" and spellID > 0 then
+            color = self:GetDefaultAbilityBorderColor(nil, spellID)
+            if color then
+                return color
+            end
+        end
+    end
+
+    return self:GetDefaultBorderColor()
+end
+
+
 function CDM:GetDefaultFontColor()
     return { 1, 1, 1, 1 }
 end
@@ -445,32 +470,27 @@ end
 
 
 function CDM:GetResolvedBorderColorForFrame(frame, cooldownID, layoutKey)
-    local defaultColor = self:GetDefaultBorderColor()
+    local neutralColor = self:GetDefaultBorderColor()
+    local defaultColor = self:GetCooldownDefaultBorderColor(cooldownID)
     local style = self:GetCooldownVisualStyle(cooldownID, layoutKey)
+    local resolvedColor = style and style.Border or defaultColor
 
     if not self:IsBlizzardSpellIconFrame(frame, cooldownID) then
-        if style and style.Border then
-            return style.Border
-        end
-        return defaultColor
-    end
-
-    if not style or not style.Border then
-        return defaultColor
+        return resolvedColor
     end
 
     if self:IsSpellSettingsItemFrame(frame, cooldownID) then
-        return style.Border
+        return resolvedColor
     end
 
     if self:IsCooldownSwipeShowing(frame) then
         if self:IsFrameOnGlobalCooldown(frame) then
-            return defaultColor
+            return neutralColor
         end
-        return style.Border
+        return resolvedColor
     end
 
-    return defaultColor
+    return neutralColor
 end
 
 
@@ -479,7 +499,7 @@ function CDM:GetCooldownBorderColor(cooldownID, layoutKey)
     if style and style.Border then
         return style.Border
     end
-    return self:GetDefaultBorderColor()
+    return self:GetCooldownDefaultBorderColor(cooldownID)
 end
 
 
@@ -595,7 +615,7 @@ function CDM:SetCooldownBorderColor(cooldownID, rgba, layoutKey)
     end
 
     local color = NormalizeColor(rgba)
-    local defaultColor = self:GetDefaultBorderColor()
+    local defaultColor = self:GetCooldownDefaultBorderColor(cooldownID)
     if ColorsEqual(color, defaultColor) then
         style.Border = nil
     else

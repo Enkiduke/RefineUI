@@ -1,9 +1,11 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
     <Script file="CDM.lua"/>
+    <Script file="AbilityBorderColors.lua"/>
     <Script file="Config.lua"/>
     <Script file="State.lua"/>
     <Script file="AssignmentsData.lua"/>
     <Script file="CooldownCatalog.lua"/>
+    <Script file="ExternalCooldowns.lua"/>
     <Script file="BlizzardSync.lua"/>
     <Script file="AuraProbePayload.lua"/>
     <Script file="RuntimeResolver.lua"/>

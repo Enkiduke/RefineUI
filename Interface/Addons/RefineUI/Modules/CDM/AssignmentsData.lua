@@ -272,6 +272,15 @@ function CDM:GetCooldownDisplayName(cooldownID)
     end
 
     local info = self:GetCooldownInfo(cooldownID)
+    if type(info) == "table"
+        and type(info.name) == "string"
+        and not (issecretvalue and issecretvalue(info.name))
+        and info.name ~= ""
+    then
+        cooldownDisplayNameCache[cooldownID] = info.name
+        return info.name
+    end
+
     local spellID = self:ResolveCooldownSpellID(info)
     local resolvedName = nil
     if type(spellID) == "number" and C_Spell and type(C_Spell.GetSpellName) == "function" then
@@ -365,11 +374,12 @@ function CDM:AssignCooldownToBucket(cooldownID, bucketName, destIndex, layoutKey
     if self.MarkAssignedCooldownSnapshotDirty then
         self:MarkAssignedCooldownSnapshotDirty()
     end
-    if self.MarkReloadRecommendationPending then
+    local isExternalCooldown = self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID)
+    if not isExternalCooldown and self.MarkReloadRecommendationPending then
         self:MarkReloadRecommendationPending()
     end
     if self.HandleAssignmentConfigurationChanged then
-        self:HandleAssignmentConfigurationChanged()
+        self:HandleAssignmentConfigurationChanged(cooldownID)
     end
     return true
 end
@@ -382,7 +392,8 @@ function CDM:UnassignCooldownID(cooldownID, layoutKey)
         local bucket = self.TRACKER_BUCKETS[i]
         changed = RemoveFromArray(scoped[bucket], cooldownID) or changed
     end
-    if changed and self.MarkReloadRecommendationPending then
+    local isExternalCooldown = self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID)
+    if changed and not isExternalCooldown and self.MarkReloadRecommendationPending then
         self:MarkReloadRecommendationPending()
     end
     if changed then
@@ -390,7 +401,7 @@ function CDM:UnassignCooldownID(cooldownID, layoutKey)
             self:MarkAssignedCooldownSnapshotDirty()
         end
         if self.HandleAssignmentConfigurationChanged then
-            self:HandleAssignmentConfigurationChanged()
+            self:HandleAssignmentConfigurationChanged(cooldownID)
         end
     end
     return changed
@@ -438,7 +449,8 @@ function CDM:PruneAssignments(layoutKey, validSet)
         local list = scoped[bucket]
         for n = #list, 1, -1 do
             local cooldownID = list[n]
-            if not validSet[cooldownID] then
+            local persistentExternalID = self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID)
+            if not validSet[cooldownID] and not persistentExternalID then
                 tremove(list, n)
                 changed = true
             end

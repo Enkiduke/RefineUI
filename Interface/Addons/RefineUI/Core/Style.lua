@@ -80,14 +80,11 @@ local function Kill(self)
 
     if self.UnregisterAllEvents then
         self:UnregisterAllEvents()
-        if not self:IsProtected() then
-            self:SetParent(RefineUI.HiddenFrame)
-        end
-    else
-        self.Show = self.Hide
     end
-    
+
+    -- Reparent instead of replacing Show, so Blizzard objects are never written to.
     if not self:IsProtected() then
+        self:SetParent(RefineUI.HiddenFrame)
         self:Hide()
     end
 end
@@ -432,8 +429,8 @@ local function StripTextures(self, doKill)
                 region:SetTexture("")
                 if region.SetAtlas then region:SetAtlas("") end
                 if doKill then
+                    region:SetParent(RefineUI.HiddenFrame)
                     region:Hide()
-                    region.Show = region.Hide
                 end
             end
         end
@@ -877,34 +874,36 @@ end
 ----------------------------------------------------------------------------------------
 local function StyleButton(self, skipPushed, size)
     size = size or 2
-    
+    if not StyleState[self] then StyleState[self] = {} end
+    local state = StyleState[self]
+
     -- Hover texture
-    if self.SetHighlightTexture and not self.hover then
+    if self.SetHighlightTexture and not state.hover then
         local hover = self:CreateTexture()
         hover:SetColorTexture(1, 1, 1, 0.3)
         hover:SetPoint("TOPLEFT", self, size, -size)
         hover:SetPoint("BOTTOMRIGHT", self, -size, size)
-        self.hover = hover
+        state.hover = hover
         self:SetHighlightTexture(hover)
     end
-    
+
     -- Pushed texture
-    if not skipPushed and self.SetPushedTexture and not self.pushed then
+    if not skipPushed and self.SetPushedTexture and not state.pushed then
         local pushed = self:CreateTexture()
         pushed:SetColorTexture(0.9, 0.8, 0.1, 0.3)
         pushed:SetPoint("TOPLEFT", self, size, -size)
         pushed:SetPoint("BOTTOMRIGHT", self, -size, size)
-        self.pushed = pushed
+        state.pushed = pushed
         self:SetPushedTexture(pushed)
     end
-    
+
     -- Checked texture
-    if self.SetCheckedTexture and not self.checked then
+    if self.SetCheckedTexture and not state.checked then
         local checked = self:CreateTexture()
         checked:SetColorTexture(0, 1, 0, 0.3)
         checked:SetPoint("TOPLEFT", self, size, -size)
         checked:SetPoint("BOTTOMRIGHT", self, -size, size)
-        self.checked = checked
+        state.checked = checked
         self:SetCheckedTexture(checked)
     end
     

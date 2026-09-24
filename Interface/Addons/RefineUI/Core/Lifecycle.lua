@@ -72,8 +72,3 @@ function RefineUI:RunStartupCallbacks()
     self._startupRunning = false
     self._startupRan = true
 end
-
--- Compatibility shim for callers still invoking RefineUI:OnEnable().
-function RefineUI:OnEnable()
-    self:RunStartupCallbacks()
-end

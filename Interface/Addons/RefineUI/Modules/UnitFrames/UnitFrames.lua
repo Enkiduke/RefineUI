@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local UnitFrames = RefineUI:RegisterModule("UnitFrames")
+local UnitFrames = RefineUI:RegisterModule("UnitFrames", "UnitFrames")
 
 ----------------------------------------------------------------------------------------
 -- Lifecycle

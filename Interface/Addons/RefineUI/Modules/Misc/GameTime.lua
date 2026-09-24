@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local GameTime = RefineUI:RegisterModule("GameTime")
+local GameTime = RefineUI:RegisterModule("GameTime", "GameTime")
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals
@@ -60,6 +60,7 @@ local DISPLAY_STYLE_OPTIONS = {
 ----------------------------------------------------------------------------------------
 local combatStartTime = 0
 local inCombat = false
+local afkStartTime = nil
 local clockTimer = nil
 
 ----------------------------------------------------------------------------------------
@@ -203,6 +204,10 @@ function GameTime:IsShowingCombatTimer()
     return inCombat and self:IsCombatTimerEnabled()
 end
 
+function GameTime:IsShowingElapsedTimer()
+    return afkStartTime ~= nil or self:IsShowingCombatTimer()
+end
+
 ----------------------------------------------------------------------------------------
 -- Display
 ----------------------------------------------------------------------------------------
@@ -228,18 +233,23 @@ function GameTime:UpdateClockDisplay()
 end
 
 function GameTime:UpdateCombatTimerDisplay()
-    if not (self.Text and self:IsShowingCombatTimer()) then
+    if not (self.Text and self:IsShowingElapsedTimer()) then
         return
     end
 
-    self.Text:SetText(FormatElapsedTime(GetTime() - combatStartTime))
-    self.Text:SetTextColor(1, 0.2, 0.2)
+    if afkStartTime then
+        self.Text:SetText(FormatElapsedTime(GetTime() - afkStartTime))
+        self.Text:SetTextColor(1, 0.82, 0)
+    else
+        self.Text:SetText(FormatElapsedTime(GetTime() - combatStartTime))
+        self.Text:SetTextColor(1, 0.2, 0.2)
+    end
 end
 
 function GameTime:ScheduleNextClockUpdate()
     CancelClockTimer()
 
-    if self:IsShowingCombatTimer() or not self.Text then
+    if self:IsShowingElapsedTimer() or not self.Text then
         return
     end
 
@@ -255,13 +265,13 @@ function GameTime:ScheduleNextClockUpdate()
     end)
 end
 
-function GameTime:SetCombatUpdateEnabled(enabled)
+function GameTime:SetElapsedUpdateEnabled(enabled)
     if not (RefineUI.IsUpdateJobRegistered and RefineUI:IsUpdateJobRegistered(DISPLAY_JOB_KEY)) then
         return
     end
 
     if enabled and RefineUI.SetUpdateJobInterval then
-        RefineUI:SetUpdateJobInterval(DISPLAY_JOB_KEY, self:GetCombatTimerInterval())
+        RefineUI:SetUpdateJobInterval(DISPLAY_JOB_KEY, afkStartTime and 1 or self:GetCombatTimerInterval())
     end
 
     if RefineUI.SetUpdateJobEnabled then
@@ -274,16 +284,29 @@ function GameTime:RefreshDisplay()
         return
     end
 
-    if self:IsShowingCombatTimer() then
+    if self:IsShowingElapsedTimer() then
         CancelClockTimer()
         self:UpdateCombatTimerDisplay()
-        self:SetCombatUpdateEnabled(true)
+        self:SetElapsedUpdateEnabled(true)
         return
     end
 
-    self:SetCombatUpdateEnabled(false)
+    self:SetElapsedUpdateEnabled(false)
     self:UpdateClockDisplay()
     self:ScheduleNextClockUpdate()
+end
+
+function GameTime:SetAFKActive(active)
+    if active then
+        if afkStartTime then return end
+        afkStartTime = GetTime()
+    else
+        if not afkStartTime then return end
+        afkStartTime = nil
+    end
+
+    if self.Frame then self.Frame:SetIgnoreParentAlpha(active) end
+    self:RefreshDisplay()
 end
 
 function GameTime:ApplyFramePosition()
@@ -437,6 +460,7 @@ function GameTime:OnEnable()
 
     self.Frame = frame
     self.Text = text
+    frame:SetIgnoreParentAlpha(afkStartTime ~= nil)
 
     self:ApplyFramePosition()
     self:ApplyScale()
@@ -446,9 +470,8 @@ function GameTime:OnEnable()
             GameTime:UpdateCombatTimerDisplay()
         end, {
             enabled = false,
-            combatOnly = true,
             predicate = function()
-                return GameTime:IsShowingCombatTimer() and GameTime.Text ~= nil
+                return GameTime:IsShowingElapsedTimer() and GameTime.Text ~= nil
             end,
         })
     end

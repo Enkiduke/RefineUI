@@ -849,9 +849,17 @@ function CDM:BuildAssignedTrackerEntry(cooldownID, activePayload)
     end
 
     local icon
+    if self.GetExternalCooldownIcon then
+        icon = self:GetExternalCooldownIcon(cooldownID)
+    end
     local info = self:GetCooldownInfo(cooldownID)
     local spellID = self:ResolveCooldownSpellID(info)
-    if not IsSecret(spellID) and type(spellID) == "number" and C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+    if not HasValue(icon)
+        and not IsSecret(spellID)
+        and type(spellID) == "number"
+        and C_Spell
+        and type(C_Spell.GetSpellTexture) == "function"
+    then
         local ok, texture = pcall(C_Spell.GetSpellTexture, spellID)
         if ok and HasValue(texture) then
             icon = texture
@@ -971,7 +979,31 @@ function CDM:RefreshTrackers(dirtyCooldownIDSet)
         end
     end
 
-    local activeMap = self:GetActiveAuraMap(requestedCooldownIDs)
+    local requestedAuraCooldownIDs = requestedCooldownIDs
+    if assignedSnapshot
+        and type(assignedSnapshot.externalCooldownIDs) == "table"
+        and next(assignedSnapshot.externalCooldownIDs)
+    then
+        requestedAuraCooldownIDs = self.scratchRequestedAuraCooldownIDs
+        if not requestedAuraCooldownIDs then
+            requestedAuraCooldownIDs = {}
+            self.scratchRequestedAuraCooldownIDs = requestedAuraCooldownIDs
+        elseif wipe then
+            wipe(requestedAuraCooldownIDs)
+        else
+            for i = #requestedAuraCooldownIDs, 1, -1 do
+                requestedAuraCooldownIDs[i] = nil
+            end
+        end
+
+        for i = 1, #requestedCooldownIDs do
+            local cooldownID = requestedCooldownIDs[i]
+            if not (self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID)) then
+                requestedAuraCooldownIDs[#requestedAuraCooldownIDs + 1] = cooldownID
+            end
+        end
+    end
+    local activeMap = self:GetActiveAuraMap(requestedAuraCooldownIDs)
     local totalActiveEntryCount = 0
     for i = 1, #self.TRACKER_BUCKETS do
         local bucket = self.TRACKER_BUCKETS[i]
@@ -993,7 +1025,12 @@ function CDM:RefreshTrackers(dirtyCooldownIDSet)
             local ids = assignments[bucket]
             for n = 1, #ids do
                 local cooldownID = ids[n]
-                local payload = activeMap[cooldownID]
+                local payload
+                if self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID) then
+                    payload = self.GetExternalCooldownPayload and self:GetExternalCooldownPayload(cooldownID) or nil
+                else
+                    payload = activeMap[cooldownID]
+                end
                 if payload then
                     if self.GetCooldownBorderColorToken then
                         payload.borderColorToken = self:GetCooldownBorderColorToken(cooldownID)

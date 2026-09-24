@@ -153,11 +153,21 @@ local EVENTS = {
     PET_JOURNAL_PET_REVOKED = { "pets", true },
     NEW_TOY_ADDED = { "toys", true },
 }
+-- Collection events arrive in bursts; invalidate each kind once per burst.
+local pendingKinds = {}
+local function FlushInvalidations()
+    for kind, persistent in pairs(pendingKinds) do
+        pendingKinds[kind] = nil
+        Collections:Invalidate(kind, persistent)
+    end
+end
+
 for event, info in pairs(EVENTS) do
     if not C_EventUtils or not C_EventUtils.IsEventValid or C_EventUtils.IsEventValid(event) then
         local kind, persistent = info[1], info[2]
         RefineUI:RegisterEventCallback(event, function()
-            Collections:Invalidate(kind, persistent)
+            pendingKinds[kind] = pendingKinds[kind] or persistent
+            RefineUI:Debounce("Collections:Invalidate", 0.1, FlushInvalidations)
         end, "Collections:" .. event)
     end
 end

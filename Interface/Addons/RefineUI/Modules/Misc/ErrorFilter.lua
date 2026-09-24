@@ -1,7 +1,7 @@
 local AddOnName, RefineUI = ...
 
 -- Call Modules
-local ErrorFilter = RefineUI:RegisterModule("ErrorFilter")
+local ErrorFilter = RefineUI:RegisterModule("ErrorFilter", "ErrorsFrame")
 
 -- Lib Globals
 local _G = _G

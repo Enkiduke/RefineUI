@@ -170,6 +170,42 @@ function RefineUI:ResetProfile()
 end
 
 ----------------------------------------------------------------------------------------
+-- Migrations
+----------------------------------------------------------------------------------------
+-- Keyed by the config version (C.Version) they upgrade a profile to. Each runs once,
+-- in order, on the saved profile before defaults are merged. To change a saved
+-- setting's shape or default, bump C.Version and add a migration here instead of
+-- resetting the profile.
+local MIGRATIONS = {
+    -- Profiles saved before versioning existed have no known shape.
+    [1] = function(profile)
+        wipe(profile)
+    end,
+}
+
+local function MigrateProfile(profile, currentVersion)
+    local storedVersion = profile.Version or 0
+    if storedVersion == currentVersion then
+        return
+    end
+
+    if storedVersion > currentVersion then
+        -- Saved by a newer build; its shape is unknown to this one.
+        RefineUI:Print("Config version v" .. storedVersion .. " is newer than v" .. currentVersion .. ". Resetting profile to defaults.")
+        wipe(profile)
+    else
+        for version = storedVersion + 1, currentVersion do
+            local migrate = MIGRATIONS[version]
+            if migrate then
+                migrate(profile)
+            end
+        end
+    end
+
+    profile.Version = currentVersion
+end
+
+----------------------------------------------------------------------------------------
 -- Initialization
 ----------------------------------------------------------------------------------------
 -- Global SavedVariable
@@ -192,30 +228,10 @@ function RefineUI:InitializeDatabase()
     -- Preserve immutable code-defined defaults for merge/reset operations.
     if not RefineUI.DefaultConfig then
         RefineUI.DefaultConfig = DeepCopy(RefineUI.Config)
-        -- Compatibility alias for existing call sites.
-        RefineUI.Defaults = RefineUI.DefaultConfig
     end
     
-    -- Version Check Logic
-    -- Determine current code version
     local currentVersion = (RefineUI.DefaultConfig and RefineUI.DefaultConfig.Version) or 1
-    -- Determine stored DB version (default to 0 if missing)
-    local storedVersion = profile.Version or 0
-    
-    -- If versions differ, wipe profile (except Version/Installed status optional?)
-    -- User requested: "Clear out and re-establish the defaults"
-    if storedVersion ~= currentVersion then
-        -- Preserve Installed flag if we want to skip the "Welcome" wizard?
-        -- User said "re-initiate the install", so wiping Everything is safer.
-        -- BUT if we wipe "Installed", the wizard pops up.
-        -- Let's wipe everything to be clean.
-        
-        RefineUI:Print("Config version changed (v" .. storedVersion .. " -> v" .. currentVersion .. "). Resetting profile to defaults.")
-        wipe(profile)
-        
-        -- Update stored version
-        profile.Version = currentVersion
-    end
+    MigrateProfile(profile, currentVersion)
 
     -- Merge logic: "Copy-on-Load"
     RefineUI:CopyDefaults(RefineUI.DefaultConfig, profile)

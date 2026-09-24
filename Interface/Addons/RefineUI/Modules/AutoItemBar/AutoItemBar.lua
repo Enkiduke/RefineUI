@@ -4,7 +4,11 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local AutoItemBar = RefineUI:RegisterModule("AutoItemBar")
+local AutoItemBar = RefineUI:RegisterModule("AutoItemBar", function(cfg)
+    local automation = cfg.Automation
+    local settings = type(automation) == "table" and automation.AutoItemBar
+    return not (type(settings) == "table" and settings.Enable == false)
+end)
 
 AutoItemBar.BUTTONS_PER_LINE = 12
 AutoItemBar.NUM_BAG_SLOTS = NUM_BAG_SLOTS or 4

@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local EntranceDifficulty = RefineUI:RegisterModule("EntranceDifficulty")
+local EntranceDifficulty = RefineUI:RegisterModule("EntranceDifficulty", "EntranceDifficulty")
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)

@@ -23,6 +23,7 @@ local Locale = RefineUI.Locale
 local _G = _G
 local C_AddOns = C_AddOns
 local CreateFrame = CreateFrame
+local hooksecurefunc = hooksecurefunc
 local type = type
 
 ----------------------------------------------------------------------------------------
@@ -37,8 +38,6 @@ local DAMAGE_METER_BAR_TEXTURE = (Media and Media.Textures and Media.Textures.Sm
 local EVENT_KEY = {
     ADDON_LOADED = COMPONENT_KEY .. ":ADDON_LOADED",
     PLAYER_ENTERING_WORLD = COMPONENT_KEY .. ":PLAYER_ENTERING_WORLD",
-    COMBAT_SESSION_UPDATED = COMPONENT_KEY .. ":DAMAGE_METER_COMBAT_SESSION_UPDATED",
-    CURRENT_SESSION_UPDATED = COMPONENT_KEY .. ":DAMAGE_METER_CURRENT_SESSION_UPDATED",
     RESET = COMPONENT_KEY .. ":DAMAGE_METER_RESET",
 }
 
@@ -76,6 +75,8 @@ end
 local function SetState(owner, key, value)
     RefineUI:RegistrySet(DAMAGE_METER_SKIN_STATE_REGISTRY, owner, key, value)
 end
+
+local QueueSkinPass
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
@@ -215,6 +216,14 @@ local function LayoutEntry(frame, statusBar)
     end
 end
 
+-- Blizzard's entry Init only updates values, text, icon and color. Row anchors are reset
+-- only by UpdateStyle (SetStyle/SetShowBarIcons on row setup or setting changes), so the
+-- layout is re-applied only after that instead of on every data update.
+local function OnEntryUpdateStyle(frame)
+    SetState(frame, "layoutDirty", true)
+    QueueSkinPass()
+end
+
 local function SkinDamageMeterEntry(frame)
     if not CanSkinObject(frame) then
         return
@@ -236,24 +245,29 @@ local function SkinDamageMeterEntry(frame)
 
         EnsureStatusBarBorder(statusBar)
         EnsureIconSkin(frame.Icon)
+        if frame.UpdateStyle then
+            hooksecurefunc(frame, "UpdateStyle", OnEntryUpdateStyle)
+        end
         SetState(frame, "entrySkinned", true)
+        SetState(frame, "layoutDirty", true)
     end
 
-    LayoutEntry(frame, statusBar)
+    if GetState(frame, "layoutDirty", false) then
+        SetState(frame, "layoutDirty", false)
+        LayoutEntry(frame, statusBar)
+    end
 end
 
-local function SkinScrollTargetChildren(scrollBox)
-    local scrollTarget = scrollBox and scrollBox.ScrollTarget
-    if not CanSkinObject(scrollTarget) then
-        return
+local function SkinScrollBoxEntry(frame)
+    if frame.StatusBar and frame.Icon then
+        SkinDamageMeterEntry(frame)
     end
+end
 
-    local children = { scrollTarget:GetChildren() }
-    for i = 1, #children do
-        local child = children[i]
-        if child and child.StatusBar and child.Icon then
-            SkinDamageMeterEntry(child)
-        end
+-- Visits only the rows currently in use, without building a child table per pass.
+local function SkinScrollTargetChildren(scrollBox)
+    if CanSkinObject(scrollBox) and scrollBox.ForEachFrame then
+        scrollBox:ForEachFrame(SkinScrollBoxEntry)
     end
 end
 
@@ -333,7 +347,7 @@ local function ForceSkinPass()
     SkinExistingWindows()
 end
 
-local function QueueSkinPass()
+QueueSkinPass = function()
     if GetState(Skins, STATE_KEY.SKIN_PASS_QUEUED, false) then
         return
     end
@@ -373,13 +387,9 @@ local function RegisterDamageMeterUpdateEvents()
     end
     SetState(Skins, STATE_KEY.UPDATE_EVENTS_REGISTERED, true)
 
-    local function Queue()
-        QueueSkinPass()
-    end
-
-    RefineUI:RegisterEventCallback("DAMAGE_METER_COMBAT_SESSION_UPDATED", Queue, EVENT_KEY.COMBAT_SESSION_UPDATED)
-    RefineUI:RegisterEventCallback("DAMAGE_METER_CURRENT_SESSION_UPDATED", Queue, EVENT_KEY.CURRENT_SESSION_UPDATED)
-    RefineUI:RegisterEventCallback("DAMAGE_METER_RESET", Queue, EVENT_KEY.RESET)
+    -- Session update events need no handler: Blizzard answers them by calling the window's
+    -- Refresh, which is hooked above.
+    RefineUI:RegisterEventCallback("DAMAGE_METER_RESET", QueueSkinPass, EVENT_KEY.RESET)
 end
 
 ----------------------------------------------------------------------------------------

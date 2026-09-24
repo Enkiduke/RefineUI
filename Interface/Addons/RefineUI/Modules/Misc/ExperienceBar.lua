@@ -2,7 +2,18 @@ local AddOnName, RefineUI = ...
 local LibEditMode = LibStub("LibEditMode")
 
 -- Call Modules
-local ExperienceBar = RefineUI:RegisterModule("ExperienceBar")
+local ExperienceBar = RefineUI:RegisterModule("ExperienceBar", function(cfg)
+    local unitFrames = cfg.UnitFrames
+    local dataBars = type(unitFrames) == "table" and unitFrames.DataBars
+    local experienceBar = type(dataBars) == "table" and dataBars.ExperienceBar
+    if type(experienceBar) == "table" then
+        return experienceBar.Enable ~= false
+    end
+    if type(experienceBar) == "boolean" then
+        return experienceBar
+    end
+    return true
+end)
 
 -- Lib Globals
 local _G = _G

@@ -193,6 +193,9 @@ local function IsRefineInjectedItem(owner)
     if bucket == CDM.NOT_TRACKED_KEY then
         return true
     end
+    if CDM.IsExternalSourceCategory and CDM:IsExternalSourceCategory(bucket) then
+        return true
+    end
     for i = 1, #CDM.TRACKER_BUCKETS do
         if bucket == CDM.TRACKER_BUCKETS[i] then
             return true

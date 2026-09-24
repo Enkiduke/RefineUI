@@ -168,7 +168,12 @@ function Data:ReadLootBatch(instanceID, difficultyID, scan)
         for _, item in ipairs(items) do if not item.itemID or not item.link then ready = false end end
         if ready then
             catalog.batches[key] = { items = items, total = total }
-            if RefineUI.JournalCache then
+            -- Persist once the final boss pass is read, then only for late-resolved gaps,
+            -- instead of re-copying the growing catalog after every batch.
+            if not catalog.complete and scan.index + #items > total and pass >= #catalog.bosses then
+                catalog.complete = true
+            end
+            if catalog.complete and RefineUI.JournalCache then
                 RefineUI.JournalCache:Put("catalogs", instanceID .. ":" .. difficultyID, catalog)
             end
         end
@@ -322,6 +327,7 @@ function Data:RequestSummary(instanceID, owner, callback)
         self:ResetSummaryOwnership(state)
     end
     state.owners[owner] = callback
+    self:SetItemEventsActive(true)
     if state.ownershipRevision ~= RefineUI.Collections.revision or state.achievementRevision ~= self.achievementRevision then
         self:ResetSummaryOwnership(state)
     end
@@ -330,13 +336,17 @@ function Data:RequestSummary(instanceID, owner, callback)
 end
 
 function Data:ReleaseSummary(owner)
+    local owned = false
     for _, state in pairs(self.summaries) do
         state.owners[owner] = nil
         if not next(state.owners) then
             RefineUI.InstanceAchievements:ReleaseOwner(state)
             state.achievementRequest = nil
+        else
+            owned = true
         end
     end
+    if not owned then self:SetItemEventsActive(false) end
     self:TrimSummaryCache(16)
     if not self:HasSummaryWork() and self.summaryTicker then
         self.summaryTicker:Cancel(); self.summaryTicker = nil
@@ -516,16 +526,29 @@ RefineUI:RegisterEventCallback("ACHIEVEMENT_EARNED", function()
     Data:StartSummaryWorker()
 end, "InstanceCompletion:Achievements")
 RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function() Data:StartSummaryWorker() end, "InstanceCompletion:Combat")
-for _, event in ipairs({ "EJ_LOOT_DATA_RECIEVED", "GET_ITEM_INFO_RECEIVED", "ITEM_DATA_LOAD_RESULT" }) do
-    RefineUI:RegisterEventCallback(event, function(_, itemID, success)
-        if Data.capturing or RefineUI:IsSecretValue(itemID) or success == false then return end
-        for _, state in pairs(Data.summaries) do
-            if next(state.owners)
-                and (state.summary.partial or next(state.missingItems))
-                and (not itemID or state.missingItems[itemID] or state.missingItems[0]) then
-                state.retryRequested = true
-            end
+
+-- Item data events are frequent; listen only while a summary has owners.
+local ITEM_EVENTS = { "EJ_LOOT_DATA_RECIEVED", "GET_ITEM_INFO_RECEIVED", "ITEM_DATA_LOAD_RESULT" }
+local function OnItemData(_, itemID, success)
+    if Data.capturing or RefineUI:IsSecretValue(itemID) or success == false then return end
+    for _, state in pairs(Data.summaries) do
+        if next(state.owners)
+            and (state.summary.partial or next(state.missingItems))
+            and (not itemID or state.missingItems[itemID] or state.missingItems[0]) then
+            state.retryRequested = true
         end
-        Data:StartSummaryWorker()
-    end, "InstanceCompletion:" .. event)
+    end
+    Data:StartSummaryWorker()
+end
+
+function Data:SetItemEventsActive(active)
+    if self.itemEventsActive == active then return end
+    self.itemEventsActive = active
+    for _, event in ipairs(ITEM_EVENTS) do
+        if active then
+            RefineUI:RegisterEventCallback(event, OnItemData, "InstanceCompletion:" .. event)
+        else
+            RefineUI:OffEvent(event, "InstanceCompletion:" .. event)
+        end
+    end
 end

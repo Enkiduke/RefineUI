@@ -37,7 +37,7 @@ function Module:GetContext()
         and C_EncounterJournal.GetInstanceForGameMap(mapID)
     if not id or id <= 0 then return end
     return { id = id, difficulty = difficulty, name = name, difficultyName = difficultyName,
-        isRaid = kind == "raid", key = id .. ":" .. difficulty }
+        isRaid = kind == "raid", key = id .. ":" .. difficulty, mapID = mapID }
 end
 
 function Module:CancelWork()
@@ -52,18 +52,19 @@ function Module:Clear()
     self.context, self.snapshot, self.worker, self.scan = nil, nil, nil, nil
     self.entries, self.bosses, self.achievementRows = {}, {}, nil
     self.rows, self.counts = {}, nil
-    self.groups, self.groupOffsets, self.collapsedGroups, self.firstGroup = {}, {}, {}, 1
-    self.defeated, self.ownershipAgain = {}, nil
+    self.groups, self.groupsByName, self.groupOffsets, self.collapsedGroups, self.firstGroup = {}, nil, {}, {}, 1
+    self.defeated, self.pendingBossKills, self.ownershipAgain = {}, {}, nil
     self.activeGroup, self.advanceAfterBoss, self.autoCollapseInitialized = nil, nil, nil
     self.achievementEntries, self.achievementEntryRows, self.achievementEntryBosses = nil, nil, nil
     self.dataRetries = 0
     self.status, self.rescan, self.deferred, self.ownershipDirty = nil, nil, nil, nil
     self.completionDirty = nil
-    if self.frame then self.frame:Hide(); self.frame:MarkDirty() end
+    self.viewStatus = nil
+    if self.frame then self.frame:Hide() end
 end
 
 function Module:Schedule(rescan, viewOnly)
-    if RefineUI.InstanceCompletion.capturing or not self.context then return end
+    if not self.context then return end
     self.rescan = self.rescan or rescan
     self.ownershipDirty = self.ownershipDirty or not viewOnly
     if self.timer then return end
@@ -90,6 +91,14 @@ function Module:UpdateContext()
         return
     end
     if self.context and self.context.key == context.key then
+        if not InCombatLockdown() then
+            if not self.frame then self:EnsureFrame() end
+            if (not self.snapshot or (context.isRaid and #self.bosses == 0))
+                and not self.timer and not self.ticker then
+                self.deferred = nil
+                self:Schedule(true)
+            end
+        end
         return
     end
     self:Clear()
@@ -101,14 +110,69 @@ end
 
 function Module:RefreshBossCompletion()
     if not self.context or self.ticker or #self.bosses == 0 then return end
+    for key, name in pairs(self.pendingBossKills) do
+        local _, matched = self:CompleteBoss(type(key) == "number" and key or nil,
+            type(name) == "string" and name or nil)
+        if matched then self.pendingBossKills[key] = nil end
+    end
+    self:RefreshRaidBossLocks()
+    if GetNumSavedInstances and GetSavedInstanceInfo and GetSavedInstanceEncounterInfo then
+        for instanceIndex = 1, GetNumSavedInstances() do
+            local _, _, _, difficultyID, _, _, _, _, _, _, total, _, _, mapID =
+                GetSavedInstanceInfo(instanceIndex)
+            if difficultyID == self.context.difficulty and mapID == self.context.mapID then
+                for encounterIndex = 1, total or 0 do
+                    local name, _, killed = GetSavedInstanceEncounterInfo(instanceIndex, encounterIndex)
+                    if killed and RefineUI:IsAccessibleString(name) then
+                        local normalized = name:lower()
+                        for _, boss in ipairs(self.bosses) do
+                            if RefineUI:IsAccessibleString(boss.name) and boss.name:lower() == normalized then
+                                self:CompleteBoss(boss.id)
+                                break
+                            end
+                        end
+                    end
+                end
+                break
+            end
+        end
+    end
     -- Reuse the selection/filter transaction, without reading any loot.
     local batch = self:ReadBatch({ index = 1, bossIndex = 0, bosses = self.bosses, completionOnly = true })
     if batch then self.completionDirty = nil end
 end
 
-function Module:ResolveItem(item)
-    return RefineUI.Collections:ResolveItem(item)
+function Module:RefreshRaidBossLocks()
+    if not self.context or not self.context.isRaid or #self.bosses == 0 or not C_RaidLocks
+        or type(C_RaidLocks.IsEncounterComplete) ~= "function" then return false end
+    local quests = RefineUI:GetModule("Quests")
+    local encounters = quests and quests:GetInstanceHeaderEncounters(self.context)
+    local changed = false
+    for _, boss in ipairs(self.bosses) do
+        if type(boss.encounterID) == "number" and not self.defeated[boss.id] then
+            local mapID = self.context.mapID
+            for _, encounter in ipairs(encounters or {}) do
+                if encounter.journalEncounterID == boss.id and type(encounter.mapID) == "number" then
+                    mapID = encounter.mapID
+                    break
+                end
+            end
+            local difficulty = self.context.difficulty
+            if type(C_RaidLocks.GetRedirectedDifficultyID) == "function" then
+                local read, redirected = pcall(C_RaidLocks.GetRedirectedDifficultyID, mapID, difficulty)
+                if read and RefineUI:IsAccessibleValue(redirected)
+                    and type(redirected) == "number" and redirected > 0 then difficulty = redirected end
+            end
+            local read, killed = pcall(C_RaidLocks.IsEncounterComplete,
+                mapID, boss.encounterID, difficulty)
+            if read and RefineUI:IsAccessibleValue(killed) and killed == true then
+                changed = self:CompleteBoss(boss.id) or changed
+            end
+        end
+    end
+    return changed
 end
+
 -- Journal state is global. The transaction is synchronous and restores every
 -- selection/filter even after errors. Never scan while the user is browsing it.
 function Module:ReadBatch(scan)
@@ -120,8 +184,8 @@ function Module:ReadBatch(scan)
             if api.IsEncounterComplete then
                 for _, boss in ipairs(self.bosses) do
                     local completed = api.IsEncounterComplete(boss.id)
-                    if not RefineUI:IsSecretValue(completed) and completed == true and boss.encounterID then
-                        self:CompleteBoss(boss.encounterID)
+                    if not RefineUI:IsSecretValue(completed) and completed == true then
+                        self:CompleteBoss(boss.id)
                     end
                 end
             end
@@ -146,6 +210,16 @@ function Module:StartScan()
     self.scan = { index = 1, bossIndex = 0, items = {}, byItem = {}, pending = {}, incomplete = false }
     self.status = "Loading journal loot..."
     self.bosses = {}
+    if self.context.isRaid then
+        local quests = RefineUI:GetModule("Quests")
+        local encounters = quests and quests:GetInstanceHeaderEncounters({ mapID = self.context.mapID })
+        for _, encounter in ipairs(encounters or {}) do
+            self.bosses[#self.bosses + 1] = {
+                id = encounter.journalEncounterID, name = encounter.displayName,
+                encounterID = encounter.dungeonEncounterID, icon = encounter.icon,
+            }
+        end
+    end
     if self:GetSettings().achievements ~= false and not self.achievementRows then
         self.worker = RefineUI.InstanceAchievements
         local context = self.context
@@ -308,17 +382,23 @@ function Module:GetAchievementEntries()
     return entries
 end
 
-function Module:CompleteBoss(encounterID)
-    if self.defeated[encounterID] then return false end
-    self.defeated[encounterID] = true
+function Module:CompleteBoss(encounterID, encounterName)
+    local id = RefineUI:IsAccessibleValue(encounterID) and type(encounterID) == "number" and encounterID or nil
+    local name = RefineUI:IsAccessibleString(encounterName) and encounterName:lower() or nil
+    if not id and not name then return false, false end
     for _, boss in ipairs(self.bosses or {}) do
-        if boss.encounterID == encounterID then
+        if (id and (boss.encounterID == id or boss.id == id))
+            or (name and RefineUI:IsAccessibleString(boss.name) and boss.name:lower() == name) then
+            if self.defeated[boss.id] then return false, true end
+            self.defeated[boss.id] = true
             self.collapsedGroups[boss.id] = true
             self.advanceAfterBoss = boss.id
-            return true
+            return true, true
         end
     end
-    return false
+    if id then self.pendingBossKills[id] = name or true
+    elseif name then self.pendingBossKills["name:" .. name] = name end
+    return false, false
 end
 
 function Module:OnInitialize()
@@ -338,18 +418,39 @@ function Module:OnInitialize()
         self.achievementEntries = nil
         self:Schedule(nil, true)
     end, "LegacyCompletionist:Achievements")
-    RefineUI.Collections:Subscribe(self, function() self:Schedule() end)
-    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", function() self:Schedule() end, "LegacyCompletionist:Ownership")
-    RefineUI:RegisterEventCallback("ENCOUNTER_END", function(_, encounterID, _, _, _, success)
-        if not self.context or RefineUI:IsSecretValue(encounterID) or RefineUI:IsSecretValue(success) then return end
-        if success == 1 and self:CompleteBoss(encounterID) then self:Schedule(nil, true) end
+    RefineUI.Collections:Subscribe(self, function(kind)
+        if not self.context or (kind and self:GetSettings()[kind] == false) then return end
+        local count = kind and self.counts and self.counts[kind]
+        if count and count.total == 0 and self.snapshot and not self.snapshot.unknownData then return end
+        self:Schedule()
+    end)
+    RefineUI:RegisterEventCallback("ENCOUNTER_END", function(_, encounterID, encounterName, _, _, success)
+        if not self.context then return end
+        if not RefineUI:IsAccessibleValue(success) then
+            self.completionDirty = true
+            self:Schedule(nil, true)
+            return
+        end
+        if success == 1 then
+            local changed, matched = self:CompleteBoss(encounterID, encounterName)
+            if changed and not self.context.isRaid then self:BuildView() end
+            if not matched then self.completionDirty = true end
+            self:Schedule(nil, true)
+        end
     end, "LegacyCompletionist:Encounter")
-    RefineUI:RegisterEventCallback("BOSS_KILL", function(_, encounterID)
-        if not self.context or RefineUI:IsSecretValue(encounterID) then return end
-        if self:CompleteBoss(encounterID) then self:Schedule(nil, true) end
+    RefineUI:RegisterEventCallback("BOSS_KILL", function(_, encounterID, encounterName)
+        if not self.context then return end
+        local changed, matched = self:CompleteBoss(encounterID, encounterName)
+        if changed and not self.context.isRaid then self:BuildView() end
+        if not matched then self.completionDirty = true end
+        self:Schedule(nil, true)
     end, "LegacyCompletionist:Boss")
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-        if self.deferred then self.deferred = nil; self:Schedule() end
+        local deferred = self.deferred
+        self:UpdateContext()
+        local changed = self:RefreshRaidBossLocks()
+        if deferred then self.deferred = nil; self:Schedule()
+        elseif changed then self:Schedule(nil, true) end
     end, "LegacyCompletionist:Combat")
     RefineUI:OnEvents({ "EJ_LOOT_DATA_RECIEVED", "GET_ITEM_INFO_RECEIVED", "ITEM_DATA_LOAD_RESULT" }, function(_, itemID)
         if RefineUI.InstanceCompletion.capturing or not self.context or RefineUI:IsSecretValue(itemID) then return end

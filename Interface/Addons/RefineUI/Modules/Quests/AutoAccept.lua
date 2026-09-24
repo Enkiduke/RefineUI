@@ -4,23 +4,18 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local AutoAccept = RefineUI:RegisterModule("AutoAccept")
+local AutoAccept = RefineUI:RegisterModule("AutoAccept", function(cfg)
+    local quests = cfg.Quests
+    if type(quests) ~= "table" or quests.Enable == false then
+        return false
+    end
+    return quests.AutoAccept == true or quests.AutoComplete == true
+end)
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
 local Config = RefineUI.Config
-
-----------------------------------------------------------------------------------------
--- Lua / WoW Upvalues
-----------------------------------------------------------------------------------------
-local CreateFrame = CreateFrame
-local GetCVarBool = GetCVarBool
-local SetCVar = SetCVar
-local UIDropDownMenu_CreateInfo = UIDropDownMenu_CreateInfo
-local UIDropDownMenu_AddButton = UIDropDownMenu_AddButton
-local UIDropDownMenu_Initialize = UIDropDownMenu_Initialize
-local ToggleDropDownMenu = ToggleDropDownMenu
 
 ----------------------------------------------------------------------------------------
 --	Auto Accept Quest
@@ -52,9 +47,6 @@ function AutoAccept:OnInitialize()
         return
     end
 
-    if not Config.Quests.AutoAccept and not Config.Quests.AutoComplete then
-    end
-
     RefineUI:RegisterEventCallback("QUEST_DETAIL", function()
         if Config.Quests.AutoAccept then
             AutoAcceptQuest()
@@ -67,4 +59,3 @@ function AutoAccept:OnInitialize()
         end
     end, "AutoAccept:Complete")
 end
-

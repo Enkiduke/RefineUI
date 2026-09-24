@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local Module = RefineUI:RegisterModule("TalkingHead")
+local Module = RefineUI:RegisterModule("TalkingHead", "TalkingHead")
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals

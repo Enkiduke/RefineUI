@@ -21,8 +21,7 @@ local Media = RefineUI.Media
 local _G = _G
 local CreateFrame = CreateFrame
 local ipairs = ipairs
-local pairs = pairs
-local select = select
+local type = type
 
 ----------------------------------------------------------------------------------------
 -- Shared State
@@ -43,28 +42,14 @@ local function ApplyButtonBorderVisual(state, border)
         return
     end
 
-    local mode
-    if state.isPressed then
-        mode = "pressed"
-    elseif state.isHovered then
-        mode = "hover"
-    else
-        mode = "normal"
-    end
-
-    if state.borderVisualState == mode then
+    local highlighted = state.isPressed or state.isHovered
+    if state.borderVisualState == highlighted then
         return
     end
 
-    state.borderVisualState = mode
+    state.borderVisualState = highlighted
 
-    if mode == "pressed" then
-        local hoverColor = private.HOVER_BORDER_COLOR
-        SetBorderColor(border, hoverColor[1], hoverColor[2], hoverColor[3], hoverColor[4])
-        return
-    end
-
-    if mode == "hover" then
+    if highlighted then
         local hoverColor = private.HOVER_BORDER_COLOR
         SetBorderColor(border, hoverColor[1], hoverColor[2], hoverColor[3], hoverColor[4])
         return
@@ -84,6 +69,14 @@ function private.SetHoveredVisual(button, hovered)
     state.isHovered = hovered and true or false
     local border = state.SkinOverlay and state.SkinOverlay.border
     ApplyButtonBorderVisual(state, border)
+end
+
+local function Button_OnEnter(self)
+    private.SetHoveredVisual(self, true)
+end
+
+local function Button_OnLeave(self)
+    private.SetHoveredVisual(self, false)
 end
 
 function private.EnsureCooldownShade(button)
@@ -243,11 +236,8 @@ function private.EnableDesaturation(button)
 
     if private.GetBarKeyForButton(button) ~= private.BAR_KEY.STANCE then
         private.EnsureCooldownShade(button)
-        private.ForEachButtonCooldownFrame(button, function(frame)
-            private.SetActionBarState(frame, "RefineButton", button)
-        end)
-
         private.ForEachButtonCooldownFrame(button, function(frame, key)
+            private.SetActionBarState(frame, "RefineButton", button)
             if not frame.HookScript then
                 return
             end
@@ -362,17 +352,13 @@ function ActionBars:StyleButton(button)
     end
 
     if hotkey then
-        if private.IsHotkeyEnabledForButton(button) then
-            hotkey:ClearAllPoints()
-            RefineUI.Point(hotkey, "TOPRIGHT", button, "TOPRIGHT", -2, -4)
-            RefineUI.Font(hotkey, 11, nil, "THINOUTLINE")
-            hotkey:SetAlpha(1)
-            hotkey:Show()
-        else
+        hotkey:ClearAllPoints()
+        RefineUI.Point(hotkey, "TOPRIGHT", button, "TOPRIGHT", -2, -4)
+        RefineUI.Font(hotkey, 11, nil, "THINOUTLINE")
+        if not private.IsHotkeyEnabledForButton(button) then
             hotkey:SetText("")
-            hotkey:SetAlpha(0)
-            hotkey:Hide()
         end
+        private.ApplyHotkeyVisibility(button, hotkey)
     end
 
     if cooldown then
@@ -403,6 +389,12 @@ function ActionBars:StyleButton(button)
         flash:SetVertexColor(0.55, 0, 0, 0.5)
     end
 
+    private.SetupButtonChrome(button, state)
+    private.EnableDesaturation(button)
+    state.isSkinned = true
+end
+
+function private.SetupButtonChrome(button, state)
     if not state.SkinOverlay then
         local overlay = CreateFrame("Frame", nil, button)
         overlay:SetAllPoints(button)
@@ -443,16 +435,10 @@ function ActionBars:StyleButton(button)
         state.PressAnimation = animationGroup
     end
 
-    RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnEnter", "Style"), button, "OnEnter", function(self)
-        private.SetHoveredVisual(self, true)
-    end)
-    RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnLeave", "Style"), button, "OnLeave", function(self)
-        private.SetHoveredVisual(self, false)
-    end)
+    RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnEnter", "Style"), button, "OnEnter", Button_OnEnter)
+    RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnLeave", "Style"), button, "OnLeave", Button_OnLeave)
 
     ApplyButtonBorderVisual(state, state.SkinOverlay.border)
-    private.EnableDesaturation(button)
-    state.isSkinned = true
 end
 
 function private.StyleButtons(buttonNames, count)
@@ -464,11 +450,4 @@ function private.StyleButtons(buttonNames, count)
             end
         end
     end
-end
-
-function ActionBars.EnableDesaturation(self, button)
-    if self ~= ActionBars then
-        button = self
-    end
-    private.EnableDesaturation(button)
 end

@@ -4,7 +4,13 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local AutoZoneTrack = RefineUI:RegisterModule("AutoZoneTrack")
+local AutoZoneTrack = RefineUI:RegisterModule("AutoZoneTrack", function(cfg)
+    local quests = cfg.Quests
+    if type(quests) ~= "table" or quests.Enable == false then
+        return false
+    end
+    return quests.AutoZoneTrack ~= false
+end)
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
@@ -16,11 +22,13 @@ local Config = RefineUI.Config
 ----------------------------------------------------------------------------------------
 local InCombatLockdown = InCombatLockdown
 local C_QuestLog = C_QuestLog
+local C_Map = C_Map
 local Enum = Enum
 local wipe = wipe
 local tinsert = table.insert
 local tremove = table.remove
 local ipairs = ipairs
+local pairs = pairs
 
 local addQuestWatch = C_QuestLog.AddQuestWatch
 local removeQuestWatch = C_QuestLog.RemoveQuestWatch
@@ -34,6 +42,9 @@ local getQuestIDForQuestWatchIndex = C_QuestLog.GetQuestIDForQuestWatchIndex
 local getNumWorldQuestWatches = C_QuestLog.GetNumWorldQuestWatches
 local getQuestIDForWorldQuestWatchIndex = C_QuestLog.GetQuestIDForWorldQuestWatchIndex
 local getQuestWatchType = C_QuestLog.GetQuestWatchType
+local getQuestsOnMap = C_QuestLog.GetQuestsOnMap
+local getBestMapForUnit = C_Map.GetBestMapForUnit
+local getMapInfo = C_Map.GetMapInfo
 local getTasksTable = GetTasksTable
 
 local function isQuestWatched(questID)
@@ -47,7 +58,7 @@ local hiddenQuests = {
     [24636] = true,
 }
 
-local manualPins = {}
+local manualPins
 
 local AUTO_CAP = 12
 local OPS_PER_TICK = 2
@@ -57,14 +68,13 @@ local RESYNC_DEBOUNCE_DELAY = 0.20
 local QUEUE_TICK_TIMER_KEY = "AutoZoneTrack:QueueTick"
 
 local QUEST_WATCH_TYPE_MANUAL = (Enum and Enum.QuestWatchType and Enum.QuestWatchType.Manual) or 1
-local QUEST_WATCH_TYPE_AUTOMATIC = (Enum and Enum.QuestWatchType and Enum.QuestWatchType.Automatic) or 0
 
 local pendingOps = {}
 local queueIndex = 1
 local queueRunning = false
 local needsResync = false
-local isApplyingQueue = false
-local knownWatchTypes = {}
+local expectedWatchChanges = {}
+local QueueResync
 
 ----------------------------------------------------------------------------------------
 --	Helpers
@@ -82,11 +92,33 @@ local function IsEligibleQuestInfo(info)
     return true
 end
 
-local function ShouldAutoTrack(info)
+local function ShouldAutoTrack(info, localQuests)
     if not info or not info.questID then
         return false
     end
-    return info.isOnMap or hiddenQuests[info.questID] or false
+    return localQuests[info.questID] or hiddenQuests[info.questID] or false
+end
+
+local function BuildLocalQuestSet()
+    local mapID = getBestMapForUnit("player")
+    if not mapID then
+        return nil
+    end
+
+    local mapInfo = getMapInfo(mapID)
+    while mapInfo and mapInfo.mapType > Enum.UIMapType.Zone and mapInfo.parentMapID and mapInfo.parentMapID > 0 do
+        mapID = mapInfo.parentMapID
+        mapInfo = getMapInfo(mapID)
+    end
+
+    local localQuests = {}
+    local quests = getQuestsOnMap(mapID)
+    if quests then
+        for i = 1, #quests do
+            localQuests[quests[i].questID] = true
+        end
+    end
+    return localQuests
 end
 
 local function RecordWatch(watchedSet, watchedOrder, worldQuestSet, questID, worldQuest)
@@ -104,13 +136,6 @@ local function RecordWatch(watchedSet, watchedOrder, worldQuestSet, questID, wor
 
     watchedSet[questID] = true
     tinsert(watchedOrder, questID)
-
-    if getQuestWatchType then
-        local watchType = getQuestWatchType(questID)
-        if watchType ~= nil then
-            knownWatchTypes[questID] = watchType
-        end
-    end
 end
 
 local function BuildCurrentWatchSet()
@@ -154,6 +179,11 @@ local function BuildLocalWorldQuestSet()
 end
 
 local function BuildDesiredWatchSet()
+    local localQuests = BuildLocalQuestSet()
+    if not localQuests then
+        return nil
+    end
+
     local desiredSet = {}
     local desiredOrder = {}
     local autoCandidates = {}
@@ -167,7 +197,7 @@ local function BuildDesiredWatchSet()
                     desiredSet[questID] = true
                     tinsert(desiredOrder, questID)
                 end
-            elseif ShouldAutoTrack(info) then
+            elseif ShouldAutoTrack(info, localQuests) then
                 tinsert(autoCandidates, questID)
             end
         end
@@ -192,8 +222,6 @@ local function StopQueueProcessing(clearQueue)
     RefineUI:CancelTimer(QUEUE_TICK_TIMER_KEY)
     queueRunning = false
 
-    isApplyingQueue = false
-
     if clearQueue then
         wipe(pendingOps)
         queueIndex = 1
@@ -204,15 +232,12 @@ local function BuildFullResyncOps()
     local watchedSet, watchedOrder, worldQuestSet = BuildCurrentWatchSet()
     local localWorldQuests = BuildLocalWorldQuestSet()
     local desiredSet, desiredOrder = BuildDesiredWatchSet()
+    if not desiredSet then
+        return
+    end
 
     wipe(pendingOps)
     queueIndex = 1
-
-    for _, questID in ipairs(desiredOrder) do
-        if not watchedSet[questID] then
-            tinsert(pendingOps, { op = "add", questID = questID })
-        end
-    end
 
     for _, questID in ipairs(watchedOrder) do
         local keepLocalWorldQuest = worldQuestSet[questID] and localWorldQuests[questID]
@@ -222,6 +247,12 @@ local function BuildFullResyncOps()
                 questID = questID,
                 isWorldQuest = worldQuestSet[questID] or false,
             })
+        end
+    end
+
+    for _, questID in ipairs(desiredOrder) do
+        if not watchedSet[questID] then
+            tinsert(pendingOps, { op = "add", questID = questID })
         end
     end
 end
@@ -241,30 +272,7 @@ local function ProcessQueueTick()
         return
     end
 
-    if queueIndex > #pendingOps then
-        StopQueueProcessing(true)
-        if needsResync then
-            RefineUI:Debounce(RESYNC_DEBOUNCE_KEY, 0.05, function()
-                if not Config.Quests.AutoZoneTrack then
-                    return
-                end
-                if InCombatLockdown() then
-                    needsResync = true
-                    return
-                end
-                needsResync = false
-                BuildFullResyncOps()
-                if #pendingOps > 0 then
-                    queueRunning = true
-                    RefineUI:After(QUEUE_TICK_TIMER_KEY, TICK_SECONDS, ProcessQueueTick)
-                end
-            end)
-        end
-        return
-    end
-
     local processed = 0
-    isApplyingQueue = true
 
     while processed < OPS_PER_TICK and queueIndex <= #pendingOps do
         local op = pendingOps[queueIndex]
@@ -273,29 +281,28 @@ local function ProcessQueueTick()
         if op and op.questID then
             if op.op == "add" then
                 if not isQuestWatched(op.questID) then
+                    expectedWatchChanges[op.questID] = true
                     addQuestWatch(op.questID)
-                end
-                if isQuestWatched(op.questID) then
-                    knownWatchTypes[op.questID] = QUEST_WATCH_TYPE_AUTOMATIC
+                    if not isQuestWatched(op.questID) then expectedWatchChanges[op.questID] = nil end
                 end
             elseif op.op == "remove" then
-                if isQuestWatched(op.questID) then
+                if not manualPins[op.questID] and isQuestWatched(op.questID) then
+                    expectedWatchChanges[op.questID] = false
                     if op.isWorldQuest then
                         removeWorldQuestWatch(op.questID)
                     else
                         removeQuestWatch(op.questID)
                     end
+                    if isQuestWatched(op.questID) then expectedWatchChanges[op.questID] = nil end
                 end
-                knownWatchTypes[op.questID] = nil
             end
             processed = processed + 1
         end
     end
 
-    isApplyingQueue = false
-
     if queueIndex > #pendingOps then
         StopQueueProcessing(true)
+        if needsResync then QueueResync(0.05) end
     elseif queueRunning then
         RefineUI:After(QUEUE_TICK_TIMER_KEY, TICK_SECONDS, ProcessQueueTick)
     end
@@ -322,8 +329,9 @@ end
 ----------------------------------------------------------------------------------------
 --	Resync + Incremental Updates
 ----------------------------------------------------------------------------------------
-local function QueueResync(delay)
+QueueResync = function(delay)
     needsResync = true
+    StopQueueProcessing(true)
 
     RefineUI:Debounce(RESYNC_DEBOUNCE_KEY, delay or RESYNC_DEBOUNCE_DELAY, function()
         if not Config.Quests.AutoZoneTrack then
@@ -337,7 +345,6 @@ local function QueueResync(delay)
         end
 
         needsResync = false
-        StopQueueProcessing(true)
         BuildFullResyncOps()
         StartQueueProcessing()
     end)
@@ -375,7 +382,11 @@ local function EvaluateQuestWant(questID)
         return true, true
     end
 
-    if ShouldAutoTrack(info) then
+    local localQuests = BuildLocalQuestSet()
+    if not localQuests then
+        return nil, false
+    end
+    if ShouldAutoTrack(info, localQuests) then
         return true, false
     end
 
@@ -432,6 +443,9 @@ local function QueueIncrementalQuestUpdate(questID)
     end
 
     local want, isManualPin = EvaluateQuestWant(questID)
+    if want == nil then
+        return
+    end
     local watched = isQuestWatched(questID)
 
     RemovePendingOpsForQuest(questID)
@@ -457,7 +471,7 @@ local function CleanupQuestState(questID)
         return
     end
     manualPins[questID] = nil
-    knownWatchTypes[questID] = nil
+    expectedWatchChanges[questID] = nil
     RemovePendingOpsForQuest(questID)
 end
 
@@ -471,6 +485,7 @@ function AutoZoneTrack:UpdateTrigger(delay, questID)
         needsResync = false
         return
     end
+    if not self.eventsRegistered then self:OnInitialize() end
 
     if questID then
         QueueIncrementalQuestUpdate(questID)
@@ -487,27 +502,20 @@ function AutoZoneTrack:OnQuestWatchListChanged(questID, added)
         return
     end
 
-    if isApplyingQueue then
-        if added and getQuestWatchType then
-            knownWatchTypes[questID] = getQuestWatchType(questID)
-        elseif not added then
-            knownWatchTypes[questID] = nil
-        end
+    local expected = expectedWatchChanges[questID]
+    expectedWatchChanges[questID] = nil
+    if expected ~= nil and expected == added then
         return
     end
 
+    RemovePendingOpsForQuest(questID)
     if added then
         local watchType = getQuestWatchType and getQuestWatchType(questID)
-        knownWatchTypes[questID] = watchType
         if watchType == QUEST_WATCH_TYPE_MANUAL and not isWorldQuest(questID) then
             manualPins[questID] = true
         end
     else
-        local previousType = knownWatchTypes[questID]
-        knownWatchTypes[questID] = nil
-        if previousType == QUEST_WATCH_TYPE_MANUAL then
-            manualPins[questID] = nil
-        end
+        manualPins[questID] = nil
     end
 end
 
@@ -515,10 +523,17 @@ end
 --	Initialize
 ----------------------------------------------------------------------------------------
 function AutoZoneTrack:OnInitialize()
+    if self.eventsRegistered then return end
     if not Config.Quests.Enable then
         return
     end
 
+    self.eventsRegistered = true
+    RefineUI.DB.AutoZoneTrackManualPins = RefineUI.DB.AutoZoneTrackManualPins or {}
+    manualPins = RefineUI.DB.AutoZoneTrackManualPins
+    for questID in pairs(manualPins) do
+        if not isQuestWatched(questID) then manualPins[questID] = nil end
+    end
     local events = {
         "QUEST_WATCH_LIST_CHANGED",
         "QUEST_ACCEPTED",

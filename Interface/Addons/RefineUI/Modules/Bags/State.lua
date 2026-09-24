@@ -314,8 +314,13 @@ local function CompareBlizzardSlotOrder(sa, sb)
 end
 
 local function GetSlotSortMeta(slotState, categoryOrderIndex)
+    local sortMeta = slotState.sortMeta
+    if sortMeta then
+        return sortMeta
+    end
+
     local meta = Bags.GetItemMetadata and Bags.GetItemMetadata(slotState.itemID, slotState.hyperlink) or nil
-    return {
+    sortMeta = {
         categoryIndex = categoryOrderIndex[slotState.categoryKey] or 9999,
         subCategory = tostring(slotState.subCategoryKey or ""),
         itemType = tostring((meta and meta.itemType) or slotState.categoryKey or ""),
@@ -323,6 +328,8 @@ local function GetSlotSortMeta(slotState, categoryOrderIndex)
         quality = tonumber((meta and meta.quality) or slotState.quality) or -1,
         name = tostring((meta and meta.nameLower) or ""),
     }
+    slotState.sortMeta = sortMeta
+    return sortMeta
 end
 
 local function CompareSectionSlots(sa, sb, sortMode, categoryOrderIndex)
@@ -475,7 +482,7 @@ end
 -- Slot State
 ----------------------------------------------------------------------------------------
 
-local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache)
+local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache, combinedViewEnabled, bagViewEnabled)
     if not info or not info.itemID then return nil end
 
     local itemID = info.itemID
@@ -520,7 +527,7 @@ local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unreso
             categoryKey, subCategoryKey = Bags.GetItemCategory(bagID, slotIndex, info)
         end
         categoryKey = categoryKey or "Other"
-        if Bags.IsCombinedViewEnabled and Bags.IsCombinedViewEnabled() then
+        if combinedViewEnabled then
             sectionCategoryKey = MAIN_SECTION.COMBINED_CATEGORY
             sectionSubCategoryKey = nil
             sectionLabel = MAIN_SECTION.COMBINED_LABEL
@@ -528,7 +535,7 @@ local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unreso
             sectionSubOrder = 0
             sectionKey = MAIN_SECTION.COMBINED_KEY
             sectionTargetBagID = nil
-        elseif Bags.IsBagViewEnabled and Bags.IsBagViewEnabled() then
+        elseif bagViewEnabled then
             local bagSection = bagSectionCache and bagSectionCache[bagID]
             sectionCategoryKey = (bagSection and bagSection.categoryKey) or (MAIN_SECTION.BAG_CATEGORY_PREFIX .. tostring(bagID))
             sectionSubCategoryKey = nil
@@ -556,6 +563,7 @@ local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unreso
         hyperlink = info.hyperlink,
         iconFileID = info.iconFileID,
         stackCount = stackCount,
+        slotStackCount = stackCount,
         quality = quality,
         isBound = isBound,
         isLocked = isLocked,
@@ -583,6 +591,36 @@ local function BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unreso
 end
 
 ----------------------------------------------------------------------------------------
+-- Smart Stacking
+----------------------------------------------------------------------------------------
+
+-- Stackable items merge by itemID; unstackable items only merge with an identical link.
+local function GetSmartStackKey(slotState)
+    local meta = Bags.GetItemMetadata and Bags.GetItemMetadata(slotState.itemID, slotState.hyperlink)
+    local itemKey = slotState.hyperlink or slotState.itemID
+    if meta and (meta.stackCount or 1) > 1 then
+        itemKey = slotState.itemID
+    end
+    return slotState.sectionKey .. "|" .. (slotState.isBound and "1" or "0") .. "|" .. tostring(itemKey)
+end
+
+-- Folds a slot into the first matching slot in its section. The first slot keeps its
+-- real bag/slot, so clicks and drags act on that physical stack. Returns true when merged.
+local function TryMergeSmartStack(stacksByKey, slotState)
+    local key = GetSmartStackKey(slotState)
+    local primary = stacksByKey[key]
+    if not primary then
+        stacksByKey[key] = slotState
+        return false
+    end
+
+    primary.stackCount = primary.stackCount + slotState.stackCount
+    primary.isNewItem = primary.isNewItem or slotState.isNewItem
+    primary.visualRevision = Bags.ComputeVisualRevision(primary)
+    return true
+end
+
+----------------------------------------------------------------------------------------
 -- Section Management
 ----------------------------------------------------------------------------------------
 
@@ -607,13 +645,14 @@ local function AddToSection(sectionMap, sectionList, slotState)
 end
 
 local function SortSectionSlots(section, slotStateByKey, sortMode, categoryOrderIndex)
+    categoryOrderIndex = categoryOrderIndex or {}
     table.sort(section.slotKeys, function(a, b)
         local sa = slotStateByKey[a]
         local sb = slotStateByKey[b]
         if not sa or not sb then
             return tostring(a) < tostring(b)
         end
-        return CompareSectionSlots(sa, sb, sortMode, categoryOrderIndex or {})
+        return CompareSectionSlots(sa, sb, sortMode, categoryOrderIndex)
     end)
 end
 
@@ -659,6 +698,11 @@ function Bags.RefreshBagState(opts)
 
     local categoryOrderIndex = BuildCategoryOrderIndex()
     local bagSectionCache = BuildBagSectionCache()
+    local combinedViewEnabled = Bags.IsCombinedViewEnabled and Bags.IsCombinedViewEnabled()
+    local bagViewEnabled = Bags.IsBagViewEnabled and Bags.IsBagViewEnabled()
+    local smartStacks = Bags.IsSmartStackingEnabled and Bags.IsSmartStackingEnabled() and {} or nil
+    -- By Bag view shows physical slots, so only the reagent window merges there.
+    local mainSmartStacks = not bagViewEnabled and smartStacks or nil
     local prevSlotStateByKey = Bags.SlotStateByKey or {}
     local nextSlotStateByKey = {}
     local unresolvedMeta = {}
@@ -683,8 +727,8 @@ function Bags.RefreshBagState(opts)
                 if not info or not info.itemID then
                     freeSlotsBag = freeSlotsBag + 1
                 else
-                    local slotState = BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache)
-                    if slotState then
+                    local slotState = BuildSlotState(bagID, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache, combinedViewEnabled, bagViewEnabled)
+                    if slotState and not (mainSmartStacks and TryMergeSmartStack(mainSmartStacks, slotState)) then
                         nextSlotStateByKey[slotState.slotKey] = slotState
                         AddToSection(mainSectionsByKey, mainSectionList, slotState)
                     end
@@ -700,8 +744,8 @@ function Bags.RefreshBagState(opts)
         if not info or not info.itemID then
             freeSlotsReagent = freeSlotsReagent + 1
         else
-            local slotState = BuildSlotState(5, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache)
-            if slotState then
+            local slotState = BuildSlotState(5, slotIndex, info, categoryOrderIndex, unresolvedMeta, bagSectionCache, combinedViewEnabled, bagViewEnabled)
+            if slotState and not (smartStacks and TryMergeSmartStack(smartStacks, slotState)) then
                 nextSlotStateByKey[slotState.slotKey] = slotState
                 AddToSection(reagentSectionsByKey, reagentSectionList, slotState)
             end
@@ -709,8 +753,6 @@ function Bags.RefreshBagState(opts)
     end
 
     local enabledOrder = (Bags.GetEnabledCategoryOrder and Bags.GetEnabledCategoryOrder()) or Bags.CATEGORY_ORDER or {}
-    local combinedViewEnabled = Bags.IsCombinedViewEnabled and Bags.IsCombinedViewEnabled()
-    local bagViewEnabled = Bags.IsBagViewEnabled and Bags.IsBagViewEnabled()
     local mainSortMode = (Bags.SORT_MODE and Bags.SORT_MODE.BLIZZARD) or "Blizzard"
     if not bagViewEnabled then
         mainSortMode = (Bags.GetActiveSortMode and Bags.GetActiveSortMode()) or mainSortMode

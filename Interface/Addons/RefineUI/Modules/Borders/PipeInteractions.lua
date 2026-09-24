@@ -12,7 +12,6 @@ if not Borders then return end
 local _G = _G
 local pairs = pairs
 local ipairs = ipairs
-local tostring = tostring
 local tonumber = tonumber
 local type = type
 local GetItemInfo = GetItemInfo
@@ -33,7 +32,7 @@ local EJ = {
     KNOWN_ICON_SIZE = 16,
     KNOWN_ICON_INSET_X = 2,
     KNOWN_ICON_INSET_Y = 2,
-    UPDATE_JOB_KEY = "Borders:EncounterJournal:LootRefresh",
+    REFRESH_DEBOUNCE_KEY = "Borders:EncounterJournal:LootRefresh",
 }
 
 local LOOT_HISTORY = {
@@ -69,7 +68,6 @@ local HOOK_KEY = {
     ENCOUNTER_JOURNAL_LOOT_CONTAINER_ON_SHOW = "Borders:EncounterJournal:LootContainer:OnShow",
     ENCOUNTER_JOURNAL_LOOT_JOURNAL_ON_SHOW = "Borders:EncounterJournal:LootJournal:OnShow",
     ENCOUNTER_JOURNAL_ON_SHOW = "Borders:EncounterJournal:OnShow",
-    ENCOUNTER_JOURNAL_ON_HIDE = "Borders:EncounterJournal:OnHide",
     LOOT_HISTORY_ELEMENT_INIT = "Borders:LootHistoryElementMixin:Init",
 }
 
@@ -456,52 +454,22 @@ local function ResolveEncounterJournalRowIcon(row)
     return nil
 end
 
-local function ResolveCollectibleKnownState(itemLink, itemID)
-    if Borders and Borders.ResolveCollectibleKnownState then
-        return Borders:ResolveCollectibleKnownState(itemLink, itemID)
-    end
-
-    if itemID and C_Item and C_Item.RequestLoadItemDataByID then
-        C_Item.RequestLoadItemDataByID(itemID)
-    end
-    return false, nil
-end
-
-local function GetEncounterKnownIconParent(frame)
-    if frame and frame.border then
-        return frame.border
-    end
-    return frame
-end
-
 local function GetEncounterKnownIcon(frame)
-    if not frame then
-        return nil
-    end
-
-    local parent = GetEncounterKnownIconParent(frame)
+    local parent = frame.border or frame
     local icon = frame.RefineUIEncounterKnownIcon
-    if icon and icon:GetParent() ~= parent then
-        icon:SetParent(parent)
-    end
-
     if not icon then
         icon = parent:CreateTexture(nil, "OVERLAY", nil, 7)
         icon:SetSize(EJ.KNOWN_ICON_SIZE, EJ.KNOWN_ICON_SIZE)
         icon:SetDrawLayer("OVERLAY", 7)
+        icon:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", EJ.KNOWN_ICON_INSET_X, EJ.KNOWN_ICON_INSET_Y)
         frame.RefineUIEncounterKnownIcon = icon
+    elseif icon:GetParent() ~= parent then
+        icon:SetParent(parent)
     end
-
-    icon:ClearAllPoints()
-    icon:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", EJ.KNOWN_ICON_INSET_X, EJ.KNOWN_ICON_INSET_Y)
     return icon
 end
 
 local function UpdateEncounterKnownIcon(frame, itemLink, itemID)
-    if not frame then
-        return
-    end
-
     local icon = frame.RefineUIEncounterKnownIcon
     if not itemLink and not itemID then
         if icon then
@@ -510,7 +478,7 @@ local function UpdateEncounterKnownIcon(frame, itemLink, itemID)
         return
     end
 
-    local applicable, known = ResolveCollectibleKnownState(itemLink, itemID)
+    local applicable, known = Borders:ResolveCollectibleKnownState(itemLink, itemID)
     if not applicable then
         if icon then
             icon:Hide()
@@ -520,10 +488,14 @@ local function UpdateEncounterKnownIcon(frame, itemLink, itemID)
 
     icon = GetEncounterKnownIcon(frame)
     local atlas = known and EJ.KNOWN_ICON_ATLAS_KNOWN or EJ.KNOWN_ICON_ATLAS_UNKNOWN
-    local ok = pcall(icon.SetAtlas, icon, atlas, false)
-    if not ok then
-        icon:Hide()
-        return
+    if icon.refineAtlas ~= atlas then
+        local ok = pcall(icon.SetAtlas, icon, atlas, false)
+        if not ok then
+            icon.refineAtlas = nil
+            icon:Hide()
+            return
+        end
+        icon.refineAtlas = atlas
     end
     icon:Show()
 end
@@ -531,49 +503,52 @@ end
 ----------------------------------------------------------------------------------------
 -- Encounter Journal
 ----------------------------------------------------------------------------------------
-function Borders:UpdateEncounterJournalLoot()
-    local function UpdateScrollBox(scrollBox, keyPrefix)
-        if not (scrollBox and scrollBox.GetFrames) then
-            return
-        end
+local EJ_LOOT_KEY = "EncounterJournalEncounterLoot"
+local EJ_LOOT_JOURNAL_KEY = "EncounterJournalLootJournal"
 
-        local frames = scrollBox:GetFrames()
+local function GetEncounterLootScrollBox()
+    local encounterInfo = _G.EncounterJournalEncounterFrameInfo
+    local lootContainer = encounterInfo and encounterInfo.LootContainer
+    return lootContainer and lootContainer.ScrollBox
+end
+
+local function GetLootJournalScrollBox()
+    local lootJournal = _G.EncounterJournal and _G.EncounterJournal.LootJournal
+    return lootJournal and lootJournal.ScrollBox
+end
+
+function Borders:UpdateEncounterJournalRow(row, key)
+    local proxy = RefineUI:RegistryGet(QUEST_PROXY_REGISTRY, row, key)
+    local icon = row:IsShown() and ResolveEncounterJournalRowIcon(row)
+    if icon then
+        local itemLink = ResolveEncounterJournalRowLink(row)
+        local itemID = ResolveEncounterJournalRowItemID(row, itemLink)
+        if not proxy then
+            proxy = GetProxyFrame(row, key)
+            proxy:SetAllPoints(icon)
+        end
+        self:ApplyItemBorder(proxy, itemLink, nil, EJ.BORDER_STYLE)
+        UpdateEncounterKnownIcon(proxy, itemLink, itemID)
+    elseif proxy then
+        self:ApplyItemBorder(proxy, nil, nil, EJ.BORDER_STYLE)
+        UpdateEncounterKnownIcon(proxy, nil, nil)
+    end
+end
+
+function Borders:UpdateEncounterJournalLoot()
+    local function UpdateScrollBox(scrollBox, key)
+        local frames = scrollBox and scrollBox.GetFrames and scrollBox:GetFrames()
         if not frames then
             return
         end
 
-        local key = tostring(keyPrefix or "EncounterJournal")
         for _, row in ipairs(frames) do
-            local proxy = row and RefineUI:RegistryGet(QUEST_PROXY_REGISTRY, row, key) or nil
-            if row and row:IsShown() then
-                local itemLink = ResolveEncounterJournalRowLink(row)
-                local itemID = ResolveEncounterJournalRowItemID(row, itemLink)
-                local icon = ResolveEncounterJournalRowIcon(row)
-                if icon then
-                    proxy = proxy or GetProxyFrame(row, key)
-                    proxy:ClearAllPoints()
-                    proxy:SetAllPoints(icon)
-                    self:ApplyItemBorder(proxy, itemLink, nil, EJ.BORDER_STYLE)
-                    UpdateEncounterKnownIcon(proxy, itemLink, itemID)
-                elseif proxy then
-                    self:ApplyItemBorder(proxy, nil, nil, EJ.BORDER_STYLE)
-                    UpdateEncounterKnownIcon(proxy, nil, nil)
-                end
-            elseif proxy then
-                self:ApplyItemBorder(proxy, nil, nil, EJ.BORDER_STYLE)
-                UpdateEncounterKnownIcon(proxy, nil, nil)
-            end
+            self:UpdateEncounterJournalRow(row, key)
         end
     end
 
-    local encounterInfo = _G.EncounterJournalEncounterFrameInfo
-    local lootContainer = encounterInfo and encounterInfo.LootContainer
-    local lootScrollBox = lootContainer and lootContainer.ScrollBox
-    UpdateScrollBox(lootScrollBox, "EncounterJournalEncounterLoot")
-
-    local lootJournal = _G.EncounterJournal and _G.EncounterJournal.LootJournal
-    local lootJournalScrollBox = lootJournal and lootJournal.ScrollBox
-    UpdateScrollBox(lootJournalScrollBox, "EncounterJournalLootJournal")
+    UpdateScrollBox(GetEncounterLootScrollBox(), EJ_LOOT_KEY)
+    UpdateScrollBox(GetLootJournalScrollBox(), EJ_LOOT_JOURNAL_KEY)
 end
 
 ----------------------------------------------------------------------------------------
@@ -635,26 +610,31 @@ local function SetupInteractionPipe(self)
         self:UpdateMerchantFrame()
     end)
 
+    local function RefreshEncounterJournal()
+        self:UpdateEncounterJournalLoot()
+    end
+
+    -- Deferred so Blizzard's own handlers (e.g. EncounterJournal_LootCallback re-running
+    -- button:Init) update the rows first, and so a collection change clears the
+    -- collectible cache before rows re-resolve. Also coalesces per-item event bursts.
+    local function QueueEncounterRefresh()
+        if _G.EncounterJournal and _G.EncounterJournal:IsShown() then
+            RefineUI:Debounce(EJ.REFRESH_DEBOUNCE_KEY, 0.05, RefreshEncounterJournal)
+        end
+    end
+
     local function HookEncounterJournal()
-        if not RefineUI:IsUpdateJobRegistered(EJ.UPDATE_JOB_KEY) then
-            RefineUI:RegisterUpdateJob(EJ.UPDATE_JOB_KEY, 0.1, function()
-                self:UpdateEncounterJournalLoot()
-            end, {
-                enabled = false,
-                predicate = function()
-                    return _G.EncounterJournal and _G.EncounterJournal:IsShown()
-                end,
-            })
+        -- OnInitializedFrame fires after the row initializer on every acquire, scroll and data refresh.
+        -- Rows that already exist are covered by the OnShow full passes below.
+        local function HookScrollBox(scrollBox, key)
+            if scrollBox and scrollBox.RegisterCallback then
+                ScrollUtil.AddInitializedFrameCallback(scrollBox, function(_, row)
+                    self:UpdateEncounterJournalRow(row, key)
+                end, self, false)
+            end
         end
-
-        local function EnableEncounterRefresh()
-            RefineUI:SetUpdateJobEnabled(EJ.UPDATE_JOB_KEY, true, true)
-            RefineUI:RunUpdateJobNow(EJ.UPDATE_JOB_KEY)
-        end
-
-        local function DisableEncounterRefresh()
-            RefineUI:SetUpdateJobEnabled(EJ.UPDATE_JOB_KEY, false, true)
-        end
+        HookScrollBox(GetEncounterLootScrollBox(), EJ_LOOT_KEY)
+        HookScrollBox(GetLootJournalScrollBox(), EJ_LOOT_JOURNAL_KEY)
 
         local encounterInfo = _G.EncounterJournalEncounterFrameInfo
         local lootContainer = encounterInfo and encounterInfo.LootContainer
@@ -673,17 +653,8 @@ local function SetupInteractionPipe(self)
 
         if _G.EncounterJournal and _G.EncounterJournal.HookScript then
             RefineUI:HookScriptOnce(HOOK_KEY.ENCOUNTER_JOURNAL_ON_SHOW, _G.EncounterJournal, "OnShow", function()
-                EnableEncounterRefresh()
+                self:UpdateEncounterJournalLoot()
             end)
-            RefineUI:HookScriptOnce(HOOK_KEY.ENCOUNTER_JOURNAL_ON_HIDE, _G.EncounterJournal, "OnHide", function()
-                DisableEncounterRefresh()
-            end)
-        end
-
-        if _G.EncounterJournal and _G.EncounterJournal:IsShown() then
-            EnableEncounterRefresh()
-        else
-            DisableEncounterRefresh()
         end
     end
 
@@ -697,12 +668,9 @@ local function SetupInteractionPipe(self)
         end, EVENT_KEY.ADDON_LOADED_ENCOUNTER_JOURNAL)
     end
 
-    RefineUI:RegisterEventCallback("EJ_LOOT_DATA_RECIEVED", function()
-        self:UpdateEncounterJournalLoot()
-    end, EVENT_KEY.EJ_LOOT_DATA_RECIEVED)
-    RefineUI:RegisterEventCallback("EJ_DIFFICULTY_UPDATE", function()
-        self:UpdateEncounterJournalLoot()
-    end, EVENT_KEY.EJ_DIFFICULTY_UPDATE)
+    RefineUI:RegisterEventCallback("EJ_LOOT_DATA_RECIEVED", QueueEncounterRefresh, EVENT_KEY.EJ_LOOT_DATA_RECIEVED)
+    RefineUI:RegisterEventCallback("EJ_DIFFICULTY_UPDATE", QueueEncounterRefresh, EVENT_KEY.EJ_DIFFICULTY_UPDATE)
+    RefineUI.Collections:Subscribe("Borders:EncounterJournal", QueueEncounterRefresh)
 end
 
 Borders:RegisterSource("Interactions", SetupInteractionPipe)

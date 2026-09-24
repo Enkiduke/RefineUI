@@ -2270,9 +2270,9 @@ local function RegisterPortalsEvents()
         end
     end, EVENT_KEY.PLAYER_REGEN_ENABLED)
 
-    RefineUI:RegisterEventCallback("UNIT_SPELLCAST_START", function(_, unitTarget)
+    RefineUI:RegisterUnitEventCallback("UNIT_SPELLCAST_START", "player", function()
         local cfg = GetPortalsConfig()
-        if cfg.CloseOnCastStart and unitTarget == "player" then
+        if cfg.CloseOnCastStart then
             ClosePortalsMenus()
         end
     end, EVENT_KEY.UNIT_SPELLCAST_START)

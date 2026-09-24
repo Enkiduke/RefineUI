@@ -10,7 +10,7 @@ if not Borders then return end
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
-local pairs = pairs
+local ipairs = ipairs
 local GetInventoryItemLink = GetInventoryItemLink
 local GetInventoryItemID = GetInventoryItemID
 local C_Item = C_Item
@@ -31,19 +31,23 @@ local HOOK_KEY = {
     EQUIPMENT_FLYOUT_DISPLAY_BUTTON = "Borders:EquipmentFlyout:DisplayButton",
 }
 
+local SLOT_IDS = {}
+for index, slotName in ipairs(Borders.CharSlots) do
+    SLOT_IDS[index] = GetInventorySlotInfo(slotName .. "Slot")
+end
+
 ----------------------------------------------------------------------------------------
 -- Update Methods
 ----------------------------------------------------------------------------------------
 function Borders:UpdateCharacterFrame()
     if not CharacterFrame or not CharacterFrame:IsShown() then return end
 
-    for _, slotName in pairs(self.CharSlots) do
-        local slotFrame = _G["Character" .. slotName .. "Slot"]
+    local slots = self.CharSlots
+    for index = 1, #slots do
+        local slotFrame = _G["Character" .. slots[index] .. "Slot"]
         if slotFrame then
-            local slotID = GetInventorySlotInfo(slotName .. "Slot")
-            local itemLink = GetInventoryItemLink("player", slotID)
-            local itemID = GetInventoryItemID("player", slotID)
-            self:ApplyItemBorder(slotFrame, itemLink, itemID)
+            local slotID = SLOT_IDS[index]
+            self:ApplyItemBorder(slotFrame, GetInventoryItemLink("player", slotID), GetInventoryItemID("player", slotID))
         end
     end
 end
@@ -53,12 +57,11 @@ function Borders:UpdateInspectFrame()
     local unit = InspectFrame.unit
     if not unit then return end
 
-    for _, slotName in pairs(self.CharSlots) do
-        local slotFrame = _G["Inspect" .. slotName .. "Slot"]
+    local slots = self.CharSlots
+    for index = 1, #slots do
+        local slotFrame = _G["Inspect" .. slots[index] .. "Slot"]
         if slotFrame then
-            local slotID = GetInventorySlotInfo(slotName .. "Slot")
-            local itemLink = GetInventoryItemLink(unit, slotID)
-            self:ApplyItemBorder(slotFrame, itemLink)
+            self:ApplyItemBorder(slotFrame, GetInventoryItemLink(unit, SLOT_IDS[index]))
         end
     end
 end

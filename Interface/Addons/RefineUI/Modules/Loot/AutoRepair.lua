@@ -4,7 +4,10 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local AutoRepair = RefineUI:RegisterModule("AutoRepair")
+local AutoRepair = RefineUI:RegisterModule("AutoRepair", function(cfg)
+    local automation = cfg.Automation
+    return not (type(automation) == "table" and automation.AutoRepair == false)
+end)
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)

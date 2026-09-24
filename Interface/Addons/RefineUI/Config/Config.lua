@@ -695,6 +695,7 @@ C.Quests = {
     AutoComplete = false,
     AutoCollapseMode = "NEVER", -- "NEVER", "COMBAT", "INSTANCE", "RELOAD"
     AutoZoneTrack = true,
+    GroupTrackedQuestsByZone = false,
     LegacyCompletionist = {
         Enable = true,
         AutoCollapse = true,

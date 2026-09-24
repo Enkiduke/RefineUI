@@ -215,6 +215,14 @@ function CDM:OnInjectedItemEnter(itemFrame)
         return
     end
 
+    if self.SetExternalCooldownTooltip then
+        GameTooltip:SetOwner(itemFrame, "ANCHOR_RIGHT")
+        if self:SetExternalCooldownTooltip(GameTooltip, data.cooldownID) then
+            GameTooltip:Show()
+            return
+        end
+    end
+
     local info = self:GetCooldownInfo(data.cooldownID)
     local spellID = self:ResolveCooldownSpellID(info)
     if spellID then
@@ -291,7 +299,9 @@ function CDM:EndInjectedOrderChange(applyDrop)
         local sourceAssignmentIndex = sourceData.assignmentIndex
         local targetBucket = targetCategoryData.bucketKey
 
-        if targetBucket == CDM.NOT_TRACKED_KEY then
+        if targetBucket == CDM.NOT_TRACKED_KEY
+            or (self.IsExternalSourceCategory and self:IsExternalSourceCategory(targetBucket))
+        then
             self:UnassignCooldownID(cooldownID)
         elseif targetBucket and targetBucket ~= CDM.NOT_TRACKED_KEY then
             local destIndex

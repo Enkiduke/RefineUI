@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local RadBar = RefineUI:RegisterModule("RadBar")
+local RadBar = RefineUI:RegisterModule("RadBar", "RadBar")
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues

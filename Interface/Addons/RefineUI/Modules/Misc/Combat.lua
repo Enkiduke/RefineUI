@@ -4,7 +4,17 @@ local AddOnName, RefineUI = ...
 --	Combat Module
 --	Consolidates CombatCrosshair, CombatCursor, and CombatTargeting features
 ----------------------------------------------------------------------------------------
-local Combat = RefineUI:RegisterModule("Combat")
+local Combat = RefineUI:RegisterModule("Combat", function(cfg)
+    local combat = cfg.Combat
+    if type(combat) ~= "table" then
+        return true
+    end
+    return combat.CrosshairEnable ~= false
+        or combat.CursorEnable ~= false
+        or combat.StickyTargeting == true
+        or combat.DisableRightClickInteraction == true
+        or combat.AutoTargetOnClick == true
+end)
 
 -- Lib Globals
 local _G = _G

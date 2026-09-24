@@ -1422,4 +1422,6 @@ local function OnPortraitEvent(event)
     end
 end
 
-RefineUI:OnEvents({ "QUEST_LOG_UPDATE", "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_ENABLED" }, OnPortraitEvent, PORTRAIT_EVENT_KEY_PREFIX)
+function Nameplates:RegisterPortraitEvents()
+    RefineUI:OnEvents({ "QUEST_LOG_UPDATE", "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_ENABLED" }, OnPortraitEvent, PORTRAIT_EVENT_KEY_PREFIX)
+end

@@ -18,7 +18,9 @@ local Locale = RefineUI.Locale
 -- Lua / WoW Upvalues (Cache only what you actually use)
 ----------------------------------------------------------------------------------------
 local _G = _G
+local C_Spell = C_Spell
 local CreateFrame = CreateFrame
+local InCombatLockdown = InCombatLockdown
 local PlaySound = PlaySound
 local SOUNDKIT = _G.SOUNDKIT
 local RAID_CLASS_COLORS = _G.RAID_CLASS_COLORS
@@ -209,9 +211,19 @@ function BuffReminder:EnsureIconFrame(index)
         return frame
     end
 
-    frame = CreateFrame("Frame", nil, self.rootFrame)
+    frame = CreateFrame("Button", nil, self.rootFrame, "InsecureActionButtonTemplate")
     frame:SetFrameLevel(self.rootFrame:GetFrameLevel() + 1)
-    ApplyMousePassthrough(frame)
+    frame:RegisterForClicks("LeftButtonDown", "LeftButtonUp")
+    frame:EnableMouse(false)
+    frame:SetScript("OnEnter", function(button)
+        GameTooltip:SetOwner(button, "ANCHOR_TOP")
+        GameTooltip:SetText(button.entryName, 1, 1, 1)
+        GameTooltip:AddLine("Left click to cast", 0.8, 0.8, 0.8)
+        GameTooltip:Show()
+    end)
+    frame:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
     RefineUI.SetTemplate(frame, "Default")
     frame.icon = frame:CreateTexture(nil, "ARTWORK")
     frame.icon:SetAllPoints()
@@ -230,9 +242,10 @@ function BuffReminder:RenderEntries(entries)
     local flashEnabled = cfg.Flash ~= false
     local soundEnabled = cfg.Sound == true
     local classColorEnabled = cfg.ClassColor == true
+    local editModeActive = self:IsEditModeActive()
     local count = #entries
 
-    if count == 0 and self:IsEditModeActive() then
+    if count == 0 and editModeActive and not InCombatLockdown() then
         local preview = self:GetPreviewEntry()
         entries = { preview }
         count = 1
@@ -269,7 +282,27 @@ function BuffReminder:RenderEntries(entries)
         frame:ClearAllPoints()
         frame:SetPoint("LEFT", rootFrame, "LEFT", xOffset, 0)
         frame:SetSize(iconSize, iconSize)
-        frame.icon:SetTexture(self:GetEntryTexture(payload.entry, payload.runtime))
+        local isSelfCast = (payload.category == "self" and payload.entry.reminderType == "self")
+            or (payload.category == "raid" and payload.entry.class == RefineUI.MyClass)
+            or (payload.category == "targeted" and payload.entry.selfCast == true)
+        local spellID = isSelfCast and self:GetCastSpellID(payload.entry, payload.runtime) or nil
+        local targetSlot = spellID and payload.entry.targetSlot or nil
+        frame.icon:SetTexture(self:GetEntryTexture(payload.entry, payload.runtime, spellID))
+        if frame.castSpellID ~= spellID or frame.targetSlot ~= targetSlot then
+            frame:SetAttribute("type1", spellID and "spell" or nil)
+            frame:SetAttribute("spell1", spellID)
+            frame:SetAttribute("unit", spellID and "player" or nil)
+            frame:SetAttribute("target-slot", targetSlot)
+            frame.castSpellID = spellID
+            frame.targetSlot = targetSlot
+        end
+        frame.entryName = (spellID and (type(payload.entry.spellID) == "table" or payload.entry.customCheck == "roguePoisons")
+            and C_Spell.GetSpellName(spellID)) or payload.entry.name
+        local clickable = spellID ~= nil and not editModeActive
+        if frame.clickable ~= clickable then
+            frame:EnableMouse(clickable)
+            frame.clickable = clickable
+        end
         local providerClass = payload.entry and payload.entry.class
         if not providerClass and payload.entry and payload.entry.key == "preview" then
             providerClass = RefineUI.MyClass

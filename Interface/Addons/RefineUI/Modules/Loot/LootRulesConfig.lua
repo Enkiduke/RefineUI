@@ -893,36 +893,6 @@ function LootRules:ResetStageRulesToDefaults(stage)
     return true
 end
 
-function LootRules:NormalizeItemContext(input)
-    input = input or {}
-    return {
-        itemID = input.itemID,
-        link = input.link,
-        quality = ToNumber(input.quality, nil),
-        itemLevel = ToNumber(input.itemLevel, nil),
-        itemType = input.itemType,
-        itemSubType = input.itemSubType,
-        itemClassID = ToNumber(input.itemClassID, nil),
-        itemSubClassID = ToNumber(input.itemSubClassID, nil),
-        category = input.category or "misc",
-        bindType = input.bindType,
-        isBound = input.isBound,
-        isBoE = input.isBoE and true or false,
-        isWarbound = input.isWarbound and true or false,
-        isSoulbound = input.isSoulbound and true or false,
-        isUsable = (input.isUsable == nil) and nil or (input.isUsable and true or false),
-        isQuestItem = input.isQuestItem and true or false,
-        isCollectibleUncollected = input.isCollectibleUncollected and true or false,
-        isInEquipmentSet = input.isInEquipmentSet and true or false,
-        expansion = ToNumber(input.expansion, nil),
-        sellPrice = ToNumber(input.sellPrice, 0) or 0,
-        stackCount = ToNumber(input.stackCount, 1) or 1,
-        bag = input.bag,
-        slot = input.slot,
-        source = input.source,
-    }
-end
-
 function LootRules:HasEnabledRulesForStage(stage)
     stage = (stage == STAGE_SELL) and STAGE_SELL or STAGE_LOOT
     local cfg = self:GetConfig()
@@ -935,81 +905,59 @@ function LootRules:HasEnabledRulesForStage(stage)
     return false
 end
 
-function LootRules:EvaluateRulesForStage(stage, context)
+-- Resolves a stage's enabled rules once per loot window or merchant visit,
+-- so per-item evaluation does not re-normalize rule options.
+function LootRules:BuildStageRulePlan(stage)
     stage = (stage == STAGE_SELL) and STAGE_SELL or STAGE_LOOT
-    local normalized = self:NormalizeItemContext(context)
+    local isFilterRuleID = (stage == STAGE_SELL) and IsSellFilterRuleID or IsLootFilterRuleID
+    local plan = {
+        isSell = stage == STAGE_SELL,
+        rules = {},
+        filters = {},
+    }
+
     local cfg = self:GetConfig()
-
-    if stage == STAGE_LOOT then
-        for i = 1, #cfg.Rules do
-            local rule = cfg.Rules[i]
-            if rule and rule.stage == STAGE_LOOT and rule.enabled and not IsLootFilterRuleID(rule.id) then
-                local options = self:EnsureRuleOptions(rule)
-                if RuleMatches(rule.id, options, normalized) then
-                    return rule.action, rule
-                end
-            end
-        end
-
-        local hasEnabledFilter = false
-        for i = 1, #cfg.Rules do
-            local rule = cfg.Rules[i]
-            if rule and rule.stage == STAGE_LOOT and rule.enabled and IsLootFilterRuleID(rule.id) then
-                hasEnabledFilter = true
-                local options = self:EnsureRuleOptions(rule)
-                if not RuleMatches(rule.id, options, normalized) then
-                    return "LOOT", rule
-                end
-            end
-        end
-
-        if hasEnabledFilter then
-            return "SKIP", LOOT_FILTER_AND_RULE
-        end
-
-        return "LOOT", nil
-    end
-
-    if stage == STAGE_SELL then
-        for i = 1, #cfg.Rules do
-            local rule = cfg.Rules[i]
-            if rule and rule.stage == STAGE_SELL and rule.enabled and not IsSellFilterRuleID(rule.id) then
-                local options = self:EnsureRuleOptions(rule)
-                if RuleMatches(rule.id, options, normalized) then
-                    return rule.action, rule
-                end
-            end
-        end
-
-        local hasEnabledFilter = false
-        for i = 1, #cfg.Rules do
-            local rule = cfg.Rules[i]
-            if rule and rule.stage == STAGE_SELL and rule.enabled and IsSellFilterRuleID(rule.id) then
-                hasEnabledFilter = true
-                local options = self:EnsureRuleOptions(rule)
-                if not RuleMatches(rule.id, options, normalized) then
-                    return "KEEP", rule
-                end
-            end
-        end
-
-        if hasEnabledFilter then
-            return "SELL", SELL_FILTER_AND_RULE
-        end
-
-        return "KEEP", nil
-    end
-
     for i = 1, #cfg.Rules do
         local rule = cfg.Rules[i]
         if rule and rule.stage == stage and rule.enabled then
-            local options = self:EnsureRuleOptions(rule)
-            if RuleMatches(rule.id, options, normalized) then
-                return rule.action, rule
-            end
+            self:EnsureRuleOptions(rule)
+            local bucket = isFilterRuleID(rule.id) and plan.filters or plan.rules
+            bucket[#bucket + 1] = rule
         end
     end
 
-    return "KEEP", nil
+    plan.isEmpty = #plan.rules == 0 and #plan.filters == 0
+    return plan
+end
+
+function LootRules:EvaluateRulesForStage(stage, context, plan)
+    plan = plan or self:BuildStageRulePlan(stage)
+    local passAction = plan.isSell and "KEEP" or "LOOT"
+
+    local rules = plan.rules
+    for i = 1, #rules do
+        local rule = rules[i]
+        if RuleMatches(rule.id, rule.options, context) then
+            return rule.action, rule
+        end
+    end
+
+    -- Filter rules are AND-ed: every enabled filter must match to sell or skip.
+    local filters = plan.filters
+    for i = 1, #filters do
+        local rule = filters[i]
+        if not RuleMatches(rule.id, rule.options, context) then
+            return passAction, rule
+        end
+    end
+
+    if #filters > 0 then
+        if plan.isSell then
+            return "SELL", SELL_FILTER_AND_RULE
+        end
+        return "SKIP", LOOT_FILTER_AND_RULE
+    end
+
+    return passAction, nil
 end
 

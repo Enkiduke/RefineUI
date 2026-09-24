@@ -10,8 +10,6 @@ if not ActionBars then
 end
 
 ----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
@@ -77,12 +75,6 @@ local function SkinOverrideBar()
     end
 end
 
-local function SkinVehicleIndicator()
-    if not VehicleSeatIndicator then
-        return
-    end
-end
-
 local function StyleMainMenuBarVehicleLeaveButton()
     local button = _G.MainMenuBarVehicleLeaveButton
     if not button then
@@ -114,7 +106,6 @@ end
 function ActionBars:SetupVehicleActionBars()
     StyleDefaultVehicleExitButton()
     SkinOverrideBar()
-    SkinVehicleIndicator()
     StyleMainMenuBarVehicleLeaveButton()
 
     local leaveButton = _G.OverrideActionBarLeaveFrameLeaveButton

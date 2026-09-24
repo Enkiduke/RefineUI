@@ -8,7 +8,7 @@ local _, RefineUI = ...
 ----------------------------------------------------------------------------------------
 -- Module Registration
 ----------------------------------------------------------------------------------------
-local FadeIn = RefineUI:RegisterModule("FadeIn")
+local FadeIn = RefineUI:RegisterModule("FadeIn", "FadeIn")
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals (Upvalues)

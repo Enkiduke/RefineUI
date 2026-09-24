@@ -674,7 +674,6 @@ function BuffReminder:RefreshBuffOptionsWindow(force)
     end
 
     local runtime = self:BuildRuntimeState()
-    self:BuildValidUnitCache()
 
     local contentWidth = (window:GetWidth() or 560) - 52
     if contentWidth < 500 then

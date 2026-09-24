@@ -5,7 +5,11 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local AutoOpenBar = RefineUI:RegisterModule("AutoOpenBar")
+local AutoOpenBar = RefineUI:RegisterModule("AutoOpenBar", function(cfg)
+    local automation = cfg.Automation
+    local settings = type(automation) == "table" and automation.AutoOpenBar
+    return not (type(settings) == "table" and settings.Enable == false)
+end)
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)

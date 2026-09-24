@@ -1,0 +1,9 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <!-- Collection and journal data shared by Adventure Guide, Quests, Borders, and Tooltip. -->
+    <Script file="JournalCache.lua"/>
+    <Script file="Collections.lua"/>
+    <Script file="InstanceAchievements.lua"/>
+    <Script file="InstanceCompletion.lua"/>
+    <Script file="TokenAppearanceData.lua"/>
+    <Script file="TokenAppearances.lua"/>
+</Ui>

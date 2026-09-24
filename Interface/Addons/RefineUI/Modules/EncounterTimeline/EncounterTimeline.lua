@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local EncounterTimeline = RefineUI:RegisterModule("EncounterTimeline")
+local EncounterTimeline = RefineUI:RegisterModule("EncounterTimeline", "EncounterTimeline")
 
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------

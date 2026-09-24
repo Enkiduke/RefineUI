@@ -182,7 +182,12 @@ local function CopyAssignedCooldownIDs(snapshot)
         if type(ids) == "table" then
             for n = 1, #ids do
                 local cooldownID = ids[n]
-                if type(cooldownID) == "number" and cooldownID > 0 and not assignedSet[cooldownID] then
+                local isExternalCooldown = CDM.IsExternalCooldownID and CDM:IsExternalCooldownID(cooldownID)
+                if type(cooldownID) == "number"
+                    and cooldownID > 0
+                    and not isExternalCooldown
+                    and not assignedSet[cooldownID]
+                then
                     assignedSet[cooldownID] = true
                     ordered[#ordered + 1] = cooldownID
                 end
@@ -673,7 +678,10 @@ function CDM:ApplyPendingBlizzardAssignmentSync()
     return self:SyncAssignmentsToBlizzardLayout()
 end
 
-function CDM:HandleAssignmentConfigurationChanged()
+function CDM:HandleAssignmentConfigurationChanged(cooldownID)
+    if self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID) then
+        return
+    end
     self:MarkBlizzardAssignmentSyncDirty("assignments")
 
     if not self:IsRefineRuntimeOwnerActive() then

@@ -3,7 +3,7 @@
 -- Description: Displays missing buffs for the player and their party/raid.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
-local BuffReminder = RefineUI:RegisterModule("BuffReminder")
+local BuffReminder = RefineUI:RegisterModule("BuffReminder", "BuffReminder")
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
@@ -28,13 +28,31 @@ local type = type
 BuffReminder.FRAME_NAME = "RefineUI_BuffReminder"
 BuffReminder.UPDATE_DEBOUNCE_KEY = "BuffReminder:Refresh"
 BuffReminder.QUESTION_MARK_ICON = 134400
-BuffReminder.AURA_FILTER = "HELPFUL"
 
 ----------------------------------------------------------------------------------------
 -- Public Methods
 ----------------------------------------------------------------------------------------
 function BuffReminder:Refresh()
     self:RenderEntries(self:CollectMissingEntries())
+    self:UpdateGroupAuraWatch()
+end
+
+-- Unfiltered UNIT_AURA wakes Lua for every nameplate and group member. The player's
+-- auras are always unit-filtered; everyone else's only while a targeted buff needs them.
+local GROUP_AURA_EVENT_KEY = "BuffReminder:UNIT_AURA:Group"
+
+function BuffReminder:UpdateGroupAuraWatch()
+    local watch = self.watchGroupAuras == true and self.onGroupAuraEvent ~= nil
+    if self.groupAuraWatchActive == watch then
+        return
+    end
+
+    self.groupAuraWatchActive = watch
+    if watch then
+        RefineUI:RegisterEventCallback("UNIT_AURA", self.onGroupAuraEvent, GROUP_AURA_EVENT_KEY)
+    else
+        RefineUI:OffEvent("UNIT_AURA", GROUP_AURA_EVENT_KEY)
+    end
 end
 
 function BuffReminder:RequestRefresh()
@@ -59,7 +77,11 @@ function BuffReminder:OnEnable()
     local function OnEvent(event, ...)
         if event == "UNIT_AURA" then
             local unit = ...
-            if (issecretvalue and issecretvalue(unit)) or type(unit) ~= "string" or not self:IsTrackedUnitToken(unit) then
+            if (issecretvalue and issecretvalue(unit)) or type(unit) ~= "string" then
+                return
+            end
+            -- Only targeted buffs read other members' auras; skip group aura churn otherwise.
+            if unit ~= "player" and not (self.watchGroupAuras and self:IsTrackedUnitToken(unit)) then
                 return
             end
             if InCombatLockdown() then
@@ -84,8 +106,14 @@ function BuffReminder:OnEnable()
         self:RequestRefresh()
     end
 
+    RefineUI:OnUnitEvents("player", { "UNIT_AURA", "UNIT_INVENTORY_CHANGED", "UNIT_PET" }, OnEvent, "BuffReminder:Player")
+    self.onGroupAuraEvent = function(event, unit)
+        if unit ~= "player" then
+            OnEvent(event, unit)
+        end
+    end
+
     RefineUI:OnEvents({
-        "UNIT_AURA",
         "PLAYER_ENTERING_WORLD",
         "ZONE_CHANGED_NEW_AREA",
         "GROUP_ROSTER_UPDATE",
@@ -93,10 +121,9 @@ function BuffReminder:OnEnable()
         "PLAYER_REGEN_DISABLED",
         "PLAYER_REGEN_ENABLED",
         "PLAYER_SPECIALIZATION_CHANGED",
+        "UPDATE_SHAPESHIFT_FORM",
         "TRAIT_CONFIG_UPDATED",
-        "UNIT_INVENTORY_CHANGED",
         "PLAYER_EQUIPMENT_CHANGED",
-        "UNIT_PET",
         "PET_BAR_UPDATE",
     }, OnEvent, "BuffReminder")
 

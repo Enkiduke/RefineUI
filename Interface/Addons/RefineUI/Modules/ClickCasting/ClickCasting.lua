@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local ClickCasting = RefineUI:RegisterModule("ClickCasting")
+local ClickCasting = RefineUI:RegisterModule("ClickCasting", "ClickCasting")
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals

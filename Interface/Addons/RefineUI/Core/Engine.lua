@@ -15,12 +15,9 @@ local GetRealmName = GetRealmName
 _G[AddOnName] = RefineUI
 
 -- Namespace Structure
-RefineUI.Core = {}
 RefineUI.Config = {}
 RefineUI.Locale = {}
 RefineUI.Media = {}
-RefineUI.Modules = {}
-RefineUI.Libs = {}
 
 ----------------------------------------------------------------------------------------
 -- Metadata
@@ -41,6 +38,9 @@ function RefineUI:OnInitialize()
 
     -- Sync constants immediately
     if self.UpdatePixelConstants then self:UpdatePixelConstants() end
+
+    -- Style.lua cached theme colors from code defaults at load; re-read the saved profile.
+    if self.RefreshTheme then self.RefreshTheme() end
 end
 
 ----------------------------------------------------------------------------------------
@@ -60,16 +60,11 @@ loader:SetScript("OnEvent", function(self, event, ...)
     elseif event == "PLAYER_LOGIN" then
         -- Pixel-perfect layout depends on the effective UI scale being established
         -- before the rest of the startup pipeline builds or restyles frames.
-        if RefineUI.SetUIScale then
-            RefineUI:SetUIScale()
+        if RefineUI.RestoreUIScale then
+            RefineUI:RestoreUIScale()
         end
 
-        if RefineUI.RunStartupCallbacks then
-            RefineUI:RunStartupCallbacks()
-        elseif RefineUI.OnEnable then
-            -- Backward compatibility fallback
-            RefineUI:OnEnable()
-        end
+        RefineUI:RunStartupCallbacks()
 
         self:UnregisterEvent("PLAYER_LOGIN")
     end

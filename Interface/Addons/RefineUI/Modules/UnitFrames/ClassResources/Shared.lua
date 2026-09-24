@@ -337,29 +337,10 @@ function CR.SetRuneSchedulerEnabled(enabled)
     end
 end
 
-local function CreatePulse(frame)
-    if frame.PulseAnim then
-        return
-    end
-
-    local animGroup = frame:CreateAnimationGroup()
-    animGroup:SetLooping("BOUNCE")
-
-    local alpha = animGroup:CreateAnimation("Alpha")
-    alpha:SetFromAlpha(0.2)
-    alpha:SetToAlpha(0.8)
-    alpha:SetDuration(0.6)
-    alpha:SetSmoothing("IN_OUT")
-
-    frame.PulseAnim = animGroup
-end
-
 local function PlayPulse(frame)
-    if not frame.PulseAnim then
-        CreatePulse(frame)
-    end
-    if not frame.PulseAnim:IsPlaying() then
-        frame.PulseAnim:Play()
+    local pulse = RefineUI.CreatePulse(frame, 0.2, 0.8, 0.6)
+    if not pulse:IsPlaying() then
+        pulse:Play()
     end
 end
 

@@ -1107,18 +1107,20 @@ function RefineUI:RefreshAllNameplateNameRules(_reason)
     end
 end
 
-RefineUI:RegisterEventCallback("PLAYER_REGEN_DISABLED", function()
-    Nameplates:ClearNpcTitleResolveQueue()
-    Nameplates:HideAllNpcTitleFontStrings("PLAYER_REGEN_DISABLED")
-end, "Nameplates:NPCTitles:CombatStart")
-
-RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-    RefineUI:RefreshAllNameplateNpcTitles("PLAYER_REGEN_ENABLED")
-end, "Nameplates:NPCTitles:CombatEnd")
-
-RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
-    if ShouldSuppressNpcTitleScanning() then
+function Nameplates:RegisterNpcTitleEvents()
+    RefineUI:RegisterEventCallback("PLAYER_REGEN_DISABLED", function()
         Nameplates:ClearNpcTitleResolveQueue()
-    end
-    RefineUI:RefreshAllNameplateNpcTitles("PLAYER_ENTERING_WORLD")
-end, "Nameplates:NPCTitles:WorldEntry")
+        Nameplates:HideAllNpcTitleFontStrings("PLAYER_REGEN_DISABLED")
+    end, "Nameplates:NPCTitles:CombatStart")
+
+    RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
+        RefineUI:RefreshAllNameplateNpcTitles("PLAYER_REGEN_ENABLED")
+    end, "Nameplates:NPCTitles:CombatEnd")
+
+    RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
+        if ShouldSuppressNpcTitleScanning() then
+            Nameplates:ClearNpcTitleResolveQueue()
+        end
+        RefineUI:RefreshAllNameplateNpcTitles("PLAYER_ENTERING_WORLD")
+    end, "Nameplates:NPCTitles:WorldEntry")
+end

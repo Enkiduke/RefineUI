@@ -55,22 +55,8 @@ local BAG_STATUS_ICON_ATLAS_KNOWN = "UI-QuestTracker-Tracker-Check"
 local BAG_UNKNOWN_ICON_SIZE = 16
 local BAG_UNKNOWN_ICON_INSET_X = 2
 local BAG_UNKNOWN_ICON_INSET_Y = 2
-local SQUISH_CURVE_ID = 92181
-local SQUISH_THRESHOLD = 250
-local COLLECTIBLE_CACHE_EVENT_KEY_PREFIX = "Borders:CollectibleCache:"
-local COLLECTIBLE_CACHE_INVALIDATION_EVENTS = {
-    "COMPANION_LEARNED",
-    "COMPANION_UNLEARNED",
-    "COMPANION_UPDATE",
-    "PET_JOURNAL_LIST_UPDATE",
-    "NEW_MOUNT_ADDED",
-    "NEW_TOY_ADDED",
-    "TOYS_UPDATED",
-    "TRANSMOG_COLLECTION_UPDATED",
-    "TRANSMOG_COLLECTION_SOURCE_ADDED",
-    "TRANSMOG_COLLECTION_SOURCE_REMOVED",
-}
 local FRAME_BORDER_CACHE = setmetatable({}, { __mode = "k" })
+local REFINE_BAG_SLOT_CACHE = setmetatable({}, { __mode = "k" })
 local ITEM_LEVEL_CACHE = {}
 local COLLECTIBLE_STATE_CACHE = {}
 local PENDING_ITEM_DATA_REQUESTS = {}
@@ -126,19 +112,6 @@ function Borders:InvalidateCollectibleStateCache()
     wipe(COLLECTIBLE_STATE_CACHE)
 end
 
-local function GetPostSquishItemLevel(preSquishItemLevel)
-    if not preSquishItemLevel then
-        return 0
-    end
-    if C_CurveUtil and C_CurveUtil.EvaluateGameCurve then
-        local squished = C_CurveUtil.EvaluateGameCurve(SQUISH_CURVE_ID, preSquishItemLevel)
-        if squished and squished > 0 then
-            return floor(squished)
-        end
-    end
-    return preSquishItemLevel
-end
-
 local function RequestItemDataByIDOnce(itemID)
     if type(itemID) ~= "number" or itemID <= 0 then
         return
@@ -164,34 +137,19 @@ local function GetCollectibleCacheKey(itemLink, itemID)
     return nil
 end
 
-local function GetCachedCollectibleKnownState(itemLink, itemID)
-    local cacheKey = GetCollectibleCacheKey(itemLink, itemID)
-    local cached = cacheKey and COLLECTIBLE_STATE_CACHE[cacheKey]
-    if not cached then
-        return nil, nil
-    end
-
-    return cached.applicable, cached.known
-end
-
-local function CacheCollectibleKnownState(itemLink, itemID, applicable, known)
-    if applicable ~= true then
-        return applicable, known
-    end
-
+-- Only applicable collectibles are cached, so the stored value is the known flag.
+local function CacheCollectibleKnownState(itemLink, itemID, known)
+    known = known == true
     local cacheKey = GetCollectibleCacheKey(itemLink, itemID)
     if cacheKey ~= nil then
-        COLLECTIBLE_STATE_CACHE[cacheKey] = {
-            applicable = true,
-            known = known == true,
-        }
+        COLLECTIBLE_STATE_CACHE[cacheKey] = known
     end
 
     if type(itemID) == "number" and itemID > 0 then
         PENDING_ITEM_DATA_REQUESTS[itemID] = nil
     end
 
-    return applicable, known
+    return true, known
 end
 
 local function ResolveCollectibleKnownState(itemLink, itemID)
@@ -199,16 +157,17 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
     if isToken then
         return tokenKnown ~= nil, tokenKnown
     end
-    local cachedApplicable, cachedKnown = GetCachedCollectibleKnownState(itemLink, itemID)
-    if cachedApplicable ~= nil then
-        return cachedApplicable, cachedKnown
+    local cacheKey = GetCollectibleCacheKey(itemLink, itemID)
+    local cachedKnown = cacheKey and COLLECTIBLE_STATE_CACHE[cacheKey]
+    if cachedKnown ~= nil then
+        return true, cachedKnown
     end
 
     if itemID and C_MountJournal and C_MountJournal.GetMountFromItem and C_MountJournal.GetMountInfoByID then
         local mountID = C_MountJournal.GetMountFromItem(itemID)
         if mountID then
             local _, _, _, _, _, _, _, _, _, _, isCollected = C_MountJournal.GetMountInfoByID(mountID)
-            return CacheCollectibleKnownState(itemLink, itemID, true, isCollected == true)
+            return CacheCollectibleKnownState(itemLink, itemID, isCollected)
         end
     end
 
@@ -216,33 +175,12 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
         local _, _, _, _, _, _, _, _, _, _, _, _, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
         if type(speciesID) == "number" then
             local owned = C_PetJournal.GetNumCollectedInfo(speciesID)
-            return CacheCollectibleKnownState(itemLink, itemID, true, (owned or 0) > 0)
+            return CacheCollectibleKnownState(itemLink, itemID, (owned or 0) > 0)
         end
     end
 
-    if itemID and C_ToyBox and C_ToyBox.GetToyInfo and C_ToyBox.PlayerHasToy then
-        local toyName = C_ToyBox.GetToyInfo(itemID)
-        if toyName then
-            return CacheCollectibleKnownState(itemLink, itemID, true, C_ToyBox.PlayerHasToy(itemID) == true)
-        end
-    end
-
-    if itemID and C_ToyBox and C_ToyBox.GetToyLink then
-        local toyLink = C_ToyBox.GetToyLink(itemID)
-        if toyLink then
-            if C_ToyBox.PlayerHasToy then
-                return CacheCollectibleKnownState(itemLink, itemID, true, C_ToyBox.PlayerHasToy(itemID) == true)
-            end
-            if PlayerHasToy then
-                return CacheCollectibleKnownState(itemLink, itemID, true, PlayerHasToy(itemID) == true)
-            end
-        end
-    end
-
-    if itemID and PlayerHasToy then
-        if C_ToyBox and C_ToyBox.GetToyInfo and C_ToyBox.GetToyInfo(itemID) then
-            return CacheCollectibleKnownState(itemLink, itemID, true, PlayerHasToy(itemID) == true)
-        end
+    if itemID and PlayerHasToy and C_ToyBox and (C_ToyBox.GetToyLink(itemID) or C_ToyBox.GetToyInfo(itemID)) then
+        return CacheCollectibleKnownState(itemLink, itemID, PlayerHasToy(itemID))
     end
 
     if itemID then
@@ -260,7 +198,7 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
             if collections and type(collections.IsAppearanceCollected) == "function" then
                 local known = collections:IsAppearanceCollected(appearanceID, sourceID)
                 if known ~= nil then
-                    return CacheCollectibleKnownState(itemLink, itemID, true, known)
+                    return CacheCollectibleKnownState(itemLink, itemID, known)
                 end
 
                 -- A positive exact-source result is conclusive. A negative is
@@ -268,7 +206,7 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
                 if C_TransmogCollection.GetSourceInfo then
                     local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
                     if sourceInfo and sourceInfo.isCollected == true then
-                        return CacheCollectibleKnownState(itemLink, itemID, true, true)
+                        return CacheCollectibleKnownState(itemLink, itemID, true)
                     end
                 end
                 return false, nil
@@ -277,7 +215,7 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
             if C_TransmogCollection.GetSourceInfo then
                 local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
                 if sourceInfo then
-                    return CacheCollectibleKnownState(itemLink, itemID, true, sourceInfo.isCollected == true)
+                    return CacheCollectibleKnownState(itemLink, itemID, sourceInfo.isCollected)
                 end
             end
         end
@@ -310,10 +248,6 @@ local function ResolveItemLevel(itemLink, itemID)
     end
     if (not itemLevel or itemLevel <= 1) and itemID then
         itemLevel = GetDetailedItemLevelInfo(itemID)
-    end
-
-    if itemLevel and itemLevel > SQUISH_THRESHOLD then
-        itemLevel = GetPostSquishItemLevel(itemLevel)
     end
 
     if itemLevel and itemLevel > 1 then
@@ -361,21 +295,13 @@ local function CreateItemLevelText(frame)
     return text
 end
 
-local function GetItemLevelTextParent(frame)
-    if not frame then
-        return nil
-    end
-
+-- Item level text and status icons sit above the bag host border, then the frame border.
+local function GetOverlayParent(frame)
     local bagHost = frame.RefineUIBagBorderHost
     if bagHost and bagHost.border then
         return bagHost.border
     end
-
-    if frame.border then
-        return frame.border
-    end
-
-    return frame
+    return frame.border or frame
 end
 
 local function GetBagStatusAnchor(frame)
@@ -404,30 +330,17 @@ local function GetBagStatusAnchor(frame)
     return frame
 end
 
-local function GetBagStatusParent(frame)
-    local bagHost = frame and frame.RefineUIBagBorderHost
-    if bagHost and bagHost.border then
-        return bagHost.border
-    end
-    if frame and frame.border then
-        return frame.border
-    end
-    return frame
-end
-
 local function CreateBagStatusIcon(frame)
     local icon = frame.RefineUIBorderStatusIcon
     if not icon then
-        icon = GetBagStatusParent(frame):CreateTexture(nil, "OVERLAY", nil, 7)
+        icon = GetOverlayParent(frame):CreateTexture(nil, "OVERLAY", nil, 7)
         icon:Hide()
     end
     frame.RefineUIBorderStatusIcon = icon
     return icon
 end
 
-local function IsRefineBagSlot(frame)
-    if not frame then return false end
-
+local function ComputeIsRefineBagSlot(frame)
     local frameName = frame.GetName and frame:GetName()
     if frameName and (find(frameName, "^RefineUI_BagSlot") or find(frameName, "^RefineUI_ReagentSlot")) then
         return true
@@ -445,33 +358,46 @@ local function IsRefineBagSlot(frame)
     return false
 end
 
-local function ResolveBagStatusAtlas(frame)
-    if not IsRefineBagSlot(frame) then
-        return nil
+-- Frame names and parents are fixed once a frame is styled, so resolve the walk once per frame.
+local function IsRefineBagSlot(frame)
+    local isBagSlot = REFINE_BAG_SLOT_CACHE[frame]
+    if isBagSlot == nil then
+        isBagSlot = ComputeIsRefineBagSlot(frame)
+        REFINE_BAG_SLOT_CACHE[frame] = isBagSlot
     end
-    if not (frame.GetBagID and frame.GetID and C_Container and C_Container.GetContainerItemInfo) then
-        return nil
-    end
+    return isBagSlot
+end
 
-    local bagID = frame:GetBagID()
-    local slotID = frame:GetID()
-    if not bagID or not slotID then
-        return nil
-    end
+local function ResolveBagStatusAtlas(frame, itemLink, itemID, isRefineBagSlot)
+    local bagID, slotID, quality
+    if isRefineBagSlot then
+        if not (frame.GetBagID and frame.GetID and C_Container and C_Container.GetContainerItemInfo) then
+            return nil
+        end
 
-    local info = C_Container.GetContainerItemInfo(bagID, slotID)
-    if not info or not info.itemID then
+        bagID = frame:GetBagID()
+        slotID = frame:GetID()
+        if not bagID or not slotID then
+            return nil
+        end
+
+        local info = C_Container.GetContainerItemInfo(bagID, slotID)
+        if not info or not info.itemID then
+            return nil
+        end
+        itemLink, itemID, quality = info.hyperlink, info.itemID, info.quality
+    elseif not itemID then
         return nil
     end
 
     -- Token collection status takes precedence over the generic quest-item marker.
-    if RefineUI.TokenAppearanceData[info.itemID] then
-        local _, known = RefineUI:GetTokenAppearanceStatus(info.hyperlink, info.itemID)
+    if RefineUI.TokenAppearanceData[itemID] then
+        local _, known = RefineUI:GetTokenAppearanceStatus(itemLink, itemID)
         if known == nil then return nil end
         return known and BAG_STATUS_ICON_ATLAS_KNOWN or BAG_STATUS_ICON_ATLAS_UNKNOWN
     end
 
-    if C_Container.GetContainerItemQuestInfo then
+    if isRefineBagSlot and C_Container.GetContainerItemQuestInfo then
         local questInfo = C_Container.GetContainerItemQuestInfo(bagID, slotID)
         if questInfo then
             if questInfo.questID and not questInfo.isActive then
@@ -483,7 +409,7 @@ local function ResolveBagStatusAtlas(frame)
         end
     end
 
-    local applicable, known = ResolveCollectibleKnownState(info.hyperlink, info.itemID)
+    local applicable, known = ResolveCollectibleKnownState(itemLink, itemID)
     if applicable then
         if known ~= true then
             return BAG_STATUS_ICON_ATLAS_UNKNOWN
@@ -491,15 +417,14 @@ local function ResolveBagStatusAtlas(frame)
         return nil
     end
 
-    if info.quality == 0 then
+    if isRefineBagSlot and quality == 0 then
         return "coin-icon"
     end
 
     return nil
 end
 
-local function UpdateBagStatusIcon(frame)
-    if not frame then return end
+local function UpdateBagStatusIcon(frame, itemLink, itemID, isRefineBagSlot)
     local icon = frame.RefineUIBorderStatusIcon
     if frame._disableBagStatusIcon then
         if icon then
@@ -508,7 +433,7 @@ local function UpdateBagStatusIcon(frame)
         return
     end
 
-    local atlas = ResolveBagStatusAtlas(frame)
+    local atlas = ResolveBagStatusAtlas(frame, itemLink, itemID, isRefineBagSlot)
     if not atlas then
         if icon then
             icon:Hide()
@@ -517,25 +442,30 @@ local function UpdateBagStatusIcon(frame)
     end
 
     icon = CreateBagStatusIcon(frame)
-    local iconParent = GetBagStatusParent(frame)
+    local iconParent = GetOverlayParent(frame)
     if icon:GetParent() ~= iconParent then
         icon:SetParent(iconParent)
     end
 
-    if atlas == BAG_STATUS_ICON_ATLAS_UNKNOWN or atlas == BAG_STATUS_ICON_ATLAS_KNOWN then
-        icon:SetSize(BAG_UNKNOWN_ICON_SIZE, BAG_UNKNOWN_ICON_SIZE)
-        icon:ClearAllPoints()
-        icon:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", BAG_UNKNOWN_ICON_INSET_X, BAG_UNKNOWN_ICON_INSET_Y)
-    else
-        icon:SetSize(BAG_STATUS_ICON_SIZE, BAG_STATUS_ICON_SIZE)
-        icon:ClearAllPoints()
-        icon:SetPoint("CENTER", GetBagStatusAnchor(frame), "TOPLEFT", BAG_STATUS_ICON_OFFSET_X, BAG_STATUS_ICON_OFFSET_Y)
-    end
-    icon:SetDrawLayer("OVERLAY", BAG_STATUS_ICON_SUBLEVEL)
-    local ok = pcall(icon.SetAtlas, icon, atlas, false)
-    if not ok then
-        icon:Hide()
-        return
+    -- Size, anchor and atlas depend only on the atlas, so skip them when it is unchanged.
+    if icon.refineAtlas ~= atlas then
+        if atlas == BAG_STATUS_ICON_ATLAS_UNKNOWN or atlas == BAG_STATUS_ICON_ATLAS_KNOWN then
+            icon:SetSize(BAG_UNKNOWN_ICON_SIZE, BAG_UNKNOWN_ICON_SIZE)
+            icon:ClearAllPoints()
+            icon:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", BAG_UNKNOWN_ICON_INSET_X, BAG_UNKNOWN_ICON_INSET_Y)
+        else
+            icon:SetSize(BAG_STATUS_ICON_SIZE, BAG_STATUS_ICON_SIZE)
+            icon:ClearAllPoints()
+            icon:SetPoint("CENTER", GetBagStatusAnchor(frame), "TOPLEFT", BAG_STATUS_ICON_OFFSET_X, BAG_STATUS_ICON_OFFSET_Y)
+        end
+        icon:SetDrawLayer("OVERLAY", BAG_STATUS_ICON_SUBLEVEL)
+        local ok = pcall(icon.SetAtlas, icon, atlas, false)
+        if not ok then
+            icon.refineAtlas = nil
+            icon:Hide()
+            return
+        end
+        icon.refineAtlas = atlas
     end
     icon:Show()
 end
@@ -543,7 +473,7 @@ end
 function Borders:RefreshTokenStatusIcons()
     for frame, cache in pairs(FRAME_BORDER_CACHE) do
         if RefineUI.TokenAppearanceData[cache.itemID] and frame:IsShown() then
-            UpdateBagStatusIcon(frame)
+            UpdateBagStatusIcon(frame, cache.itemLink, cache.itemID, IsRefineBagSlot(frame))
         end
     end
 end
@@ -668,7 +598,7 @@ function Borders:ApplyItemBorder(frame, itemLink, itemID, borderStyle)
 
     local frameCache = FRAME_BORDER_CACHE[frame]
     if not forceRefresh and IsFrameCacheMatch(frameCache, sourceItemLink, sourceItemID, borderInset, borderEdgeSize) then
-        UpdateBagStatusIcon(frame)
+        UpdateBagStatusIcon(frame, sourceItemLink, sourceItemID, isRefineBagSlot)
         return
     end
 
@@ -706,8 +636,8 @@ function Borders:ApplyItemBorder(frame, itemLink, itemID, borderStyle)
                 and itemEquipLoc ~= "INVTYPE_BAG" and itemEquipLoc ~= "INVTYPE_TABARD" and itemEquipLoc ~= "INVTYPE_BODY" then
 
                 local text = CreateItemLevelText(frame)
-                local textParent = GetItemLevelTextParent(frame)
-                if textParent and text:GetParent() ~= textParent then
+                local textParent = GetOverlayParent(frame)
+                if text:GetParent() ~= textParent then
                     text:SetParent(textParent)
                 end
 
@@ -737,29 +667,25 @@ function Borders:ApplyItemBorder(frame, itemLink, itemID, borderStyle)
         if text then text:Hide() end
     end
 
-    FRAME_BORDER_CACHE[frame] = FRAME_BORDER_CACHE[frame] or {}
-    FRAME_BORDER_CACHE[frame].itemLink = sourceItemLink
-    FRAME_BORDER_CACHE[frame].itemID = sourceItemID
-    FRAME_BORDER_CACHE[frame].borderInset = borderInset
-    FRAME_BORDER_CACHE[frame].borderEdgeSize = borderEdgeSize
-    UpdateBagStatusIcon(frame)
+    if not frameCache then
+        frameCache = {}
+        FRAME_BORDER_CACHE[frame] = frameCache
+    end
+    frameCache.itemLink = sourceItemLink
+    frameCache.itemID = sourceItemID
+    frameCache.borderInset = borderInset
+    frameCache.borderEdgeSize = borderEdgeSize
+    UpdateBagStatusIcon(frame, sourceItemLink, sourceItemID, isRefineBagSlot)
 end
 
 ----------------------------------------------------------------------------------------
 -- Lifecycle
 ----------------------------------------------------------------------------------------
 function Borders:OnEnable()
-    if not self.collectibleCacheEventsRegistered then
-        self.collectibleCacheEventsRegistered = true
-
-        for index = 1, #COLLECTIBLE_CACHE_INVALIDATION_EVENTS do
-            local eventName = COLLECTIBLE_CACHE_INVALIDATION_EVENTS[index]
-            local eventKey = COLLECTIBLE_CACHE_EVENT_KEY_PREFIX .. eventName
-            RefineUI:RegisterEventCallback(eventName, function()
-                self:InvalidateCollectibleStateCache()
-            end, eventKey)
-        end
-    end
+    -- Collections already owns the mount/pet/toy/transmog ownership events.
+    RefineUI.Collections:Subscribe("Borders", function()
+        self:InvalidateCollectibleStateCache()
+    end)
 
     for i = 1, #pipeOrder do
         local key = pipeOrder[i]

@@ -25,22 +25,9 @@ local private = ActionBars.Private
 ----------------------------------------------------------------------------------------
 -- Private Helpers
 ----------------------------------------------------------------------------------------
-local function QueueCooldownUpdate(button)
-    if button then
-        private.QueueDeferredCooldownUpdate(button)
-    end
-end
-
-local function QueueStateUpdate(button)
-    if button then
-        private.QueueDeferredStateUpdate(button)
-    end
-end
-
-local function QueueUsabilityUpdate(button, isUsable, notEnoughMana)
-    if button then
-        private.QueueDeferredUsabilityUpdate(button, isUsable, notEnoughMana)
-    end
+-- Blizzard's UpdateUsable just repainted the icon, so reapply our color in the same frame.
+local function ReapplyUsability(button, _, isUsable, notEnoughMana)
+    private.RefreshButtonUsability(button, true, isUsable, notEnoughMana)
 end
 
 ----------------------------------------------------------------------------------------
@@ -114,29 +101,19 @@ function ActionBars:SetupHooks()
     end
 
     if _G.ActionButton_UpdateCooldown then
-        RefineUI:HookOnce("ActionBars:ActionButton_UpdateCooldown", "ActionButton_UpdateCooldown", function(button)
-            QueueCooldownUpdate(button)
-        end)
+        RefineUI:HookOnce("ActionBars:ActionButton_UpdateCooldown", "ActionButton_UpdateCooldown", private.QueueDeferredCooldownUpdate)
     end
 
     if _G.ActionButton_UpdateRangeIndicator then
-        RefineUI:HookOnce("ActionBars:ActionButton_UpdateRangeIndicator", "ActionButton_UpdateRangeIndicator", function(button, checksRange, inRange)
-            private.QueueDeferredRangeUpdate(button, checksRange, inRange)
-        end)
+        RefineUI:HookOnce("ActionBars:ActionButton_UpdateRangeIndicator", "ActionButton_UpdateRangeIndicator", private.QueueDeferredRangeUpdate)
     end
 
     if ActionBarActionButtonMixin and ActionBarActionButtonMixin.UpdateUsable then
-        RefineUI:HookOnce("ActionBars:ActionBarActionButtonMixin:UpdateUsable", ActionBarActionButtonMixin, "UpdateUsable", function(button, action, isUsable, notEnoughMana)
-            QueueUsabilityUpdate(button, isUsable, notEnoughMana)
-        end)
+        RefineUI:HookOnce("ActionBars:ActionBarActionButtonMixin:UpdateUsable", ActionBarActionButtonMixin, "UpdateUsable", ReapplyUsability)
     elseif ActionButtonMixin and ActionButtonMixin.UpdateUsable then
-        RefineUI:HookOnce("ActionBars:ActionButtonMixin:UpdateUsable", ActionButtonMixin, "UpdateUsable", function(button, action, isUsable, notEnoughMana)
-            QueueUsabilityUpdate(button, isUsable, notEnoughMana)
-        end)
+        RefineUI:HookOnce("ActionBars:ActionButtonMixin:UpdateUsable", ActionButtonMixin, "UpdateUsable", ReapplyUsability)
     elseif _G.ActionButton_UpdateUsable then
-        RefineUI:HookOnce("ActionBars:ActionButton_UpdateUsable", "ActionButton_UpdateUsable", function(button, action, isUsable, notEnoughMana)
-            QueueUsabilityUpdate(button, isUsable, notEnoughMana)
-        end)
+        RefineUI:HookOnce("ActionBars:ActionButton_UpdateUsable", "ActionButton_UpdateUsable", ReapplyUsability)
     end
 
     if PetActionBarMixin and PetActionBarMixin.UpdateCooldowns then
@@ -146,34 +123,26 @@ function ActionBars:SetupHooks()
                 return
             end
             for index = 1, NUM_PET_ACTION_SLOTS do
-                QueueCooldownUpdate(buttons[index])
+                private.QueueDeferredCooldownUpdate(buttons[index])
             end
         end)
     end
 
     if PetActionButtonMixin then
         if PetActionButtonMixin.Update then
-            RefineUI:HookOnce("ActionBars:PetActionButtonMixin:Update", PetActionButtonMixin, "Update", function(button)
-                QueueStateUpdate(button)
-            end)
+            RefineUI:HookOnce("ActionBars:PetActionButtonMixin:Update", PetActionButtonMixin, "Update", private.QueueDeferredStateUpdate)
         end
         if PetActionButtonMixin.UpdateUsable then
-            RefineUI:HookOnce("ActionBars:PetActionButtonMixin:UpdateUsable", PetActionButtonMixin, "UpdateUsable", function(button)
-                QueueStateUpdate(button)
-            end)
+            RefineUI:HookOnce("ActionBars:PetActionButtonMixin:UpdateUsable", PetActionButtonMixin, "UpdateUsable", private.QueueDeferredStateUpdate)
         end
     elseif _G.PetActionButton_Update then
-        RefineUI:HookOnce("ActionBars:PetActionButton_Update", "PetActionButton_Update", function(button)
-            QueueStateUpdate(button)
-        end)
+        RefineUI:HookOnce("ActionBars:PetActionButton_Update", "PetActionButton_Update", private.QueueDeferredStateUpdate)
     end
 
     if _G.StanceBar_Update then
         RefineUI:HookOnce("ActionBars:StanceBar_Update", "StanceBar_Update", function()
             for index = 1, NUM_STANCE_SLOTS do
-                local button = _G["StanceButton" .. index]
-                QueueCooldownUpdate(button)
-                QueueStateUpdate(button)
+                private.QueueDeferredStateUpdate(_G["StanceButton" .. index])
             end
         end)
     end
@@ -181,16 +150,8 @@ function ActionBars:SetupHooks()
     if ActionBarActionButtonMixin and ActionBarActionButtonMixin.UpdateHotkeys then
         RefineUI:HookOnce("ActionBars:ActionBarActionButtonMixin:UpdateHotkeys", ActionBarActionButtonMixin, "UpdateHotkeys", function(button)
             local hotkey = button and button.HotKey
-            if not hotkey then
-                return
-            end
-
-            if private.IsHotkeyEnabledForButton(button) then
-                hotkey:SetAlpha(1)
-                hotkey:Show()
-            else
-                hotkey:SetAlpha(0)
-                hotkey:Hide()
+            if hotkey then
+                private.ApplyHotkeyVisibility(button, hotkey)
             end
         end)
     end

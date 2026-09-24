@@ -3,7 +3,7 @@
 -- Description: Simple AFK module that spins and zooms the camera.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
-local AFK = RefineUI:RegisterModule("AFK")
+local AFK = RefineUI:RegisterModule("AFK", "AFK")
 local Config = RefineUI.Config
 
 ----------------------------------------------------------------------------------------
@@ -19,6 +19,7 @@ local UnitIsAFK = UnitIsAFK
 local InCombatLockdown = InCombatLockdown
 local DoEmote = DoEmote
 local UIParent = _G.UIParent
+local MinimapCluster = _G.MinimapCluster
 local issecretvalue = _G.issecretvalue
 
 ----------------------------------------------------------------------------------------
@@ -28,6 +29,8 @@ local originalZoom
 local originalUIParentAlpha
 local spinning = false
 local zoomFrame
+local minimapClusterWasShown
+local buttonCollectWasShown
 
 ----------------------------------------------------------------------------------------
 -- Core Functions
@@ -102,6 +105,23 @@ function AFK:SpinStart()
     spinning = true
     MoveViewRightStart(0.1)
     originalUIParentAlpha = GetSafeFrameAlpha(UIParent, 1)
+    minimapClusterWasShown = MinimapCluster and MinimapCluster:IsShown()
+    if MinimapCluster then
+        RefineUI:HookScriptOnce("AFK:MinimapCluster:OnShow", MinimapCluster, "OnShow", function(self)
+            if spinning then self:Hide() end
+        end)
+        MinimapCluster:Hide()
+    end
+    local buttonCollect = _G.RefineUI_MinimapButtonCollect
+    buttonCollectWasShown = buttonCollect and buttonCollect:IsShown()
+    if buttonCollect then
+        RefineUI:HookScriptOnce("AFK:ButtonCollect:OnShow", buttonCollect, "OnShow", function(self)
+            if spinning then self:Hide() end
+        end)
+        buttonCollect:Hide()
+    end
+    local gameTime = RefineUI:GetModule("GameTime")
+    if gameTime then gameTime:SetAFKActive(true) end
     SetSafeFrameAlpha(UIParent, 0)
     ZoomIn()
     DoEmote("SIT")
@@ -113,6 +133,13 @@ function AFK:SpinStop()
     MoveViewRightStop()
     SetSafeFrameAlpha(UIParent, type(originalUIParentAlpha) == "number" and originalUIParentAlpha or 1)
     originalUIParentAlpha = nil
+    if minimapClusterWasShown then MinimapCluster:Show() end
+    minimapClusterWasShown = nil
+    local buttonCollect = _G.RefineUI_MinimapButtonCollect
+    if buttonCollectWasShown and buttonCollect then buttonCollect:Show() end
+    buttonCollectWasShown = nil
+    local gameTime = RefineUI:GetModule("GameTime")
+    if gameTime then gameTime:SetAFKActive(false) end
     ZoomOut()
 end
 

@@ -107,16 +107,10 @@ local function ResolveDisplayItemLink(link, itemID)
     end
 
     local source = link or itemID
-    if source and C_Item and C_Item.GetItemInfo then
-        local value1, value2 = C_Item.GetItemInfo(source)
-        if type(value1) == "table" then
-            local info = value1
-            local infoLink = info.itemLink or info.hyperlink
-            if type(infoLink) == "string" and infoLink ~= "" then
-                return infoLink
-            end
-        elseif type(value2) == "string" and value2 ~= "" then
-            return value2
+    if source then
+        local _, infoLink = C_Item.GetItemInfo(source)
+        if type(infoLink) == "string" and infoLink ~= "" then
+            return infoLink
         end
     end
 
@@ -189,66 +183,21 @@ local function BuildSellReasonText(item)
     return "Matched Sell Rule"
 end
 
-local function GetItemInfoData(source)
+-- Returns quality, itemLevel, itemType, itemSubType, sellPrice, classID, subClassID, bindType, expansionID.
+-- Class data falls back to GetItemInfoInstant while full item data is still loading.
+local function GetItemInfoValues(source)
     if source == nil then
         return nil
     end
-    if not C_Item or not C_Item.GetItemInfo then
-        return nil
+
+    local _, _, quality, itemLevel, _, itemType, itemSubType, _, _, _, sellPrice, classID, subClassID, bindType, expansionID = C_Item.GetItemInfo(source)
+    if not classID or not subClassID then
+        local _, _, _, _, _, instantClassID, instantSubClassID = C_Item.GetItemInfoInstant(source)
+        classID = classID or instantClassID
+        subClassID = subClassID or instantSubClassID
     end
 
-    local value1, _, quality, itemLevel, _, itemType, itemSubType, _, itemEquipLoc, _, sellPrice, classID, subClassID, bindType, expansionID = C_Item.GetItemInfo(source)
-    if type(value1) == "table" then
-        local info = value1
-        return {
-            quality = info.quality,
-            itemLevel = info.currentItemLevel or info.itemLevel or info.baseItemLevel,
-            itemType = info.itemType or info.itemClassName,
-            itemSubType = info.itemSubType or info.itemSubclassName,
-            itemEquipLoc = info.itemEquipLoc or info.inventoryType,
-            sellPrice = info.sellPrice,
-            classID = info.classID or info.itemClassID,
-            subClassID = info.subclassID or info.itemSubClassID or info.subClassID,
-            bindType = info.bindType,
-            expansionID = info.expansionID or info.expansion,
-        }
-    end
-
-    return {
-        quality = quality,
-        itemLevel = itemLevel,
-        itemType = itemType,
-        itemSubType = itemSubType,
-        itemEquipLoc = itemEquipLoc,
-        sellPrice = sellPrice,
-        classID = classID,
-        subClassID = subClassID,
-        bindType = bindType,
-        expansionID = expansionID,
-    }
-end
-
-local function FillInstantClassData(source, info)
-    if source == nil then
-        return
-    end
-    if not info then
-        return
-    end
-    if info.classID and info.subClassID then
-        return
-    end
-    if not C_Item or not C_Item.GetItemInfoInstant then
-        return
-    end
-
-    local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(source)
-    if not info.classID then
-        info.classID = classID
-    end
-    if not info.subClassID then
-        info.subClassID = subClassID
-    end
+    return quality, itemLevel, itemType, itemSubType, sellPrice, classID, subClassID, bindType, expansionID
 end
 
 local function ResolveRuleCategory(quality, classID, itemType)
@@ -378,28 +327,25 @@ local function BuildLootItemContext(slot)
     local link = GetLootSlotLink(slot)
     local itemID = GetItemIDFromLink(link)
 
-    local info = GetItemInfoData(link or itemID) or {}
-    FillInstantClassData(link or itemID, info)
+    local quality, baseItemLevel, itemType, itemSubType, sellPrice, classID, subClassID, bindType, expansionID = GetItemInfoValues(link or itemID)
 
     local _, _, _, _, _, _, isQuestItem = GetLootSlotInfo(slot)
-    local itemLevel = (C_Item and C_Item.GetDetailedItemLevelInfo and link) and C_Item.GetDetailedItemLevelInfo(link) or info.itemLevel
-    local quality = info.quality
-    local category = ResolveRuleCategory(quality, info.classID, info.itemType)
+    local itemLevel = link and C_Item.GetDetailedItemLevelInfo(link) or baseItemLevel
 
     return {
         itemID = itemID,
         link = link,
         quality = quality,
         itemLevel = itemLevel,
-        itemType = info.itemType,
-        itemSubType = info.itemSubType,
-        itemClassID = info.classID,
-        itemSubClassID = info.subClassID,
-        bindType = info.bindType,
-        expansion = info.expansionID,
-        sellPrice = info.sellPrice or 0,
+        itemType = itemType,
+        itemSubType = itemSubType,
+        itemClassID = classID,
+        itemSubClassID = subClassID,
+        bindType = bindType,
+        expansion = expansionID,
+        sellPrice = sellPrice or 0,
         stackCount = 1,
-        category = category,
+        category = ResolveRuleCategory(quality, classID, itemType),
         isQuestItem = isQuestItem and true or false,
         isCollectibleUncollected = IsUncollectedCollectible(link, itemID),
         source = "loot",
@@ -417,11 +363,10 @@ local function BuildBagItemContext(bag, slot, bagInfo, equipmentSetLookup)
         return nil
     end
 
-    local info = GetItemInfoData(link or itemID) or {}
-    FillInstantClassData(link or itemID, info)
+    local infoQuality, baseItemLevel, itemType, itemSubType, sellPrice, classID, subClassID, bindType, expansionID = GetItemInfoValues(link or itemID)
 
-    local quality = bagInfo.quality or info.quality
-    local itemLevel = (C_Item and C_Item.GetDetailedItemLevelInfo and link) and C_Item.GetDetailedItemLevelInfo(link) or info.itemLevel
+    local quality = bagInfo.quality or infoQuality
+    local itemLevel = link and C_Item.GetDetailedItemLevelInfo(link) or baseItemLevel
     local stackCount = bagInfo.stackCount or 1
     local itemLocation = ItemLocation and ItemLocation:CreateFromBagAndSlot(bag, slot) or nil
 
@@ -430,7 +375,6 @@ local function BuildBagItemContext(bag, slot, bagInfo, equipmentSetLookup)
         isBound = C_Item.IsBound(itemLocation) and true or false
     end
 
-    local bindType = info.bindType
     local isWarbound = false
     if itemLocation and C_Item and C_Item.IsBoundToAccountUntilEquip then
         isWarbound = C_Item.IsBoundToAccountUntilEquip(itemLocation) and true or false
@@ -446,17 +390,15 @@ local function BuildBagItemContext(bag, slot, bagInfo, equipmentSetLookup)
         usable = IsUsableItem(link or itemID) and true or false
     end
 
-    local category = ResolveRuleCategory(quality, info.classID, info.itemType)
-
     return {
         itemID = itemID,
         link = link,
         quality = quality,
         itemLevel = itemLevel,
-        itemType = info.itemType,
-        itemSubType = info.itemSubType,
-        itemClassID = info.classID,
-        itemSubClassID = info.subClassID,
+        itemType = itemType,
+        itemSubType = itemSubType,
+        itemClassID = classID,
+        itemSubClassID = subClassID,
         bindType = bindType,
         isBound = isBound,
         isBoE = isBoE,
@@ -464,10 +406,10 @@ local function BuildBagItemContext(bag, slot, bagInfo, equipmentSetLookup)
         isSoulbound = isSoulbound,
         isUsable = usable,
         isInEquipmentSet = equipmentSetLookup and equipmentSetLookup[itemID] and true or false,
-        expansion = info.expansionID,
-        sellPrice = info.sellPrice or 0,
+        expansion = expansionID,
+        sellPrice = sellPrice or 0,
         stackCount = stackCount,
-        category = category,
+        category = ResolveRuleCategory(quality, classID, itemType),
         bag = bag,
         slot = slot,
         source = "bag",
@@ -486,6 +428,7 @@ function LootRules:RebuildLootSlotQueue(suppressMessages)
     wipe(self._lootSlotQueue)
     self._lootSkipAnnounced = self._lootSkipAnnounced or {}
     local suppressFilteredMessages = (suppressMessages and true or false) or IsForceAutoLootOverrideActive()
+    local plan = self:BuildStageRulePlan(STAGE_LOOT)
 
     local numLootItems = GetNumLootItems and GetNumLootItems() or 0
     for slot = numLootItems, 1, -1 do
@@ -496,7 +439,7 @@ function LootRules:RebuildLootSlotQueue(suppressMessages)
                 tinsert(self._lootSlotQueue, slot)
             else
                 local context = BuildLootItemContext(slot)
-                local action, rule = self:EvaluateRulesForStage(STAGE_LOOT, context)
+                local action, rule = self:EvaluateRulesForStage(STAGE_LOOT, context, plan)
                 if action ~= "SKIP" then
                     tinsert(self._lootSlotQueue, slot)
                 else
@@ -556,6 +499,10 @@ function LootRules:StopSellQueue()
     wipe(self._sellQueue)
 end
 
+local function ProcessSellQueueTick()
+    LootRules:ProcessSellQueue()
+end
+
 function LootRules:ProcessSellQueue()
     if not self._sellActive then
         return
@@ -567,9 +514,7 @@ function LootRules:ProcessSellQueue()
     end
 
     if GetCursorInfo and GetCursorInfo() then
-        self._sellTimer = ScheduleTimer(SELL_DELAY_SECONDS, function()
-            LootRules:ProcessSellQueue()
-        end)
+        self._sellTimer = ScheduleTimer(SELL_DELAY_SECONDS, ProcessSellQueueTick)
         return
     end
 
@@ -584,9 +529,7 @@ function LootRules:ProcessSellQueue()
         C_Container.UseContainerItem(item.bag, item.slot)
     end
 
-    self._sellTimer = ScheduleTimer(SELL_DELAY_SECONDS, function()
-        LootRules:ProcessSellQueue()
-    end)
+    self._sellTimer = ScheduleTimer(SELL_DELAY_SECONDS, ProcessSellQueueTick)
 end
 
 function LootRules:OnMerchantShow()
@@ -596,12 +539,13 @@ function LootRules:OnMerchantShow()
     if MerchantFrame.selectedTab and MerchantFrame.selectedTab ~= 1 then
         return
     end
-    if not self:HasEnabledRulesForStage(STAGE_SELL) then
-        self:StopSellQueue()
+    self:StopSellQueue()
+
+    local plan = self:BuildStageRulePlan(STAGE_SELL)
+    if plan.isEmpty then
         return
     end
 
-    self:StopSellQueue()
     self._sellQueue = self._sellQueue or {}
 
     local equipmentSetLookup = BuildEquipmentSetItemIDLookup()
@@ -609,10 +553,11 @@ function LootRules:OnMerchantShow()
         local slots = C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerNumSlots(bag) or 0
         for slot = 1, slots do
             local bagInfo = C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot) or nil
-            if bagInfo and not bagInfo.isLocked then
+            -- hasNoValue items can never be sold; skip them before the per-item API work.
+            if bagInfo and not bagInfo.isLocked and not bagInfo.hasNoValue then
                 local context = BuildBagItemContext(bag, slot, bagInfo, equipmentSetLookup)
                 if context and (context.sellPrice or 0) > 0 then
-                    local action, rule = self:EvaluateRulesForStage(STAGE_SELL, context)
+                    local action, rule = self:EvaluateRulesForStage(STAGE_SELL, context, plan)
                     if action == "SELL" then
                         tinsert(self._sellQueue, {
                             bag = bag,

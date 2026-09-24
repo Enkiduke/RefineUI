@@ -34,7 +34,22 @@ local InCombatLockdown = InCombatLockdown
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local SETTINGS_BUCKET_ORDER = { "Left", "Right", "Bottom", "Radial", CDM.NOT_TRACKED_KEY }
+local SETTINGS_BUCKET_ORDER = {
+    "Left",
+    "Right",
+    "Bottom",
+    "Radial",
+    CDM.NOT_TRACKED_KEY,
+    CDM.EXTERNAL_CATEGORY_KEYS.TRINKETS,
+    CDM.EXTERNAL_CATEGORY_KEYS.RACIALS,
+    CDM.EXTERNAL_CATEGORY_KEYS.CONSUMABLES,
+}
+local TRACKED_BUCKET_KEYS = {
+    Left = true,
+    Right = true,
+    Bottom = true,
+    Radial = true,
+}
 local PANEL_REFRESH_TIMER_KEY = CDM:BuildKey("Settings", "PanelRefresh")
 local SEARCH_DEBOUNCE_KEY = CDM:BuildKey("Settings", "SearchRefresh")
 local HEADER_HEIGHT = 32
@@ -185,6 +200,13 @@ local function AddToUISpecialFrames(frameName)
 end
 
 local function ResolveSpellIcon(cooldownID)
+    if CDM.GetExternalCooldownIcon then
+        local externalIcon = CDM:GetExternalCooldownIcon(cooldownID)
+        if externalIcon then
+            return externalIcon
+        end
+    end
+
     local info = CDM:GetCooldownInfo(cooldownID)
     local spellID = CDM:ResolveCooldownSpellID(info)
     if type(spellID) == "number" and C_Spell and type(C_Spell.GetSpellTexture) == "function" then
@@ -194,6 +216,28 @@ local function ResolveSpellIcon(cooldownID)
         end
     end
     return EMPTY_ICON_TEXTURE
+end
+
+
+local function SetItemAsCooldown(item, cooldownID, assignmentIndex)
+    if CDM.IsExternalCooldownID and CDM:IsExternalCooldownID(cooldownID) then
+        item.cooldownID = cooldownID
+        item.assignmentIndex = assignmentIndex
+        item.isEmpty = false
+        if item.Icon then
+            item.Icon:SetTexture(ResolveSpellIcon(cooldownID))
+            item.Icon:SetDesaturated(false)
+        end
+        if item.EmptyText then
+            item.EmptyText:Hide()
+        end
+        if item.SelectionGlow then
+            item.SelectionGlow:Hide()
+        end
+        return
+    end
+
+    item:SetAsCooldown(cooldownID, assignmentIndex)
 end
 
 local function CreateInsetFrame(parent)
@@ -445,9 +489,49 @@ local function CreateCategoryHeader(categoryFrame, titleText)
 
     categoryFrame.Title = categoryFrame.Header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     categoryFrame.Title:SetPoint("LEFT", categoryFrame.Header, "LEFT", 12, 0)
-    categoryFrame.Title:SetPoint("RIGHT", categoryFrame.Header, "RIGHT", -12, 0)
+    categoryFrame.Title:SetPoint("RIGHT", categoryFrame.Header, "RIGHT", -100, 0)
     categoryFrame.Title:SetJustifyH("LEFT")
     categoryFrame.Title:SetText(titleText)
+end
+
+local function ApplyCategoryRoleVisual(categoryFrame, isTracked)
+    local header = categoryFrame.Header
+    if not header then
+        return
+    end
+
+    if not categoryFrame.RefineRoleBackground then
+        categoryFrame.RefineRoleBackground = header:CreateTexture(nil, "BACKGROUND", nil, 7)
+        categoryFrame.RefineRoleBackground:SetAllPoints()
+        categoryFrame.RefineRoleBackground:SetTexture(ITEM_BACKGROUND_TEXTURE)
+
+        categoryFrame.RefineRoleAccent = header:CreateTexture(nil, "OVERLAY")
+        categoryFrame.RefineRoleAccent:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
+        categoryFrame.RefineRoleAccent:SetPoint("BOTTOMLEFT", header, "BOTTOMLEFT", 0, 0)
+        categoryFrame.RefineRoleAccent:SetWidth(4)
+        categoryFrame.RefineRoleAccent:SetTexture(ITEM_BACKGROUND_TEXTURE)
+
+        categoryFrame.RefineRoleLabel = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    end
+
+    categoryFrame.RefineRoleLabel:ClearAllPoints()
+    if header.Right then
+        categoryFrame.RefineRoleLabel:SetPoint("RIGHT", header.Right, "LEFT", -6, 0)
+    else
+        categoryFrame.RefineRoleLabel:SetPoint("RIGHT", header, "RIGHT", -12, 0)
+    end
+
+    if isTracked then
+        categoryFrame.RefineRoleBackground:SetVertexColor(0.04, 0.14, 0.10, 0.95)
+        categoryFrame.RefineRoleAccent:SetVertexColor(0.16, 0.82, 0.48, 1)
+        categoryFrame.RefineRoleLabel:SetTextColor(0.35, 1, 0.62)
+        categoryFrame.RefineRoleLabel:SetText("TRACKED")
+    else
+        categoryFrame.RefineRoleBackground:SetVertexColor(0.10, 0.10, 0.10, 0.92)
+        categoryFrame.RefineRoleAccent:SetVertexColor(0.42, 0.42, 0.42, 1)
+        categoryFrame.RefineRoleLabel:SetTextColor(0.65, 0.65, 0.65)
+        categoryFrame.RefineRoleLabel:SetText("UNTRACKED")
+    end
 end
 
 local function CreateCategoryContainer(categoryFrame)
@@ -664,7 +748,13 @@ local function InitializeInjectedItem(settingsFrame, itemFrame, categoryFrame)
         elseif button == "RightButton" then
             local data = CDM:GetInjectedItemData(frame)
             if data and data.cooldownID and not data.isEmpty then
-                if type(frame.DisplayContextMenu) == "function" then
+                local isExternalCooldown = CDM.IsExternalCooldownID
+                    and CDM:IsExternalCooldownID(data.cooldownID)
+                if isExternalCooldown
+                    and CDM.OpenCooldownSettingsContextMenu
+                    and CDM:OpenCooldownSettingsContextMenu(frame)
+                then
+                elseif type(frame.DisplayContextMenu) == "function" then
                     frame:DisplayContextMenu()
                 elseif CDM.OpenCooldownSettingsContextMenu and CDM:OpenCooldownSettingsContextMenu(frame) then
                 else
@@ -939,6 +1029,7 @@ local function EnsureCategoryFrame(scrollChild, bucketKey, titleText)
     scrollChild.categories = scrollChild.categories or {}
     local categoryFrame = scrollChild.categories[bucketKey]
     if categoryFrame then
+        ApplyCategoryRoleVisual(categoryFrame, TRACKED_BUCKET_KEYS[bucketKey] == true)
         return categoryFrame
     end
 
@@ -983,6 +1074,8 @@ local function EnsureCategoryFrame(scrollChild, bucketKey, titleText)
             end)
         end
     end
+
+    ApplyCategoryRoleVisual(categoryFrame, TRACKED_BUCKET_KEYS[bucketKey] == true)
 
     categoryFrame:HookScript("OnEnter", function(frame)
         CDM:OnInjectedCategoryEnter(frame)
@@ -1074,7 +1167,7 @@ function CDM:LayoutInjectedCategory(settingsFrame, categoryFrame, categoryData, 
                 local item = categoryFrame.itemPool:Acquire()
                 item.layoutIndex = shownItems
                 item:Show()
-                item:SetAsCooldown(cooldownID, assignmentIndex)
+                SetItemAsCooldown(item, cooldownID, assignmentIndex)
                 item:SetSize(ITEM_SIZE, ITEM_SIZE)
                 ApplyItemBorder(item, cooldownID)
 
@@ -1136,7 +1229,7 @@ function CDM:LayoutInjectedCategory(settingsFrame, categoryFrame, categoryData, 
             local column = (shownItems - 1) % ITEM_COLUMNS
             local row = math.floor((shownItems - 1) / ITEM_COLUMNS)
             item:SetPoint("TOPLEFT", container, "TOPLEFT", column * (ITEM_SIZE + ITEM_SPACING), -(row * (ITEM_SIZE + ITEM_SPACING)))
-            item:SetAsCooldown(cooldownID, assignmentIndex)
+            SetItemAsCooldown(item, cooldownID, assignmentIndex)
             item:Show()
 
             self:StateSet(item, "categoryFrame", categoryFrame)
@@ -1216,31 +1309,57 @@ function CDM:RefreshRefineTabPanel(settingsFrame)
 
     local assignments = self:GetCurrentAssignments()
     local validAuraIDs = self:GetValidAuraCooldownIDs()
-    state.validAuraSetScratch = state.validAuraSetScratch or {}
-    local validAuraSet = state.validAuraSetScratch
+    state.validCooldownSetScratch = state.validCooldownSetScratch or {}
+    local validCooldownSet = state.validCooldownSetScratch
     if wipe then
-        wipe(validAuraSet)
+        wipe(validCooldownSet)
     else
-        for key in pairs(validAuraSet) do
-            validAuraSet[key] = nil
+        for key in pairs(validCooldownSet) do
+            validCooldownSet[key] = nil
         end
     end
     for i = 1, #validAuraIDs do
-        validAuraSet[validAuraIDs[i]] = true
+        validCooldownSet[validAuraIDs[i]] = true
+    end
+    local validExternalIDs = self.GetValidExternalCooldownIDs and self:GetValidExternalCooldownIDs() or {}
+    for i = 1, #validExternalIDs do
+        validCooldownSet[validExternalIDs[i]] = true
     end
 
     local notTrackedIDs = self:GetSortedNotTrackedIDs(validAuraIDs, assignments)
+    local assignedCooldownIDs = self:GetAssignedIDSet(assignments)
     local filterText = state.filterText or ""
-    local leftIDs, leftAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Left, validAuraSet)
-    local rightIDs, rightAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Right, validAuraSet)
-    local bottomIDs, bottomAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Bottom, validAuraSet)
-    local radialIDs, radialAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Radial, validAuraSet)
+    local leftIDs, leftAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Left, validCooldownSet)
+    local rightIDs, rightAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Right, validCooldownSet)
+    local bottomIDs, bottomAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Bottom, validCooldownSet)
+    local radialIDs, radialAssignmentIndices = self:GetVisibleBucketCooldownIDs(assignments.Radial, validCooldownSet)
 
     local categoryInput = {
         Left = { cooldownIDs = leftIDs, assignmentIndices = leftAssignmentIndices },
         Right = { cooldownIDs = rightIDs, assignmentIndices = rightAssignmentIndices },
         Bottom = { cooldownIDs = bottomIDs, assignmentIndices = bottomAssignmentIndices },
         Radial = { cooldownIDs = radialIDs, assignmentIndices = radialAssignmentIndices },
+        [CDM.EXTERNAL_CATEGORY_KEYS.TRINKETS] = {
+            cooldownIDs = self:GetUnassignedExternalCooldownIDs(
+                CDM.EXTERNAL_CATEGORY_KEYS.TRINKETS,
+                assignments,
+                assignedCooldownIDs
+            ),
+        },
+        [CDM.EXTERNAL_CATEGORY_KEYS.RACIALS] = {
+            cooldownIDs = self:GetUnassignedExternalCooldownIDs(
+                CDM.EXTERNAL_CATEGORY_KEYS.RACIALS,
+                assignments,
+                assignedCooldownIDs
+            ),
+        },
+        [CDM.EXTERNAL_CATEGORY_KEYS.CONSUMABLES] = {
+            cooldownIDs = self:GetUnassignedExternalCooldownIDs(
+                CDM.EXTERNAL_CATEGORY_KEYS.CONSUMABLES,
+                assignments,
+                assignedCooldownIDs
+            ),
+        },
         [CDM.NOT_TRACKED_KEY] = { cooldownIDs = notTrackedIDs, assignmentIndices = nil },
     }
 
@@ -1259,9 +1378,10 @@ function CDM:RefreshRefineTabPanel(settingsFrame)
         self:StateSet(categoryFrame, "categoryData", categoryData)
         categoryFrame:ClearAllPoints()
         if previousCategory then
-            categoryFrame:SetPoint("TOPLEFT", previousCategory, "BOTTOMLEFT", 0, -18)
-            categoryFrame:SetPoint("TOPRIGHT", previousCategory, "BOTTOMRIGHT", 0, -18)
-            yOffset = yOffset + 18
+            local categoryGap = bucketKey == CDM.NOT_TRACKED_KEY and 32 or 18
+            categoryFrame:SetPoint("TOPLEFT", previousCategory, "BOTTOMLEFT", 0, -categoryGap)
+            categoryFrame:SetPoint("TOPRIGHT", previousCategory, "BOTTOMRIGHT", 0, -categoryGap)
+            yOffset = yOffset + categoryGap
         else
             categoryFrame:SetPoint("TOPLEFT", settingsFrame.ScrollChild, "TOPLEFT", 0, 0)
             categoryFrame:SetPoint("TOPRIGHT", settingsFrame.ScrollChild, "TOPRIGHT", 0, 0)

@@ -58,20 +58,6 @@ local function GetLayoutNameForTier(tierKey)
     return RefineUI:GetManagedLayoutName(tierKey)
 end
 
-local function GetTierForManagedLayoutName(layoutName)
-    if type(layoutName) ~= "string" or layoutName == "" then
-        return nil
-    end
-
-    for tierKey, managedName in pairs(RefineUI.ManagedLayoutNames or {}) do
-        if managedName == layoutName then
-            return tierKey
-        end
-    end
-
-    return nil
-end
-
 local function GetDisplayLayoutTier()
     return RefineUI:GetLayoutTier()
 end
@@ -341,6 +327,10 @@ function Module:RegisterManagedLayoutEvents()
     end, LAYOUT_EVENT_KEY.UI_SCALE_CHANGED)
 
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
+        -- Only a tier change deferred by combat needs work here.
+        if not self.pendingManagedLayoutTier then
+            return
+        end
         self:HandleManagedLayoutEnvironmentChange("PLAYER_REGEN_ENABLED")
     end, LAYOUT_EVENT_KEY.PLAYER_REGEN_ENABLED)
 end
@@ -379,7 +369,7 @@ function Module:HandleManagedLayoutEnvironmentChange(source)
         return activeLayoutErr
     end
 
-    local activeTier = GetTierForManagedLayoutName(activeLayout)
+    local activeTier = RefineUI:GetManagedLayoutTier(activeLayout)
     if not activeTier then
         self.pendingManagedLayoutTier = nil
         self.pendingManagedLayoutSource = nil
@@ -971,32 +961,13 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks, tierKe
     waitForReady()
 end
 
--- Deprecated: Manual re-anchoring
-function Module:ReanchorFrames()
-    -- No-op since we use EditMode now
-end
-
 ----------------------------------------------------------------------------------------
 -- Reload Prompt (Golden Glow)
 ----------------------------------------------------------------------------------------
 
-local function CreatePulse(frame)
-    if frame.PulseAnim then return end
-    local animGroup = frame:CreateAnimationGroup()
-    animGroup:SetLooping("BOUNCE")
-    
-    local alpha = animGroup:CreateAnimation("Alpha")
-    alpha:SetFromAlpha(0.2)
-    alpha:SetToAlpha(0.8)
-    alpha:SetDuration(0.6)
-    alpha:SetSmoothing("IN_OUT")
-    
-    frame.PulseAnim = animGroup
-end
-
 local function PlayPulse(frame)
-    if not frame.PulseAnim then CreatePulse(frame) end
-    if not frame.PulseAnim:IsPlaying() then frame.PulseAnim:Play() end
+    local pulse = RefineUI.CreatePulse(frame, 0.2, 0.8, 0.6)
+    if not pulse:IsPlaying() then pulse:Play() end
 end
 
 

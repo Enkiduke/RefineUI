@@ -12,56 +12,27 @@ end
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
 local Media = RefineUI.Media
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
-local CreateFrame = CreateFrame
-
-----------------------------------------------------------------------------------------
--- Constants
-----------------------------------------------------------------------------------------
-local ACTION_BARS_EXTRA_STATE_REGISTRY = "ActionBarsExtra:State"
 
 ----------------------------------------------------------------------------------------
 -- Shared State
 ----------------------------------------------------------------------------------------
 local private = ActionBars.Private
-local ButtonState = RefineUI:CreateDataRegistry(ACTION_BARS_EXTRA_STATE_REGISTRY, "k")
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
 ----------------------------------------------------------------------------------------
-local function ExtraButton_OnEnter(self)
-    local state = ButtonState[self]
-    local border = state and state.SkinOverlay and state.SkinOverlay.border
-    local hoverColor = private.HOVER_BORDER_COLOR
-    if border and border.SetBackdropBorderColor then
-        border:SetBackdropBorderColor(hoverColor[1], hoverColor[2], hoverColor[3], hoverColor[4])
-    end
-end
-
-local function ExtraButton_OnLeave(self)
-    local state = ButtonState[self]
-    local border = state and state.SkinOverlay and state.SkinOverlay.border
-    if border and state and state.OriginalR then
-        border:SetBackdropBorderColor(state.OriginalR, state.OriginalG, state.OriginalB, state.OriginalA)
-    end
-end
-
 local function StyleExtraButton(button, isZoneButton)
     if not button then
         return
     end
 
-    local state = ButtonState[button]
-    if not state then
-        state = {}
-        ButtonState[button] = state
-    end
+    local state = private.GetButtonState(button)
     if state.isSkinned then
         return
     end
@@ -102,14 +73,6 @@ local function StyleExtraButton(button, isZoneButton)
         RefineUI.Point(icon, "BOTTOMRIGHT", button, "BOTTOMRIGHT", -1, 1)
     end
 
-    if not state.SkinOverlay then
-        local overlay = CreateFrame("Frame", nil, button)
-        overlay:SetAllPoints(button)
-        overlay:EnableMouse(false)
-        state.SkinOverlay = overlay
-        RefineUI.SetTemplate(overlay, "Icon")
-    end
-
     if count then
         count:ClearAllPoints()
         RefineUI.Point(count, "BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
@@ -117,31 +80,15 @@ local function StyleExtraButton(button, isZoneButton)
     end
 
     if hotkey then
-        local showHotkey = ActionBars.db and ActionBars.db.ShowHotkeys and ActionBars.db.ShowHotkeys["ExtraAction"]
-        if showHotkey then
-            hotkey:ClearAllPoints()
-            RefineUI.Point(hotkey, "TOPRIGHT", button, "TOPRIGHT", -2, -2)
-            RefineUI.Font(hotkey, 12, nil, "OUTLINE")
-        else
-            hotkey:SetAlpha(0)
-            if hotkey.SetShown then
-                RefineUI:HookOnce(private.BuildHookKey(hotkey, "SetShown", "ExtraHotkey"), hotkey, "SetShown", function(frame, shown)
-                    if shown then
-                        frame:SetAlpha(0)
-                    end
-                end)
-            end
-            RefineUI:HookOnce(private.BuildHookKey(hotkey, "Show", "ExtraHotkey"), hotkey, "Show", function(frame)
-                frame:SetAlpha(0)
-            end)
-        end
+        hotkey:ClearAllPoints()
+        RefineUI.Point(hotkey, "TOPRIGHT", button, "TOPRIGHT", -2, -2)
+        RefineUI.Font(hotkey, 12, nil, "OUTLINE")
+        private.ApplyHotkeyVisibility(button, hotkey)
     end
 
     if cooldown then
         RefineUI.SetInside(cooldown, button, 2, 2)
-        if ActionBars.StyleCooldownText then
-            ActionBars:StyleCooldownText(cooldown)
-        end
+        ActionBars:StyleCooldownText(cooldown)
     end
 
     if flash then
@@ -150,23 +97,10 @@ local function StyleExtraButton(button, isZoneButton)
     end
 
     RefineUI.StyleButton(button)
+    private.SetupButtonChrome(button, state)
 
-    local border = state.SkinOverlay.border
-    if border and border.GetBackdropBorderColor then
-        state.OriginalR, state.OriginalG, state.OriginalB, state.OriginalA = border:GetBackdropBorderColor()
-    else
-        state.OriginalR, state.OriginalG, state.OriginalB, state.OriginalA = 0.3, 0.3, 0.3, 1
-        if Config and Config.General and Config.General.BorderColor then
-            local borderColor = Config.General.BorderColor
-            state.OriginalR, state.OriginalG, state.OriginalB, state.OriginalA = borderColor[1], borderColor[2], borderColor[3], borderColor[4]
-        end
-    end
-
-    RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnEnter", "ExtraHover"), button, "OnEnter", ExtraButton_OnEnter)
-    RefineUI:HookScriptOnce(private.BuildHookKey(button, "OnLeave", "ExtraHover"), button, "OnLeave", ExtraButton_OnLeave)
-
-    if ActionBars.EnableDesaturation and button.action then
-        ActionBars.EnableDesaturation(button)
+    if button.action then
+        private.EnableDesaturation(button)
     end
 
     state.isSkinned = true
@@ -185,9 +119,7 @@ function ActionBars:SetupExtraActionBars()
     if ZoneAbilityFrame then
         RefineUI:HookOnce("ActionBars:ZoneAbilityFrame:UpdateDisplayedZoneAbilities", ZoneAbilityFrame, "UpdateDisplayedZoneAbilities", function(frame)
             for button in frame.SpellButtonContainer:EnumerateActive() do
-                if button and not (ButtonState[button] and ButtonState[button].isSkinned) then
-                    StyleExtraButton(button, true)
-                end
+                StyleExtraButton(button, true)
             end
         end)
     end

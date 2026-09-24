@@ -23,7 +23,11 @@ local function Copy(value)
     return result
 end
 
+local store
+
 function Cache:Store()
+    -- Validate once per session; rebind if SavedVariables replaced the table.
+    if store and _G.RefineUIJournalCache == store then return store end
     local build, interface = "unknown", 0
     if GetBuildInfo then _, build, _, interface = GetBuildInfo() end
     local locale = GetLocale and GetLocale() or "enUS"
@@ -42,6 +46,7 @@ function Cache:Store()
         db.build, db.interface = build, interface
         db.buckets, db.ownership = db.buckets or {}, db.ownership or {}
     end
+    store = db
     return db
 end
 
@@ -71,7 +76,10 @@ end
 
 function Cache:Put(kind, key, value)
     local bucket, now = self:Bucket(kind), time()
+    local replaced = bucket[key] ~= nil
     bucket[key] = { saved = now, used = now, value = Copy(value) }
+    -- Overwriting an entry cannot grow the bucket past its limit.
+    if replaced then return end
     local count, oldestKey, oldest = 0, nil, math.huge
     for id, entry in pairs(bucket) do
         count = count + 1

@@ -993,17 +993,3 @@ function Bags.HookCategoryManagerToDialog()
     Bags._categoryDialogHooked = true
 end
 
-if Bags.InitializeEditMode then
-    Bags.InitializeEditMode()
-end
-
-if Bags.HookCategoryManagerToDialog then
-    Bags.HookCategoryManagerToDialog()
-end
-
-C_Timer.After(1, function()
-    if Bags.HookCategoryManagerToDialog then
-        Bags.HookCategoryManagerToDialog()
-    end
-end)
-

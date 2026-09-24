@@ -1,4 +1,5 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <Include file="Shared\!Shared.xml"/>
     <Include file="AFK\!AFK.xml"/>
     <Include file="ActionBars\!ActionBars.xml"/>
     <Include file="AchievementWindow\!AchievementWindow.xml"/>

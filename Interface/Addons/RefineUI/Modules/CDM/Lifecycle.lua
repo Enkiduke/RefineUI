@@ -17,6 +17,7 @@ local type = type
 local tinsert = table.insert
 local pcall = pcall
 local pairs = pairs
+local next = next
 local CreateFrame = CreateFrame
 local GetTime = GetTime
 local InCombatLockdown = InCombatLockdown
@@ -377,7 +378,7 @@ function CDM:ShouldEnableAuraProbeFallback(snapshot)
     end
 
     snapshot = snapshot or (self.GetAssignedCooldownSnapshot and self:GetAssignedCooldownSnapshot()) or nil
-    return type(snapshot) == "table" and snapshot.hasAssignments == true
+    return type(snapshot) == "table" and snapshot.hasAuraAssignments == true
 end
 
 function CDM:EnsureOptionalAuraProbeFallback(snapshot)
@@ -539,6 +540,7 @@ function CDM:GetAssignedCooldownSnapshot()
         requiresPlayerAura = false,
         requiresTargetAura = false,
         hasAssignments = false,
+        hasAuraAssignments = false,
         cooldownBuckets = {},
         bucketCooldownIDs = {},
         associatedSpellToCooldownIDs = {},
@@ -547,6 +549,7 @@ function CDM:GetAssignedCooldownSnapshot()
         totemSpellToCooldownIDs = {},
         playerDependentCooldownIDs = {},
         targetDependentCooldownIDs = {},
+        externalCooldownIDs = {},
     }
 
     local seen = {}
@@ -574,6 +577,12 @@ function CDM:GetAssignedCooldownSnapshot()
                             seen[cooldownID] = true
                             tinsert(snapshot.allAssignedIDs, cooldownID)
 
+                            local isExternalCooldown = self.IsExternalCooldownID
+                                and self:IsExternalCooldownID(cooldownID)
+                            if isExternalCooldown then
+                                snapshot.externalCooldownIDs[cooldownID] = true
+                            else
+                            snapshot.hasAuraAssignments = true
                             local info = self.GetCooldownInfo and self:GetCooldownInfo(cooldownID)
                             local associatedSpellIDs = self.GetAssociatedSpellIDs and self:GetAssociatedSpellIDs(info) or nil
                             if type(associatedSpellIDs) == "table" then
@@ -688,6 +697,7 @@ function CDM:GetAssignedCooldownSnapshot()
                                 snapshot.requiresTargetAura = true
                                 snapshot.playerDependentCooldownIDs[cooldownID] = true
                                 snapshot.targetDependentCooldownIDs[cooldownID] = true
+                            end
                             end
                         end
                     end
@@ -850,7 +860,8 @@ function CDM:RefreshAll()
         self:RefreshTrackers(pendingDirtyCooldownIDs)
     end
 
-    if (not InCombatLockdown or not InCombatLockdown())
+    if pendingDirtyCooldownIDs == nil
+        and (not InCombatLockdown or not InCombatLockdown())
         and self:IsSettingsFrameShown()
         and self.RefreshSettingsSection
     then
@@ -865,6 +876,9 @@ function CDM:OnEnable()
     RefineUI:CreateDataRegistry(self.STATE_REGISTRY, "k")
 
     self:InitializeAssignments()
+    if self.ScanExternalCooldowns then
+        self:ScanExternalCooldowns()
+    end
     self:InitializeSettingsInjection()
 
     if not self.cdmSlashCommandRegistered and RefineUI.RegisterChatCommand then
@@ -915,7 +929,26 @@ function CDM:OnEnable()
 
     local function OnEvent(event, ...)
         local dirtyCooldownIDs = nil
-        if event == "UNIT_TARGET" then
+        if event == "BAG_UPDATE_DELAYED" then
+            if self.ScanExternalCooldowns then
+                self:ScanExternalCooldowns()
+            end
+        elseif event == "PLAYER_EQUIPMENT_CHANGED" then
+            local slot = ...
+            if slot ~= 13 and slot ~= 14 then
+                return
+            end
+            if self.ScanExternalCooldowns then
+                self:ScanExternalCooldowns()
+            end
+        elseif event == "SPELL_UPDATE_COOLDOWN" or event == "BAG_UPDATE_COOLDOWN" then
+            local snapshot = self:GetAssignedCooldownSnapshot()
+            if not snapshot or not next(snapshot.externalCooldownIDs) then
+                return
+            end
+            dirtyCooldownIDs = {}
+            AddCooldownSetToList(dirtyCooldownIDs, {}, snapshot.externalCooldownIDs)
+        elseif event == "UNIT_TARGET" then
             if not self:IsRefineRuntimeOwnerActive() then
                 return
             end
@@ -951,6 +984,11 @@ function CDM:OnEnable()
             or event == "COOLDOWN_VIEWER_DATA_LOADED"
             or event == "COOLDOWN_VIEWER_TABLE_HOTFIXED"
         then
+            if (event == "PLAYER_ENTERING_WORLD" or event == "SPELLS_CHANGED")
+                and self.ScanExternalCooldowns
+            then
+                self:ScanExternalCooldowns()
+            end
             if event == "PLAYER_REGEN_DISABLED" then
                 self.lastCombatEndedTime = nil
             elseif event == "PLAYER_REGEN_ENABLED" and type(GetTime) == "function" then
@@ -999,6 +1037,10 @@ function CDM:OnEnable()
             "PLAYER_SPECIALIZATION_CHANGED",
             "TRAIT_CONFIG_UPDATED",
             "SPELLS_CHANGED",
+            "SPELL_UPDATE_COOLDOWN",
+            "BAG_UPDATE_DELAYED",
+            "BAG_UPDATE_COOLDOWN",
+            "PLAYER_EQUIPMENT_CHANGED",
             "UNIT_TARGET",
             "COOLDOWN_VIEWER_DATA_LOADED",
             "COOLDOWN_VIEWER_TABLE_HOTFIXED",
@@ -1007,8 +1049,9 @@ function CDM:OnEnable()
     end
 
     -- Route secret-heavy aura events through the shared EventBus so the raw
-    -- UNIT_AURA updateInfo table never enters addon code.
-    RefineUI:RegisterEventCallback("UNIT_AURA", function(_event, unit)
+    -- UNIT_AURA updateInfo table never enters addon code. Only the units accepted by
+    -- ShouldProcessAuraUnit are registered, so other units never reach Lua.
+    local function OnUnitAura(_event, unit)
         if not self:IsRefineRuntimeOwnerActive() then
             return
         end
@@ -1022,7 +1065,9 @@ function CDM:OnEnable()
             return
         end
         self:RequestRefresh(true, self:GetDirtyCooldownIDsForEvent("UNIT_AURA", unit))
-    end, "CDM:Runtime:UnitAura")
+    end
+    RefineUI:RegisterUnitEventCallback("UNIT_AURA", "player", OnUnitAura, "CDM:Runtime:UnitAura")
+    RefineUI:RegisterUnitEventCallback("UNIT_AURA", "target", OnUnitAura, "CDM:Runtime:UnitAura")
 
     RefineUI:RegisterEventCallback("PLAYER_TOTEM_UPDATE", function()
         if not self:IsRefineRuntimeOwnerActive() then

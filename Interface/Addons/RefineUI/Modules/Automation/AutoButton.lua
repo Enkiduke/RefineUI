@@ -4,7 +4,11 @@ local AddOnName, RefineUI = ...
 --	AutoButton Module for RefineUI
 ----------------------------------------------------------------------------------------
 
-local AutoButton = RefineUI:RegisterModule("AutoButton")
+local AutoButton = RefineUI:RegisterModule("AutoButton", function(cfg)
+    local automation = cfg.Automation
+    local settings = type(automation) == "table" and automation.AutoButton
+    return not (type(settings) == "table" and settings.Enable == false)
+end)
 
 -- Locals
 local gsub = string.gsub

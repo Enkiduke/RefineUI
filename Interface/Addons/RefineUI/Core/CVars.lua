@@ -122,10 +122,6 @@ end
 ----------------------------------------------------------------------------------------
 -- Install API
 ----------------------------------------------------------------------------------------
-function RefineUI:GetInstallDefaultCVars()
-    return INSTALL_DEFAULT_CVARS
-end
-
 function RefineUI:ApplyInstallCVars()
     for i = 1, #INSTALL_DEFAULT_CVARS do
         local cvar = INSTALL_DEFAULT_CVARS[i]

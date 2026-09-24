@@ -368,6 +368,7 @@ local function UpdateReagentSlotVisual(slot, slotState, cfg, borders, forceVisua
 
     SetItemButtonTexture(slot, slotState.iconFileID)
     SetItemButtonCount(slot, slotState.stackCount)
+    slot.count = slotState.slotStackCount -- Smart stacks display a merged total; Blizzard reads the physical stack.
     SetItemButtonQuality(slot, slotState.quality, slotState.hyperlink)
 
     if slot.ItemSlotBackground then
@@ -455,44 +456,34 @@ local function LayoutReagentSections(frame, snapshot)
 
     local contentWidth = columns * (SLOT_SIZE + ITEM_SPACING_X) - ITEM_SPACING_X
     local contentStartX = math.max(0, math.floor((availableWidth - contentWidth) * 0.5 + 0.5))
-    local MAIN_CAT_GAP = 1
+    local cellWidth = SLOT_SIZE + ITEM_SPACING_X
+    local cellHeight = SLOT_SIZE + ITEM_SPACING_Y
+    local packer = Bags.CreateSectionPacker(columns, cellHeight, ITEM_SPACING_Y)
 
     local visitedSectionKeys = {}
     local visitedSlotKeys = {}
-    local yOffset = 0
-    local currentCol = 0
-    local rowMaxHeight = 0
-    local rowStartY = yOffset
 
     for _, section in ipairs(sections) do
         local slotKeys = section.slotKeys or {}
         local itemCount = #slotKeys
 
         if itemCount > 0 then
-            local colsNeeded = math.min(math.max(itemCount, 1), columns)
-
-            if currentCol > 0 and (currentCol + colsNeeded > columns) then
-                yOffset = rowStartY + rowMaxHeight + ITEM_SPACING_Y
-                currentCol = 0
-                rowMaxHeight = 0
-                rowStartY = yOffset
-            end
-
             local header = EnsureReagentSectionFrame(frame, section.key)
+            local minCols = 1
             if header then
                 visitedSectionKeys[section.key] = true
-                header:ClearAllPoints()
-                header:SetPoint(
-                    "TOPLEFT",
-                    frame.ItemContainer,
-                    "TOPLEFT",
-                    contentStartX + currentCol * (SLOT_SIZE + ITEM_SPACING_X),
-                    -yOffset
-                )
-
-                local headerWidth = colsNeeded * (SLOT_SIZE + ITEM_SPACING_X) - ITEM_SPACING_X
-                header:SetWidth(math.max(50, headerWidth))
                 header.Text:SetText(string.format("%s (%d)", section.label or section.key, itemCount))
+                minCols = Bags.GetHeaderMinColumns(header.Text, cellWidth, ITEM_SPACING_X)
+            end
+
+            local startCol, slotColumns, sectionTop = Bags.PackSection(packer, itemCount, minCols, HEADER_HEIGHT, true)
+            local sectionX = contentStartX + startCol * cellWidth
+            local slotTop = sectionTop + HEADER_HEIGHT
+
+            if header then
+                header:ClearAllPoints()
+                header:SetPoint("TOPLEFT", frame.ItemContainer, "TOPLEFT", sectionX, -sectionTop)
+                header:SetWidth(math.max(50, slotColumns * cellWidth - ITEM_SPACING_X))
                 header.Text:SetTextColor(1, 0.82, 0)
                 header.Line:SetColorTexture(1, 0.82, 0, 0.45)
 
@@ -503,7 +494,6 @@ local function LayoutReagentSections(frame, snapshot)
                 end
             end
 
-            local slotColumns = math.max(1, colsNeeded)
             for index, slotKey in ipairs(slotKeys) do
                 local slotState = slotStateByKey[slotKey]
                 if slotState then
@@ -511,10 +501,8 @@ local function LayoutReagentSections(frame, snapshot)
                     if slot then
                         visitedSlotKeys[slotKey] = true
                         local idx = index - 1
-                        local row = math.floor(idx / slotColumns)
-                        local col = currentCol + (idx % slotColumns)
-                        local xPos = contentStartX + col * (SLOT_SIZE + ITEM_SPACING_X)
-                        local yPos = -(yOffset + HEADER_HEIGHT + row * (SLOT_SIZE + ITEM_SPACING_Y))
+                        local xPos = sectionX + (idx % slotColumns) * cellWidth
+                        local yPos = -(slotTop + math.floor(idx / slotColumns) * cellHeight)
 
                         slot:ClearAllPoints()
                         slot:SetPoint("TOPLEFT", frame.ItemContainer, "TOPLEFT", xPos, yPos)
@@ -522,23 +510,12 @@ local function LayoutReagentSections(frame, snapshot)
                     end
                 end
             end
-
-            local rowsUsed = math.ceil(itemCount / slotColumns)
-            local currentCategoryHeight = HEADER_HEIGHT + rowsUsed * (SLOT_SIZE + ITEM_SPACING_Y)
-            rowMaxHeight = math.max(rowMaxHeight, currentCategoryHeight)
-            currentCol = currentCol + colsNeeded + MAIN_CAT_GAP
-
-            if currentCol >= columns then
-                yOffset = rowStartY + rowMaxHeight + ITEM_SPACING_Y
-                currentCol = 0
-                rowMaxHeight = 0
-                rowStartY = yOffset
-            end
         end
     end
 
-    if rowMaxHeight > 0 then
-        yOffset = rowStartY + rowMaxHeight
+    local yOffset = packer.rowStartY
+    if packer.rowMaxHeight > 0 then
+        yOffset = packer.rowStartY + packer.rowMaxHeight
     end
 
     if yOffset > 0 then
@@ -852,10 +829,4 @@ function Bags.ToggleReagentWindow()
 
     Bags.SetReagentWindowShown(not cfg.ReagentWindowShown)
 end
-
-C_Timer.After(0, function()
-    if Bags.UpdateReagentWindowState then
-        Bags.UpdateReagentWindowState()
-    end
-end)
 

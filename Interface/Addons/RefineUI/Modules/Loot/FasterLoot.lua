@@ -3,7 +3,13 @@
 -- Description: Accelerates auto-loot behavior when configured.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
-local FasterLoot = RefineUI:RegisterModule("FasterLoot")
+local FasterLoot = RefineUI:RegisterModule("FasterLoot", function(cfg)
+    local loot = cfg.Loot
+    if type(loot) ~= "table" or loot.Enable == false then
+        return false
+    end
+    return loot.FasterLoot ~= false
+end)
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)

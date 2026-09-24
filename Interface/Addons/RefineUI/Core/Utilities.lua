@@ -134,21 +134,43 @@ end
 -- Timer Utilities
 ----------------------------------------------------------------------------------------
 
+-- Restartable keyed timer. Repeated calls only move the deadline and swap the
+-- callback; a new timer is created only when the deadline moves earlier.
+local GetTime = GetTime
+local TIMER_EPSILON = 0.01
+
+local function ScheduleKeyed(store, key, delay, fn)
+    local due = GetTime() + delay
+    local entry = store[key]
+    if entry and due >= entry.fireAt then
+        entry.due, entry.fn = due, fn
+        return
+    end
+
+    entry = { due = due, fireAt = due, fn = fn }
+    local function callback()
+        if store[key] ~= entry then return end
+        local remaining = entry.due - GetTime()
+        if remaining > TIMER_EPSILON then
+            entry.fireAt = entry.due
+            C_Timer.After(remaining, callback)
+            return
+        end
+        store[key] = nil
+        entry.fn()
+    end
+    store[key] = entry
+    C_Timer.After(delay, callback)
+end
+
 -- Debounce: delays execution until calls stop for 'delay' seconds
 local debounces = {}
 function RefineUI:Debounce(key, delay, fn)
-    if debounces[key] then debounces[key]:Cancel() end
-    debounces[key] = C_Timer.NewTimer(delay, function()
-        debounces[key] = nil
-        fn()
-    end)
+    ScheduleKeyed(debounces, key, delay, fn)
 end
 
 function RefineUI:CancelDebounce(key)
-    if debounces[key] then
-        debounces[key]:Cancel()
-        debounces[key] = nil
-    end
+    debounces[key] = nil
 end
 
 -- Throttle: executes at most once per 'interval' seconds (leading edge)
@@ -185,18 +207,11 @@ end
 -- Cancels any existing timer with the same key before scheduling
 local timers = {}
 function RefineUI:After(key, delay, fn)
-    if timers[key] then timers[key]:Cancel() end
-    timers[key] = C_Timer.NewTimer(delay, function()
-        timers[key] = nil
-        fn()
-    end)
+    ScheduleKeyed(timers, key, delay, fn)
 end
 
 function RefineUI:CancelTimer(key)
-    if timers[key] then
-        timers[key]:Cancel()
-        timers[key] = nil
-    end
+    timers[key] = nil
 end
 
 ----------------------------------------------------------------------------------------
@@ -257,16 +272,6 @@ function RefineUI:FadeOut(frame, duration, alpha)
 end
 
 ----------------------------------------------------------------------------------------
--- Frame Helpers
-----------------------------------------------------------------------------------------
-function RefineUI.SetXYPoint(frame, xOffset, yOffset)
-    if not frame then return end
-    local point, relativeTo, relativePoint, xOfs, yOfs = frame:GetPoint()
-    if not point then return end
-    frame:SetPoint(point, relativeTo, relativePoint, xOffset or xOfs, yOffset or yOfs)
-end
-
-----------------------------------------------------------------------------------------
 -- Secure Data Registry (Weak-Key External State)
 ----------------------------------------------------------------------------------------
 RefineUI._dataRegistries = RefineUI._dataRegistries or {}
@@ -298,11 +303,6 @@ function RefineUI:CreateDataRegistry(name, weakMode)
     registry = setmetatable({}, { __mode = weakMode })
     self._dataRegistries[name] = registry
     return registry
-end
-
-function RefineUI:GetDataRegistry(name)
-    if not isValidRegistryName(name) then return nil end
-    return self._dataRegistries[name]
 end
 
 function RefineUI:RegistryGet(name, owner, key, defaultValue)
@@ -421,11 +421,13 @@ local function observeHookCall(key)
     end
 end
 
+-- Hooks registered while observability is off stay unwrapped to keep hot paths lean.
 local function wrapObservedHook(key, fn)
+    if not (observability and observability.enabled) then
+        return fn
+    end
     return function(...)
-        if observability and observability.enabled then
-            observeHookCall(key)
-        end
+        observeHookCall(key)
         return fn(...)
     end
 end
@@ -526,18 +528,6 @@ function RefineUI:HookScriptOnce(key, target, script, fn)
     return true
 end
 
-function RefineUI:IsHookRegistered(key)
-    if type(key) ~= "string" or key == "" then
-        return false
-    end
-    return self._hookRegistry[key] == true
-end
-
-function RefineUI:ResetHookRegistration(key)
-    if type(key) ~= "string" or key == "" then return end
-    self._hookRegistry[key] = nil
-end
-
 ----------------------------------------------------------------------------------------
 -- Curve constants (Shim)
 ----------------------------------------------------------------------------------------
@@ -572,45 +562,6 @@ function RefineUI.GetLinearCurve()
     curve:AddPoint(3600, 3600)
     
     RefineUI.LinearCurve = curve
-    return curve
-end
-
-function RefineUI.GetUnitCurve()
-    if RefineUI.UnitCurve then return RefineUI.UnitCurve end
-
-    local curve = C_CurveUtil.CreateCurve()
-    curve:SetType(Enum.LuaCurveType.Linear)
-    curve:AddPoint(0, 0)
-    curve:AddPoint(1, 1)
-    
-    RefineUI.UnitCurve = curve
-    return curve
-end
-
-function RefineUI.GetCastAlphaCurve()
-    if RefineUI.CastAlphaCurve then return RefineUI.CastAlphaCurve end
-
-    local curve = C_CurveUtil.CreateCurve()
-    curve:SetType(Enum.LuaCurveType.Linear)
-    -- X = Seconds Remaining, Y = Alpha
-    -- Fades in from 0.6 to 1.0 over the last 3.0 seconds of the cast
-    curve:AddPoint(0.0, 1.0) -- 0s remaining: Full Alpha
-    curve:AddPoint(3.0, 0.6) -- 3s remaining: Default Alpha (0.6)
-    curve:AddPoint(3600, 0.6) -- Beyond 3s: Stay at Default Alpha
-    
-    RefineUI.CastAlphaCurve = curve
-    return curve
-end
-
-function RefineUI.GetLinearPercentCurve()
-    if RefineUI.LinearPercentCurve then return RefineUI.LinearPercentCurve end
-
-    local curve = C_CurveUtil.CreateCurve()
-    curve:SetType(Enum.LuaCurveType.Linear)
-    curve:AddPoint(0, 0)
-    curve:AddPoint(1, 100)
-    
-    RefineUI.LinearPercentCurve = curve
     return curve
 end
 
@@ -683,14 +634,3 @@ end
 RefineUI:RegisterStartupCallback("Core:Commands", function()
     RefineUI:LoadCommands()
 end, 90)
-
-----------------------------------------------------------------------------------------
--- Utils
-----------------------------------------------------------------------------------------
-function RefineUI:Dump(val)
-    if DevTools_Dump then
-        DevTools_Dump(val)
-    else
-        print(val)
-    end
-end

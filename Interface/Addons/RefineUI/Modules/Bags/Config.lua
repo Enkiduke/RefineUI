@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local Bags = RefineUI:RegisterModule("Bags")
+local Bags = RefineUI:RegisterModule("Bags", "Bags")
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
@@ -53,6 +53,7 @@ local DEFAULTS = {
     CombinedSortMode = Bags.SORT_MODE.BLIZZARD,
     ByBagSortMode = Bags.SORT_MODE.BLIZZARD,
     ReagentWindowShown = false,
+    SmartStacking = false,
     CategoryOrder = {},
     CategoryEnabled = {},
     CategoryPinned = {},
@@ -136,6 +137,9 @@ function Bags.GetConfig()
     if type(cfg.ReagentWindowShown) ~= "boolean" then
         cfg.ReagentWindowShown = cfg.ReagentWindowShown and true or false
     end
+    if type(cfg.SmartStacking) ~= "boolean" then
+        cfg.SmartStacking = cfg.SmartStacking and true or false
+    end
     if type(cfg.CategoryOrder) ~= "table" then
         cfg.CategoryOrder = {}
     end
@@ -178,6 +182,11 @@ end
 
 function Bags.IsBagViewEnabled()
     return Bags.GetViewMode and Bags.GetViewMode() == Bags.BAG_VIEW_MODE.BY_BAG
+end
+
+function Bags.IsSmartStackingEnabled()
+    local cfg = Bags.GetConfig and Bags.GetConfig() or {}
+    return cfg.SmartStacking == true
 end
 
 function Bags.ShouldShowSortControl()

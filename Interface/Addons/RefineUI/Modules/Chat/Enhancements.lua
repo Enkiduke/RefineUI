@@ -50,7 +50,7 @@ local MONEY_PREFIX_COLOR = "|cffffd700"
 
 local LINK_PATTERN = "(\124H.-\124h.-\124h)"
 local GENERATED_LINK_ICON_PATTERN = format(
-    "\124T[^|]-:%d:%d:0:0:64:64:5:59:5:59\124t(\124H.-\124h.-\124h)",
+    "\124T[^|]-:%d:%d:0:0:64:64:5:59:5:59\124t ?(\124H.-\124h.-\124h)",
     LINK_ICON_SIZE,
     LINK_ICON_SIZE
 )
@@ -187,7 +187,7 @@ local function IconizeLink(fullLink)
     end
 
     return format(
-        "\124T%s:%d:%d:0:0:64:64:5:59:5:59\124t%s",
+        "\124T%s:%d:%d:0:0:64:64:5:59:5:59\124t %s",
         texture,
         LINK_ICON_SIZE,
         LINK_ICON_SIZE,

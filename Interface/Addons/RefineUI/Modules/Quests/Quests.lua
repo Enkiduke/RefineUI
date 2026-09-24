@@ -4,7 +4,7 @@
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
-local Quests = RefineUI:RegisterModule("Quests")
+local Quests = RefineUI:RegisterModule("Quests", "Quests")
 local UI = RefineUI
 
 ----------------------------------------------------------------------------------------
@@ -18,20 +18,17 @@ local Media = RefineUI.Media
 ----------------------------------------------------------------------------------------
 local _G = _G
 local unpack = unpack
-local select = select
 local pairs = pairs
 local ipairs = ipairs
 local type = type
 local tostring = tostring
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
-local GetScreenHeight = GetScreenHeight
-local C_Timer = C_Timer
 local gsub = string.gsub
 
 local ObjectiveTrackerFrame = _G.ObjectiveTrackerFrame
+local QuestObjectiveTracker = _G.QuestObjectiveTracker
 local QuestMapFrame = _G.QuestMapFrame
-local UIParent = _G.UIParent
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -39,6 +36,7 @@ local UIParent = _G.UIParent
 local R, G, B = unpack(RefineUI.MyClassColor)
 local GOLD_TEXT_COLOR = { 1, 0.82, 0 }
 local WHITE_TEXT_COLOR = { 1, 1, 1 }
+local PROGRESS_BAR_FLARES = { "Flare1", "Flare2", "SmallFlare1", "SmallFlare2", "FullBarFlare1", "FullBarFlare2" }
 
 local QUEST_PROGRESS_HOOK = {
     PANEL_ON_SHOW = "Quests:QuestFrameProgressPanel_OnShow",
@@ -114,12 +112,14 @@ local function StyleObjectiveFontString(fontString)
         return
     end
 
-    local _, size = fontString:GetFont()
+    local font, size, flags = fontString:GetFont()
     if not size then
         size = 13
     end
 
-    fontString:SetFont(Media.Fonts.Default, size, "OUTLINE")
+    if font ~= Media.Fonts.Default or flags ~= "OUTLINE" then
+        fontString:SetFont(Media.Fonts.Default, size, "OUTLINE")
+    end
     fontString:SetShadowColor(0, 0, 0, 1)
     fontString:SetShadowOffset(1, -1)
 end
@@ -130,7 +130,8 @@ local function StyleQuestMapFontString(fontString)
     end
 
     local name = fontString.GetName and fontString:GetName() or ""
-    local _, size = fontString:GetFont()
+    local font, originalSize, flags = fontString:GetFont()
+    local size = originalSize
     if not size then
         size = 12
     end
@@ -147,9 +148,11 @@ local function StyleQuestMapFontString(fontString)
         end
     end
 
-    fontString:SetFont(Media.Fonts.Default, size, "OUTLINE")
-    fontString:SetShadowColor(0, 0, 0, 1)
-    fontString:SetShadowOffset(1, -1)
+    if font ~= Media.Fonts.Default or size ~= originalSize or flags ~= "OUTLINE" then
+        fontString:SetFont(Media.Fonts.Default, size, "OUTLINE")
+        fontString:SetShadowColor(0, 0, 0, 1)
+        fontString:SetShadowOffset(1, -1)
+    end
 end
 
 local function ForEachChildFrameFontString(frame, callback, seen)
@@ -171,8 +174,9 @@ local function ForEachChildFrameFontString(frame, callback, seen)
         end
     end
 
-    for i = 1, frame:GetNumChildren() do
-        local child = select(i, frame:GetChildren())
+    local children = { frame:GetChildren() }
+    for i = 1, #children do
+        local child = children[i]
         if child then
             ForEachChildFrameFontString(child, callback, seen)
         end
@@ -184,7 +188,6 @@ end
 ----------------------------------------------------------------------------------------
 function Quests:HideDefaultBackgrounds()
     for _, Frames in pairs({
-        _G.ObjectiveTrackerFrame.Header,
         _G.QuestObjectiveTracker.Header.Background,
         _G.CampaignQuestObjectiveTracker.Header.Background,
         _G.MonthlyActivitiesObjectiveTracker.Header.Background,
@@ -250,7 +253,11 @@ function Quests:SkinProgressBar(tracker, key)
         if bar.BorderLeft then bar.BorderLeft:SetAlpha(0) end
         if bar.BorderRight then bar.BorderRight:SetAlpha(0) end
         if bar.BorderMid then bar.BorderMid:SetAlpha(0) end
-        if progressBar.PlayFlareAnim then progressBar.PlayFlareAnim = function() end end
+        -- Hide the flares instead of replacing PlayFlareAnim: Blizzard calls it
+        -- mid-layout, and an addon function there taints the tracker update.
+        for _, key in ipairs(PROGRESS_BAR_FLARES) do
+            if progressBar[key] then progressBar[key]:SetAlpha(0) end
+        end
 
         RefineUI.Size(bar, 200, 16)
         bar:SetStatusBarTexture(Media.Textures.Statusbar)
@@ -311,34 +318,29 @@ function Quests:HookTrackers()
         if tracker then
             RefineUI:HookOnce(BuildQuestHookKey(tracker, "GetProgressBar", i), tracker, "GetProgressBar", function(t, k) self:SkinProgressBar(t, k) end)
             RefineUI:HookOnce(BuildQuestHookKey(tracker, "GetTimerBar", i), tracker, "GetTimerBar", function(t, k) self:SkinTimerBar(t, k) end)
-            RefineUI:HookOnce(BuildQuestHookKey(tracker, "Update", i), tracker, "Update", function()
-                self:ApplyObjectiveTrackerFonts()
-                if tracker == _G.ScenarioObjectiveTracker and self.ApplyInstanceTrackerHeader then
-                    self:ApplyInstanceTrackerHeader()
-                end
-            end)
-            RefineUI:HookOnce(BuildQuestHookKey(tracker, "AddBlock", i), tracker, "AddBlock", function()
-                self:ApplyObjectiveTrackerFonts()
-            end)
-
-            RefineUI:HookOnce(BuildQuestHookKey(tracker, "OnBlockHeaderLeave", i), tracker, "OnBlockHeaderLeave", function(_, block)
-                if block.HeaderText and block.HeaderText.col then
-                    block.HeaderText:SetTextColor(block.HeaderText.col.r, block.HeaderText.col.g, block.HeaderText.col.b)
-                end
+            RefineUI:HookOnce(BuildQuestHookKey(tracker, "EndLayout", i), tracker, "EndLayout", function()
+                self:StyleObjectiveFrame(tracker)
             end)
         end
     end
 end
 
 function Quests:ApplyObjectiveTrackerFonts()
-    if not ObjectiveTrackerFrame then
-        return
+    for size = 12, 22 do
+        StyleObjectiveFontString(_G["ObjectiveTrackerFont" .. size])
     end
+    StyleObjectiveFontString(_G.ObjectiveTrackerLineFont)
+    StyleObjectiveFontString(_G.ObjectiveTrackerHeaderFont)
+end
 
-    ForEachChildFrameFontString(ObjectiveTrackerFrame, function(fontString)
+function Quests:StyleObjectiveFrame(frame)
+    ForEachChildFrameFontString(frame, function(fontString)
+        if fontString.__refineui_objective_fontobject_hooked then return end
+        local fontObject = fontString:GetFontObject()
+        if fontObject == _G.ObjectiveTrackerLineFont or fontObject == _G.ObjectiveTrackerHeaderFont then return end
         StyleObjectiveFontString(fontString)
 
-        if not fontString.__refineui_objective_fontobject_hooked and fontString.SetFontObject then
+        if fontString.SetFontObject then
             fontString.__refineui_objective_fontobject_hooked = true
             RefineUI:HookOnce(BuildQuestHookKey(fontString, "SetFontObject", "ObjectiveText"), fontString, "SetFontObject", function(self)
                 StyleObjectiveFontString(self)
@@ -455,12 +457,9 @@ function Quests:ApplyQuestMapFonts()
         _G.QuestInfoRewardsFrame,
         _G.MapQuestInfoRewardsFrame,
         QuestMapFrame and QuestMapFrame.DetailsFrame,
-        QuestMapFrame and QuestMapFrame.DetailsFrame and QuestMapFrame.DetailsFrame.RewardsFrameContainer,
-        QuestMapFrame and QuestMapFrame.DetailsFrame and QuestMapFrame.DetailsFrame.RewardsFrameContainer and QuestMapFrame.DetailsFrame.RewardsFrameContainer.RewardsFrame,
     }
-
-    for i = 1, #roots do
-        local root = roots[i]
+    local seen = {}
+    for _, root in pairs(roots) do
         if root then
             ForEachChildFrameFontString(root, function(fontString)
                 StyleQuestMapFontString(fontString)
@@ -471,7 +470,7 @@ function Quests:ApplyQuestMapFonts()
                         StyleQuestMapFontString(self)
                     end)
                 end
-            end)
+            end, seen)
         end
     end
 
@@ -566,15 +565,187 @@ end
 ----------------------------------------------------------------------------------------
 local MenuUtil = MenuUtil
 
+function Quests:InitializeZoneGrouping()
+    local tracker = QuestObjectiveTracker
+    local originalEnum = tracker.EnumQuestWatchData
+    local originalAddBlock = tracker.AddBlock
+    local originalHeaderHeight = tracker.headerHeight
+    local originalHeaderFrameHeight = tracker.Header:GetHeight()
+    local originalHeaderOffsetY = tracker.fromHeaderOffsetY
+    local zoneHeaders = {}
+    local collapsedZones = {}
+    local activeZone
+    local previousZone
+
+    self.ApplyZoneHeaderMode = function()
+        if Config.Quests.GroupTrackedQuestsByZone then
+            if tracker:IsCollapsed() then
+                tracker:SetCollapsed(false)
+            end
+            tracker.headerHeight = 0
+            tracker.fromHeaderOffsetY = 0
+            tracker.Header:SetHeight(0)
+            tracker.Header:Hide()
+        else
+            tracker.headerHeight = originalHeaderHeight
+            tracker.fromHeaderOffsetY = originalHeaderOffsetY
+            tracker.Header:SetHeight(originalHeaderFrameHeight)
+            tracker.Header:Show()
+        end
+    end
+
+    local function GetZoneHeader(module, zone)
+        local header = zoneHeaders[zone]
+        if not header then
+            header = CreateFrame("Frame", nil, module.ContentsFrame, "ObjectiveTrackerModuleHeaderTemplate")
+            header:Hide()
+            header.id = "RefineUIZone:" .. zone
+            header.height = 26
+            header.offsetX = 0
+            header:SetHeight(26)
+            header.Text:SetText(zone)
+            header.MinimizeButton:SetScript("OnClick", function()
+                collapsedZones[zone] = not collapsedZones[zone]
+                header:SetCollapsed(collapsedZones[zone])
+                tracker:MarkDirty()
+            end)
+            if Config.Quests.HeaderSkinning then
+                header.Background:Hide()
+                self:SkinHeader(header)
+            end
+            zoneHeaders[zone] = header
+        end
+        return header
+    end
+
+    RefineUI:HookOnce("Quests:ZoneGrouping:BeginLayout", tracker, "BeginLayout", function()
+        for _, header in pairs(zoneHeaders) do
+            header:Hide()
+        end
+        activeZone = nil
+        previousZone = nil
+    end)
+
+    tracker.EnumQuestWatchData = function(module, callback)
+        if not Config.Quests.GroupTrackedQuestsByZone then
+            return originalEnum(module, callback)
+        end
+
+        local groups = {}
+        local zoneOrder = {}
+        local zoneNames = {}
+        local infos = module:BuildQuestWatchInfos()
+        for index = 1, #infos do
+            local quest = infos[index].quest
+            local headerIndex = C_QuestLog.GetHeaderIndexForQuest(quest:GetID())
+            local zone = headerIndex and zoneNames[headerIndex]
+            if headerIndex and not zone then
+                zone = C_QuestLog.GetTitleForLogIndex(headerIndex)
+                zoneNames[headerIndex] = zone
+            end
+            zone = zone or _G.MISCELLANEOUS or "Other"
+            local group = groups[zone]
+            if not group then
+                group = {}
+                groups[zone] = group
+                zoneOrder[#zoneOrder + 1] = zone
+            end
+            group[#group + 1] = quest
+        end
+
+        for index = 1, #zoneOrder do
+            local zone = zoneOrder[index]
+            local group = groups[zone]
+            if collapsedZones[zone] then
+                local header = GetZoneHeader(module, zone)
+                if not originalAddBlock(module, header) then
+                    return
+                end
+                header:Show()
+            else
+                for questIndex = 1, #group do
+                    activeZone = zone
+                    if not callback(module, group[questIndex]) then
+                        activeZone = nil
+                        return
+                    end
+                end
+            end
+        end
+        activeZone = nil
+    end
+
+    tracker.AddBlock = function(module, block)
+        if not Config.Quests.GroupTrackedQuestsByZone or not activeZone or activeZone == previousZone
+            or block.cached or module:IsCollapsed() then
+            return originalAddBlock(module, block)
+        end
+
+        if module:HasSkippedBlocks() then
+            return false
+        end
+
+        local header = GetZoneHeader(module, activeZone)
+        -- Reserve the header and first quest together; native LayoutBlock still
+        -- owns caching, line cleanup, and the quest's final placement.
+        local blockHeight = block.height
+        block.height = blockHeight + header.height - module.fromBlockOffsetY
+        local fits = module:CanFitBlock(block)
+        block.height = blockHeight
+        if not fits then
+            module.hasTriedBlocks = true
+            module.hasSkippedBlocks = true
+            return false
+        end
+
+        if not originalAddBlock(module, header) then
+            return false
+        end
+        header:Show()
+        previousZone = activeZone
+        return originalAddBlock(module, block)
+    end
+
+    self.ApplyZoneHeaderMode()
+end
+
+function Quests:UpdateObjectiveHeaderCount()
+    local _, accepted = C_QuestLog.GetNumQuestLogEntries()
+    local tracked = C_QuestLog.GetNumQuestWatches()
+    local text = tracked > 0 and (tracked .. "/" .. accepted) or tostring(accepted)
+    if self.ObjectiveHeaderCount:GetText() ~= text then
+        self.ObjectiveHeaderCount:SetText(text)
+    end
+end
+
 function Quests:CreateSettingsButton()
 
-    local button = RefineUI.CreateSettingsButton(ObjectiveTrackerFrame.Header, "RefineUI_QuestsSettingsButton", 14)
+    local header = ObjectiveTrackerFrame.Header
+    local button = RefineUI.CreateSettingsButton(header, "RefineUI_QuestsSettingsButton", 14)
     
     if ObjectiveTrackerFrame.Header.MinimizeButton then
         button:SetPoint("RIGHT", ObjectiveTrackerFrame.Header.MinimizeButton, "LEFT", -4, 0)
     else
         button:SetPoint("TOPRIGHT", ObjectiveTrackerFrame.Header, "TOPRIGHT", -20, -5)
     end
+
+    -- Header.Text is an AutoScalingFontString: its Lua SetText stores scaling
+    -- state, and headerText is read by ObjectiveTrackerManager:Init. Either
+    -- taints the tracker's module setup, so set the text with the widget method.
+    local function SetTrackerHeaderText()
+        GetFontStringMetatable().__index.SetText(header.Text, "Objectives")
+    end
+    SetTrackerHeaderText()
+    RefineUI:HookOnce("Quests:TrackerHeaderText", ObjectiveTrackerFrame, "Init", SetTrackerHeaderText)
+    local count = header:CreateFontString(nil, "ARTWORK", "ObjectiveTrackerHeaderFont")
+    count:SetWidth(48)
+    count:SetJustifyH("RIGHT")
+    count:SetPoint("RIGHT", button, "LEFT", -8, 0)
+    header.Text:ClearAllPoints()
+    header.Text:SetPoint("LEFT", header, "LEFT", 7, 0)
+    header.Text:SetPoint("RIGHT", count, "LEFT", -8, 0)
+    self.ObjectiveHeaderCount = count
+    self:UpdateObjectiveHeaderCount()
     
     button:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -609,6 +780,14 @@ function Quests:CreateSettingsButton()
                 RefineUI:Print("Auto Zone Track: " .. (Config.Quests.AutoZoneTrack and "Enabled" or "Disabled"))
                 local module = RefineUI:GetModule("AutoZoneTrack")
                 if module and module.UpdateTrigger then module:UpdateTrigger() end
+            end)
+
+            rootDescription:CreateCheckbox("Group Tracked Quests by Zone", function() return Config.Quests.GroupTrackedQuestsByZone end, function()
+                Config.Quests.GroupTrackedQuestsByZone = not Config.Quests.GroupTrackedQuestsByZone
+                -- Installing or removing the grouping mid-session would dirty the
+                -- tracker from addon code, so it applies on the next reload.
+                RefineUI:Print("Group Tracked Quests by Zone: "
+                    .. (Config.Quests.GroupTrackedQuestsByZone and "Enabled" or "Disabled") .. " (reload UI to apply)")
             end)
 
             rootDescription:CreateDivider()
@@ -668,28 +847,20 @@ function Quests:OnInitialize()
         self:SkinHeaders()
     end
     
+    self:ApplyObjectiveTrackerFonts()
+    RefineUI:HookOnce("Quests:TrackerTextSize", ObjectiveTrackerManager, "SetTextSize", function()
+        self:ApplyObjectiveTrackerFonts()
+    end)
     self:HookTrackers()
+    -- Zone grouping replaces QuestObjectiveTracker methods and layout fields,
+    -- which taints tracker updates; only install it when the user opts in.
+    if Config.Quests.GroupTrackedQuestsByZone then
+        self:InitializeZoneGrouping()
+    end
     if self.InitializeInstanceTrackerHeader then
         self:InitializeInstanceTrackerHeader()
     end
-    self:ApplyObjectiveTrackerFonts()
-    RefineUI:HookOnce("Quests:ObjectiveTracker_Update", "ObjectiveTracker_Update", function()
-        self:ApplyObjectiveTrackerFonts()
-    end)
-    C_Timer.After(0.1, function()
-        self:ApplyObjectiveTrackerFonts()
-    end)
-    C_Timer.After(0.5, function()
-        self:ApplyObjectiveTrackerFonts()
-    end)
     self:ApplyQuestMapFonts()
-    self:ApplyQuestProgressColors()
-    C_Timer.After(0.1, function()
-        self:ApplyQuestMapFonts()
-    end)
-    C_Timer.After(0.5, function()
-        self:ApplyQuestMapFonts()
-    end)
     if QuestMapFrame then
         RefineUI:HookScriptOnce("Quests:QuestMapFrame:OnShow", QuestMapFrame, "OnShow", function()
             self:ApplyQuestMapFonts()
@@ -705,6 +876,10 @@ function Quests:OnInitialize()
     end)
 
     self:CreateSettingsButton()
+    self:StyleObjectiveFrame(ObjectiveTrackerFrame)
+    RefineUI:OnEvents({ "QUEST_LOG_UPDATE", "QUEST_WATCH_LIST_CHANGED" }, function()
+        self:UpdateObjectiveHeaderCount()
+    end, "Quests:HeaderCount")
     if self.RegisterObjectiveTrackerEditModeSettings then
         self:RegisterObjectiveTrackerEditModeSettings()
     end
@@ -712,12 +887,6 @@ function Quests:OnInitialize()
         self:ApplyObjectiveTrackerScale()
     end
 
-    if not InCombatLockdown() then
-        ObjectiveTrackerFrame:SetParent(UIParent)
-        ObjectiveTrackerFrame:SetAlpha(1)
-        ObjectiveTrackerFrame:Show()
-    end
-    
     RefineUI:HookOnce("Quests:QuestInfo_Display", "QuestInfo_Display", function()
         self:ApplyQuestMapFonts()
     end)

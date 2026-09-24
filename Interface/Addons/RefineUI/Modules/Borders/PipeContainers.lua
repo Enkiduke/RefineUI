@@ -40,73 +40,49 @@ local HOOK_KEY = {
 ----------------------------------------------------------------------------------------
 -- Update Methods
 ----------------------------------------------------------------------------------------
+local function ApplyButtonBorder(button)
+    local link, itemID = Borders:GetButtonItemData(button)
+    Borders:ApplyItemBorder(button, link, itemID)
+end
+
 function Borders:UpdateBagFrame(frame)
     if not frame then return end
-    self:IterateFrameItems(frame, function(button)
-        local bagID = button:GetBagID()
-        local slotID = button:GetID()
-        local info = C_Container.GetContainerItemInfo(bagID, slotID)
-        if info then
-            self:ApplyItemBorder(button, info.hyperlink, info.itemID)
-        else
-            self:ApplyItemBorder(button, nil)
-        end
-    end)
+    self:IterateFrameItems(frame, ApplyButtonBorder)
+end
+
+local function UpdateModernBankFrame(frame)
+    if frame and frame.IsShown and frame:IsShown() and frame.EnumerateValidItems then
+        Borders:IterateFrameItems(frame, ApplyButtonBorder)
+        return true
+    end
+    return false
 end
 
 function Borders:UpdateBankFrame()
+    -- Bank panels are BankFrame children and keep their own shown flag after the bank closes.
+    if not BankFrame or not BankFrame:IsShown() then return end
+
     local updated = false
-
-    local function UpdateModernBankFrame(frame)
-        if frame and frame.IsShown and frame:IsShown() and frame.EnumerateValidItems then
-            self:IterateFrameItems(frame, function(button)
-                local link, itemID = self:GetButtonItemData(button)
-                self:ApplyItemBorder(button, link, itemID)
-            end)
-            return true
-        end
-        return false
-    end
-
-    local bankPanel = BankPanel or (BankFrame and BankFrame.BankPanel)
+    local bankPanel = BankPanel or BankFrame.BankPanel
     updated = UpdateModernBankFrame(bankPanel) or updated
     updated = UpdateModernBankFrame(BankFrame) or updated
     updated = UpdateModernBankFrame(ReagentBankFrame) or updated
     updated = UpdateModernBankFrame(AccountBankPanel) or updated
 
     if bankPanel and bankPanel.IsShown and bankPanel:IsShown() then
-        updated = self:IteratePoolItems(bankPanel.itemButtonPool, function(button)
-            local link, itemID = self:GetButtonItemData(button)
-            self:ApplyItemBorder(button, link, itemID)
-        end) or updated
-        updated = self:IteratePoolItems(bankPanel.ItemButtonPool, function(button)
-            local link, itemID = self:GetButtonItemData(button)
-            self:ApplyItemBorder(button, link, itemID)
-        end) or updated
+        updated = self:IteratePoolItems(bankPanel.itemButtonPool, ApplyButtonBorder) or updated
+        updated = self:IteratePoolItems(bankPanel.ItemButtonPool, ApplyButtonBorder) or updated
     end
 
     if AccountBankPanel and AccountBankPanel.IsShown and AccountBankPanel:IsShown() then
-        updated = self:IteratePoolItems(AccountBankPanel.itemButtonPool, function(button)
-            local link, itemID = self:GetButtonItemData(button)
-            self:ApplyItemBorder(button, link, itemID)
-        end) or updated
-        updated = self:IteratePoolItems(AccountBankPanel.ItemButtonPool, function(button)
-            local link, itemID = self:GetButtonItemData(button)
-            self:ApplyItemBorder(button, link, itemID)
-        end) or updated
-        updated = self:IteratePoolItems(AccountBankPanel.itemSlotPool, function(button)
-            local link, itemID = self:GetButtonItemData(button)
-            self:ApplyItemBorder(button, link, itemID)
-        end) or updated
-        updated = self:IteratePoolItems(AccountBankPanel.ItemSlotPool, function(button)
-            local link, itemID = self:GetButtonItemData(button)
-            self:ApplyItemBorder(button, link, itemID)
-        end) or updated
+        updated = self:IteratePoolItems(AccountBankPanel.itemButtonPool, ApplyButtonBorder) or updated
+        updated = self:IteratePoolItems(AccountBankPanel.ItemButtonPool, ApplyButtonBorder) or updated
+        updated = self:IteratePoolItems(AccountBankPanel.itemSlotPool, ApplyButtonBorder) or updated
+        updated = self:IteratePoolItems(AccountBankPanel.ItemSlotPool, ApplyButtonBorder) or updated
     end
 
     if updated then return end
 
-    if not BankFrame or not BankFrame:IsShown() then return end
     for i = 1, 28 do
         local slotFrame = _G["BankFrameItem" .. i]
         local info = C_Container.GetContainerItemInfo(-1, i)

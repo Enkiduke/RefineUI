@@ -3,7 +3,7 @@
 -- Description: Root registration for LootRules feature module.
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
-local LootRules = RefineUI:RegisterModule("LootRules")
+local LootRules = RefineUI:RegisterModule("LootRules", "Loot")
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)

@@ -8,7 +8,7 @@ local _, RefineUI = ...
 ----------------------------------------------------------------------------------------
 -- Module
 ----------------------------------------------------------------------------------------
-local Tooltip = RefineUI:RegisterModule("Tooltip")
+local Tooltip = RefineUI:RegisterModule("Tooltip", "Tooltip")
 Tooltip.Private = Tooltip.Private or {}
 Tooltip.ItemHandlers = Tooltip.ItemHandlers or {}
 

@@ -196,6 +196,22 @@ function Bags.RegisterEditModeSettings()
         end,
     })
 
+    table.insert(settings, {
+        kind = RefineUI.LibEditMode.SettingType.Checkbox,
+        name = "Smart Stacking",
+        default = false,
+        get = function()
+            return Bags.IsSmartStackingEnabled and Bags.IsSmartStackingEnabled() or false
+        end,
+        set = function(_, value)
+            local cfg = Bags.GetConfig and Bags.GetConfig() or {}
+            cfg.SmartStacking = value == true
+            if Bags.RequestUpdate then
+                Bags.RequestUpdate({ forceReflow = true })
+            end
+        end,
+    })
+
     Bags._editModeSettings = settings
     Bags._editModeSettingsRegistered = true
 end

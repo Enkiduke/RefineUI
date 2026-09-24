@@ -20,11 +20,15 @@ local Locale = RefineUI.Locale
 local _G = _G
 local C_Spell = C_Spell
 local C_UnitAuras = C_UnitAuras
+local C_Secrets = C_Secrets
+local C_PaperDollInfo = C_PaperDollInfo
 local GetNumGroupMembers = GetNumGroupMembers
 local GetSpecialization = GetSpecialization
 local GetSpecializationInfo = GetSpecializationInfo
 local GetSpecializationRole = GetSpecializationRole
 local GetWeaponEnchantInfo = GetWeaponEnchantInfo
+local GetShapeshiftForm = GetShapeshiftForm
+local GetShapeshiftFormInfo = GetShapeshiftFormInfo
 local InCombatLockdown = InCombatLockdown
 local IsInInstance = IsInInstance
 local IsInRaid = IsInRaid
@@ -35,29 +39,22 @@ local UnitExists = UnitExists
 local UnitGroupRolesAssigned = UnitGroupRolesAssigned
 local UnitIsConnected = UnitIsConnected
 local UnitIsDeadOrGhost = UnitIsDeadOrGhost
-local UnitIsPlayer = UnitIsPlayer
 local UnitIsUnit = UnitIsUnit
 local UnitLevel = UnitLevel
 local issecretvalue = _G.issecretvalue
 local type = type
+local wipe = wipe
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
 local ROGUE_DRAGON_TEMPERED_BLADES = 381801
 local HUNTER_UNBREAKABLE_BOND = 1223323
+local ROGUE_LETHAL_POISONS = { 315584, 8679, 2823, 381664 }
+local ROGUE_NONLETHAL_POISONS = { 5761, 381637, 3408 }
 
-BuffReminder.currentValidUnits = BuffReminder.currentValidUnits or {}
-
-----------------------------------------------------------------------------------------
--- Private Helpers
-----------------------------------------------------------------------------------------
-local function GetSpellList(spellIDs)
-    if type(spellIDs) == "table" then
-        return spellIDs
-    end
-    return { spellIDs }
-end
+local groupUnits = {}
+local groupClasses = {}
 
 ----------------------------------------------------------------------------------------
 -- Public Methods / Component Access
@@ -89,39 +86,68 @@ local function GetPlayerRole()
 end
 
 local function KnowsAnySpell(spellIDs)
-    local spellList = GetSpellList(spellIDs)
-    for i = 1, #spellList do
-        if IsPlayerSpell(spellList[i]) then
+    if type(spellIDs) ~= "table" then
+        return IsPlayerSpell(spellIDs)
+    end
+    for i = 1, #spellIDs do
+        if IsPlayerSpell(spellIDs[i]) then
             return true
         end
     end
     return false
 end
 
+local function ContainsSpellID(spellIDs, spellID)
+    if type(spellIDs) ~= "table" then
+        return spellIDs == spellID
+    end
+    for i = 1, #spellIDs do
+        if spellIDs[i] == spellID then
+            return true
+        end
+    end
+    return false
+end
+
+local function GetActiveFormSpellID()
+    local index = GetShapeshiftForm()
+    if not index or index == 0 then return nil end
+    local _, active, _, spellID = GetShapeshiftFormInfo(index)
+    if (issecretvalue and (issecretvalue(active) or issecretvalue(spellID))) or not active then return nil end
+    return spellID
+end
+
 local function GetAuraDataBySpellID(unit, spellID)
-    if not C_UnitAuras or not spellID then
-        return nil
+    local ok, auraData
+    if unit == "player" then
+        ok, auraData = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
+    else
+        ok, auraData = pcall(C_UnitAuras.GetUnitAuraBySpellID, unit, spellID)
     end
-    if C_UnitAuras.GetUnitAuraBySpellID then
-        local ok, auraData = pcall(C_UnitAuras.GetUnitAuraBySpellID, unit, spellID, BuffReminder.AURA_FILTER)
-        if ok then
-            return auraData
-        end
+    return ok and auraData or nil
+end
+
+-- Restricted content (M+, encounters) hides some auras entirely; treat those as present so they never false-alarm.
+local function IsAuraUnreadable(spellID)
+    local isSecret = C_Secrets.ShouldSpellAuraBeSecret(spellID)
+    return (issecretvalue and issecretvalue(isSecret)) or isSecret == true
+end
+
+local function UnitHasAura(unit, spellID)
+    local auraData = GetAuraDataBySpellID(unit, spellID)
+    if auraData then
+        return true, auraData
     end
-    if unit == "player" and C_UnitAuras.GetPlayerAuraBySpellID then
-        local ok, auraData = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
-        if ok then
-            return auraData
-        end
-    end
-    return nil
+    return IsAuraUnreadable(spellID), nil
 end
 
 local function UnitHasAnyAura(unit, spellIDs)
-    local spellList = GetSpellList(spellIDs)
-    for i = 1, #spellList do
-        local auraData = GetAuraDataBySpellID(unit, spellList[i])
-        if auraData then
+    if type(spellIDs) ~= "table" then
+        return UnitHasAura(unit, spellIDs)
+    end
+    for i = 1, #spellIDs do
+        local hasAura, auraData = UnitHasAura(unit, spellIDs[i])
+        if hasAura then
             return true, auraData
         end
     end
@@ -130,13 +156,54 @@ end
 
 local function CountPlayerAuras(spellIDs)
     local count = 0
-    local spellList = GetSpellList(spellIDs)
-    for i = 1, #spellList do
-        if GetAuraDataBySpellID("player", spellList[i]) then
+    for i = 1, #spellIDs do
+        if GetAuraDataBySpellID("player", spellIDs[i]) then
             count = count + 1
         end
     end
     return count
+end
+
+local function GetMissingKnownPoison(spellIDs)
+    for i = 1, #spellIDs do
+        local spellID = spellIDs[i]
+        if IsPlayerSpell(spellID) and not GetAuraDataBySpellID("player", spellID) then
+            return spellID
+        end
+    end
+    return nil
+end
+
+function BuffReminder:GetCastSpellID(entry, runtime)
+    if entry.customCheck == "roguePoisons" then
+        local required = IsPlayerSpell(ROGUE_DRAGON_TEMPERED_BLADES) and 2 or 1
+        if CountPlayerAuras(ROGUE_LETHAL_POISONS) < required then
+            local spellID = GetMissingKnownPoison(ROGUE_LETHAL_POISONS)
+            if spellID then return spellID end
+        end
+        if CountPlayerAuras(ROGUE_NONLETHAL_POISONS) < required then
+            return GetMissingKnownPoison(ROGUE_NONLETHAL_POISONS)
+        end
+        return nil
+    end
+
+    local spellIDs = entry.castSpellID or entry.spellID
+    if not spellIDs then return nil end
+    if type(spellIDs) ~= "table" then
+        return IsPlayerSpell(spellIDs) and spellIDs or nil
+    end
+
+    local preferred = entry.iconByRole and runtime and entry.iconByRole[runtime.role]
+    if preferred and IsPlayerSpell(preferred) then
+        return preferred
+    end
+
+    for i = 1, #spellIDs do
+        if IsPlayerSpell(spellIDs[i]) then
+            return spellIDs[i]
+        end
+    end
+    return nil
 end
 
 local function IsValidGroupMember(unit)
@@ -166,30 +233,28 @@ function BuffReminder:IsEntryEnabled(entryKey, category)
     return true
 end
 
-function BuffReminder:BuildValidUnitCache()
-    local validUnits = {}
-    local groupSize = GetNumGroupMembers()
-    local inRaid = IsInRaid()
+local function BuildGroupCache()
+    wipe(groupUnits)
+    wipe(groupClasses)
 
+    local groupSize = GetNumGroupMembers()
     if groupSize == 0 then
-        local _, class = UnitClass("player")
-        validUnits[1] = { unit = "player", class = class, isPlayer = true }
-        self.currentValidUnits = validUnits
-        return validUnits
+        groupUnits[1] = "player"
+        groupClasses[RefineUI.MyClass] = true
+        return
     end
 
-    local idx = 1
+    local inRaid = IsInRaid()
     for i = 1, groupSize do
         local unit = inRaid and ("raid" .. i) or ((i == 1) and "player" or ("party" .. (i - 1)))
         if IsValidGroupMember(unit) then
             local _, class = UnitClass(unit)
-            validUnits[idx] = { unit = unit, class = class, isPlayer = UnitIsPlayer(unit) }
-            idx = idx + 1
+            groupUnits[#groupUnits + 1] = unit
+            if class then
+                groupClasses[class] = true
+            end
         end
     end
-
-    self.currentValidUnits = validUnits
-    return validUnits
 end
 
 local function PassesCommonChecks(self, entry, runtime)
@@ -222,51 +287,19 @@ local function IsPlayerAuraFromMe(auraData)
     return UnitIsUnit(sourceUnit, "player")
 end
 
-local function IsRaidBuffAvailable(self, entry)
-    if not entry or not entry.class then
-        return false
-    end
-    local validUnits = self.currentValidUnits or {}
-    for i = 1, #validUnits do
-        if validUnits[i].class == entry.class then
-            return true
-        end
-    end
-    return false
-end
-
 local function IsPlayerRaidBuffBeneficiary(self, entry)
     local beneficiaries = self.BUFF_BENEFICIARIES[entry.key]
     return (not beneficiaries) or beneficiaries[RefineUI.MyClass]
 end
 
-----------------------------------------------------------------------------------------
--- Public / Module Methods
-----------------------------------------------------------------------------------------
-function BuffReminder:CollectApplicableRaidBuffEntries()
-    self:BuildValidUnitCache()
-    local list = {}
-    for i = 1, #self.RAID_BUFFS do
-        local entry = self.RAID_BUFFS[i]
-        if IsRaidBuffAvailable(self, entry) then
-            list[#list + 1] = entry
-        end
-    end
-    return list
-end
-
-local function IsTargetedBuffActiveFromPlayer(self, entry)
-    local spellList = GetSpellList(entry.spellID)
-    if #spellList == 0 then
-        return false
-    end
-
-    local validUnits = self.currentValidUnits or {}
-    for i = 1, #validUnits do
-        local member = validUnits[i]
-        if not entry.beneficiaryRole or UnitGroupRolesAssigned(member.unit) == entry.beneficiaryRole then
-            local hasBuff, auraData = UnitHasAnyAura(member.unit, spellList)
-            if hasBuff and IsPlayerAuraFromMe(auraData) then
+local function IsTargetedBuffActiveFromPlayer(entry)
+    local auraSpell = entry.buffIdOverride or entry.spellID
+    for i = 1, #groupUnits do
+        local unit = groupUnits[i]
+        if not entry.beneficiaryRole or UnitGroupRolesAssigned(unit) == entry.beneficiaryRole then
+            local hasBuff, auraData = UnitHasAnyAura(unit, auraSpell)
+            -- No auraData means the aura is unreadable; its source can't be checked, so assume it's ours.
+            if hasBuff and (not auraData or IsPlayerAuraFromMe(auraData)) then
                 return true
             end
         end
@@ -275,9 +308,13 @@ local function IsTargetedBuffActiveFromPlayer(self, entry)
 end
 
 local function EvaluateCustomCheck(entry, runtime)
+    if entry.customCheck == "stance" then
+        if not IsPlayerSpell(entry.spellID) then return false end
+        return GetActiveFormSpellID() ~= entry.spellID
+    end
     if entry.customCheck == "roguePoisons" then
-        local lethalCount = CountPlayerAuras({ 315584, 8679, 2823, 381664 })
-        local nonLethalCount = CountPlayerAuras({ 5761, 381637, 3408 })
+        local lethalCount = CountPlayerAuras(ROGUE_LETHAL_POISONS)
+        local nonLethalCount = CountPlayerAuras(ROGUE_NONLETHAL_POISONS)
         local required = IsPlayerSpell(ROGUE_DRAGON_TEMPERED_BLADES) and 2 or 1
         return lethalCount < required or nonLethalCount < required
     end
@@ -293,8 +330,11 @@ local function EvaluateCustomCheck(entry, runtime)
     return false
 end
 
-local function ShouldShowRaidEntry(self, entry)
-    if not IsRaidBuffAvailable(self, entry) then
+local function ShouldShowRaidEntry(self, entry, runtime)
+    if entry.skipPvP and (runtime.instanceType == "pvp" or runtime.instanceType == "arena") then
+        return false
+    end
+    if not groupClasses[entry.class] then
         return false
     end
 
@@ -302,15 +342,24 @@ local function ShouldShowRaidEntry(self, entry)
         return false
     end
 
-    local hasOnPlayer = UnitHasAnyAura("player", entry.spellID)
+    local auraSpell = entry.spellID
+    if entry.instanceBuffIDs and (runtime.instanceType == "party" or runtime.instanceType == "raid") then
+        auraSpell = entry.instanceBuffIDs
+    end
+    -- Paladin auras are stance-bar forms; the form state stays readable when the aura itself is secret.
+    if entry.isForm and entry.class == RefineUI.MyClass then
+        return not ContainsSpellID(auraSpell, GetActiveFormSpellID())
+    end
+    local hasOnPlayer = UnitHasAnyAura("player", auraSpell)
     return not hasOnPlayer
 end
 
 local function ShouldShowTargetedEntry(self, entry)
     if entry.class ~= RefineUI.MyClass then return false end
     if not KnowsAnySpell(entry.spellID) then return false end
-    if GetNumGroupMembers() == 0 then return false end
-    return not IsTargetedBuffActiveFromPlayer(self, entry)
+    if GetNumGroupMembers() == 0 and not entry.allowSolo then return false end
+    self.watchGroupAuras = true
+    return not IsTargetedBuffActiveFromPlayer(entry)
 end
 
 local function ShouldShowSelfEntry(entry, runtime)
@@ -318,7 +367,11 @@ local function ShouldShowSelfEntry(entry, runtime)
         return EvaluateCustomCheck(entry, runtime)
     end
     if not KnowsAnySpell(entry.spellID) then return false end
+    if entry.requireShield and not runtime.offhandHasShield then return false end
     if entry.enchantID then
+        if entry.enchantSlot == "offhand" then
+            return runtime.offEnchantID ~= entry.enchantID
+        end
         return runtime.mainEnchantID ~= entry.enchantID and runtime.offEnchantID ~= entry.enchantID
     end
     local auraSpell = entry.buffIdOverride or entry.spellID
@@ -336,14 +389,16 @@ end
 
 function BuffReminder:BuildRuntimeState()
     local _, _, _, mainEnchantID, _, _, _, offEnchantID = GetWeaponEnchantInfo()
-    local inInstance = IsInInstance()
+    local inInstance, instanceType = IsInInstance()
     return {
         playerLevel = UnitLevel("player") or 1,
         specID = GetPlayerSpecID(),
         role = GetPlayerRole(),
         mainEnchantID = mainEnchantID,
         offEnchantID = offEnchantID,
+        offhandHasShield = RefineUI.MyClass == "SHAMAN" and C_PaperDollInfo.OffhandHasShield(),
         inInstance = inInstance == true,
+        instanceType = instanceType,
     }
 end
 
@@ -355,30 +410,33 @@ function BuffReminder:CollectMissingEntries()
     local runtime = self:BuildRuntimeState()
     local result = {}
 
-    self:BuildValidUnitCache()
+    BuildGroupCache()
+    self.watchGroupAuras = false
 
     for c = 1, #self.CATEGORY_ORDER do
         local category = self.CATEGORY_ORDER[c]
         local entries = self.CATEGORY_BUFFS[category]
-        for i = 1, #entries do
-            local entry = entries[i]
-            local entrySettings = self:GetEntrySettings(entry.key, category)
-            if self:IsEntryEnabled(entry.key, category) and IsScopeAllowed(entrySettings, runtime) and (category == "raid" or PassesCommonChecks(self, entry, runtime)) then
-                local show = false
-                if category == "raid" then
-                    show = ShouldShowRaidEntry(self, entry)
-                elseif category == "targeted" then
-                    show = ShouldShowTargetedEntry(self, entry)
-                elseif category == "self" then
-                    if entry.reminderType == "pet" then
-                        show = ShouldShowPetEntry(entry, runtime)
-                    else
-                        show = ShouldShowSelfEntry(entry, runtime)
+        if self:IsCategoryEnabled(category) then
+            for i = 1, #entries do
+                local entry = entries[i]
+                local entrySettings = self:GetEntrySettings(entry.key, category)
+                if entrySettings.Enable ~= false and IsScopeAllowed(entrySettings, runtime) and (category == "raid" or PassesCommonChecks(self, entry, runtime)) then
+                    local show = false
+                    if category == "raid" then
+                        show = ShouldShowRaidEntry(self, entry, runtime)
+                    elseif category == "targeted" then
+                        show = ShouldShowTargetedEntry(self, entry)
+                    elseif category == "self" then
+                        if entry.reminderType == "pet" then
+                            show = ShouldShowPetEntry(entry, runtime)
+                        else
+                            show = ShouldShowSelfEntry(entry, runtime)
+                        end
                     end
-                end
 
-                if show then
-                    result[#result + 1] = { category = category, entry = entry, runtime = runtime }
+                    if show then
+                        result[#result + 1] = { category = category, entry = entry, runtime = runtime }
+                    end
                 end
             end
         end
@@ -387,16 +445,18 @@ function BuffReminder:CollectMissingEntries()
     return result
 end
 
-function BuffReminder:GetEntryTexture(entry, runtime)
+function BuffReminder:GetEntryTexture(entry, runtime, castSpellID)
     local texture = entry.iconOverride
     if type(texture) == "table" then
         texture = texture[1]
     end
-    if not texture and entry.iconByRole and runtime and runtime.role then
-        texture = entry.iconByRole[runtime.role]
-    end
     if not texture and C_Spell and C_Spell.GetSpellTexture then
-        local ok, spellTexture = pcall(C_Spell.GetSpellTexture, self:GetPrimarySpellID(entry.spellID))
+        local spellID = castSpellID or entry.castSpellID
+        if not spellID and (entry.iconByRole or entry.customCheck == "roguePoisons") then
+            spellID = self:GetCastSpellID(entry, runtime)
+        end
+        spellID = spellID or self:GetPrimarySpellID(entry.spellID)
+        local ok, spellTexture = pcall(C_Spell.GetSpellTexture, spellID)
         if ok then
             texture = spellTexture
         end

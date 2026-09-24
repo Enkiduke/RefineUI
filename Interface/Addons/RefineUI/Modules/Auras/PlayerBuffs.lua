@@ -256,15 +256,19 @@ local function ResolveBorderCoord(value, repeatX, repeatY)
     return value
 end
 
-local function UpdateManagedBorder(button)
+local function UpdateManagedBorder(button, size)
     local border = button and button.RefineManagedBorder
     if not border then return end
 
-    local width = border:GetWidth()
-    local height = border:GetHeight()
+    -- Aura container buttons report secret geometry; derive the border length from
+    -- the size we applied instead of reading it back.
     local effectiveScale = border:GetEffectiveScale()
-    local repeatX = max(0, (width / BORDER_EDGE_SIZE) * effectiveScale - 2 - BORDER_COORD_START)
-    local repeatY = max(0, (height / BORDER_EDGE_SIZE) * effectiveScale - 2 - BORDER_COORD_START)
+    if _G.issecretvalue and _G.issecretvalue(effectiveScale) then
+        effectiveScale = 1
+    end
+    local length = size + BORDER_INSET * 2
+    local repeatX = max(0, (length / BORDER_EDGE_SIZE) * effectiveScale - 2 - BORDER_COORD_START)
+    local repeatY = repeatX
 
     for pieceName, coords in pairs(BORDER_TEXTURE_UVS) do
         local texture = border[pieceName]
@@ -360,7 +364,7 @@ local function ApplyButtonStyle(button, style)
     end
 
     local color = style.color or { 1, 1, 1, 1 }
-    UpdateManagedBorder(button)
+    UpdateManagedBorder(button, size)
     SetManagedBorderColor(button, color)
 
     button:SetAlpha(style.enabled == false and 0 or 1)

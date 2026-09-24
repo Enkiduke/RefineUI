@@ -70,23 +70,18 @@ end
 -- 3. Update internal math constants (SAFE - No CVar changes)
 function RefineUI:UpdatePixelConstants()
     RefineUI:UpdateScreenDimensions()
-    local general = (RefineUI.Config and RefineUI.Config.General) or {}
-    
-    -- Determine effective scale (Config > CVar > Calculated)
-    local effectiveScale = general.Scale
-    if not effectiveScale then
+    -- Use the scale actually applied to UIParent. The uiScale CVar can differ from it
+    -- when SetUIScale applies a value below the CVar's minimum (e.g. ~0.533 at 1440p).
+    local effectiveScale = UIParent and UIParent:GetScale()
+    if not effectiveScale or effectiveScale <= 0 then
         effectiveScale = tonumber(GetCVar("uiScale"))
         if not effectiveScale or effectiveScale <= 0 then
-             effectiveScale = RefineUI:CalculateUIScale()
+            effectiveScale = RefineUI:CalculateUIScale()
         end
     end
-
-    if not effectiveScale or effectiveScale <= 0 then effectiveScale = 1 end
     
     -- 768 is the magic Blizzard UI height constant
     RefineUI.mult = (768 / RefineUI.ScreenHeight) / effectiveScale
-    RefineUI.noscalemult = RefineUI.mult * effectiveScale
-    RefineUI.low_resolution = RefineUI.ScreenWidth <= 1440
 end
 
 -- 4. Enforce Scale (DANGEROUS - Sets CVars, calls Recompute)
@@ -109,7 +104,48 @@ function RefineUI:SetUIScale()
     if UIParent then
         UIParent:SetScale(idealScale)
     end
-    
+
+    -- Remember what was applied. The persisted CVar is captured at the next login,
+    -- so later logins can tell whether the user changed it in Blizzard settings.
+    local db = RefineUI.DB
+    if db then
+        db.AppliedUIScale = idealScale
+        db.AppliedUIScaleCVar = nil
+    end
+
+    RefineUI:UpdatePixelConstants()
+end
+
+-- 5. Restore on login (SAFE - respects a scale the user chose in Blizzard settings)
+-- Re-applies only RefineUI's own scale, since UIParent scale below the uiScale CVar
+-- minimum does not persist. Once the user changes the Blizzard scale, it is left alone
+-- until install or repair applies RefineUI's scale again.
+function RefineUI:RestoreUIScale()
+    local general = (RefineUI.Config and RefineUI.Config.General) or {}
+    local db = RefineUI.DB
+    if not general.UseUIScale or not db then return end
+
+    if db.AppliedUIScale == nil then
+        -- Profiles installed before this was tracked keep RefineUI's scale.
+        if db.Installed then
+            RefineUI:SetUIScale()
+        end
+        return
+    end
+
+    local currentCVar = GetCVar("uiScale")
+    if GetCVar("useUiScale") ~= "1" then
+        return
+    end
+    if db.AppliedUIScaleCVar == nil then
+        db.AppliedUIScaleCVar = currentCVar
+    elseif currentCVar ~= db.AppliedUIScaleCVar then
+        return
+    end
+
+    if UIParent then
+        UIParent:SetScale(db.AppliedUIScale)
+    end
     RefineUI:UpdatePixelConstants()
 end
 
@@ -137,33 +173,6 @@ end
 function RefineUI:PixelPerfect(x)
 	local scale = UIParent:GetEffectiveScale()
 	return floor(x / scale + 0.5) * scale
-end
-
-function RefineUI:PixelSnap(frame)
-	if not frame or not frame.GetPoint then return end
-	local numPoints = frame:GetNumPoints()
-	if numPoints == 0 then return end
-
-	local scale = frame:GetEffectiveScale() or 1
-	local anchors = {}
-	for i = 1, numPoints do
-		local point, relativeTo, relativePoint, xOfs, yOfs = frame:GetPoint(i)
-		if point then
-			local parentScale = (relativeTo and relativeTo.GetEffectiveScale and relativeTo:GetEffectiveScale()) or scale
-			xOfs = xOfs or 0
-			yOfs = yOfs or 0
-			-- Snap to nearest physical pixel
-			xOfs = RefineUI:PixelPerfect((xOfs * scale) / parentScale) / scale
-			yOfs = RefineUI:PixelPerfect((yOfs * scale) / parentScale) / scale
-			anchors[#anchors + 1] = { point, relativeTo, relativePoint, xOfs, yOfs }
-		end
-	end
-
-	if #anchors == 0 then return end
-	frame:ClearAllPoints()
-	for i = 1, #anchors do
-		frame:SetPoint(anchors[i][1], anchors[i][2], anchors[i][3], anchors[i][4], anchors[i][5])
-	end
 end
 
 function RefineUI:SetPixelSize(frame, width, height)

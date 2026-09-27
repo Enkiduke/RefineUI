@@ -17,7 +17,7 @@ function RadBar:CURSOR_CHANGED()
     if bindMode or self.gridShown then
         self:ShowForCustomization()
     elseif self.mode == "customizing" then
-        self:HideForCustomization()
+        self:CloseRing()
     end
 end
 
@@ -45,12 +45,6 @@ function RadBar:ShowForCustomization()
         self.Core:Show()
     end
     self:SetPresentationMode("customizing")
-end
-
-function RadBar:HideForCustomization()
-    if self.mode == "customizing" then
-        self:CloseRing()
-    end
 end
 
 function RadBar:SetupDrag(btn, index)

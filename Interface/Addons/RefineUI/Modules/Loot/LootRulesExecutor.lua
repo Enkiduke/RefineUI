@@ -240,69 +240,14 @@ local function ResolveRuleCategory(quality, classID, itemType)
     return "misc"
 end
 
-local function IsUncollectedAppearance(link)
-    if not link or not C_TransmogCollection or not C_TransmogCollection.GetItemInfo or not C_TransmogCollection.GetSourceInfo then
-        return false
-    end
-
-    local sourceID = select(2, C_TransmogCollection.GetItemInfo(link))
-    if not sourceID then
-        return false
-    end
-
-    local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
-    return sourceInfo and sourceInfo.isCollected == false
-end
-
-local function IsUncollectedToy(itemID)
-    if not itemID or not C_ToyBox or not C_ToyBox.GetToyInfo or not C_ToyBox.PlayerHasToy then
-        return false
-    end
-    local toyName = C_ToyBox.GetToyInfo(itemID)
-    if not toyName then
-        return false
-    end
-    return C_ToyBox.PlayerHasToy(itemID) ~= true
-end
-
-local function IsUncollectedPet(itemID)
-    if not itemID or not C_PetJournal or not C_PetJournal.GetPetInfoByItemID or not C_PetJournal.GetNumCollectedInfo then
-        return false
-    end
-    local _, _, _, _, _, _, _, _, _, _, _, _, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
-    if type(speciesID) ~= "number" then
-        return false
-    end
-    local owned = C_PetJournal.GetNumCollectedInfo(speciesID)
-    return (owned or 0) <= 0
-end
-
-local function IsUncollectedMount(itemID)
-    if not itemID or not C_MountJournal or not C_MountJournal.GetMountFromItem or not C_MountJournal.GetMountInfoByID then
-        return false
-    end
-    local mountID = C_MountJournal.GetMountFromItem(itemID)
-    if not mountID then
-        return false
-    end
-    local _, _, _, _, _, _, _, _, _, _, isCollected = C_MountJournal.GetMountInfoByID(mountID)
-    return isCollected ~= true
-end
-
+-- Transmog counts this item's own source, so an unlearned source of an already
+-- known appearance still matches. Unknown journal ownership counts as uncollected.
 local function IsUncollectedCollectible(link, itemID)
-    if IsUncollectedAppearance(link) then
-        return true
+    local kind, _, owned = RefineUI.Collections:ClassifyItem(itemID, link, true)
+    if kind == "appearances" then
+        return owned == false
     end
-    if IsUncollectedToy(itemID) then
-        return true
-    end
-    if IsUncollectedPet(itemID) then
-        return true
-    end
-    if IsUncollectedMount(itemID) then
-        return true
-    end
-    return false
+    return kind ~= nil and owned ~= true
 end
 
 local function BuildEquipmentSetItemIDLookup()

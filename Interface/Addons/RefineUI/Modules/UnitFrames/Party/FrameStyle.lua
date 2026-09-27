@@ -34,6 +34,7 @@ local GetRaidTargetIndex = GetRaidTargetIndex
 local SetRaidTargetIconTexture = SetRaidTargetIconTexture
 local InCombatLockdown = InCombatLockdown
 local type = type
+local ipairs = ipairs
 local tostring = tostring
 local tonumber = tonumber
 
@@ -70,6 +71,7 @@ local TEXTURE_ROLE_DAMAGER  = [[Interface\AddOns\RefineUI\Media\Textures\DAMAGER
 local TEXTURE_COMPACT_HEALTH = P.TEXTURE_COMPACT_HEALTH
 local TEXTURE_RAID_TARGET_ICONS = [[Interface\TargetingFrame\UI-RaidTargetingIcons]]
 local PARTY_RAID_ICON_SIZE = 24
+local PARTY_HP_EVENTS = { "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }
 
 local function QueuePartyDeferred(frame, suffix, delay, fn)
     if not frame or IsForbiddenObject(frame) or type(fn) ~= "function" then
@@ -99,6 +101,13 @@ local function ApplyCompactHealthTexture(frame)
     end)
 end
 
+-- Temporary max-health loss shrinks healthBar's right edge, so center the text on the frame.
+-- A shown power bar lifts healthBar's bottom by 8 (DefaultCUFSetup powerBarUsedHeight).
+local function AnchorCustomPartyText(frame, text, powerBarShown)
+    text:ClearAllPoints()
+    text:SetPoint("CENTER", frame, "CENTER", 0, powerBarShown and 4 or 0)
+end
+
 ----------------------------------------------------------------------------------------
 -- Border Layout
 ----------------------------------------------------------------------------------------
@@ -111,6 +120,9 @@ local function UpdateCompactPartyBorderLayout(frame)
     if not borderHost or IsForbiddenObject(borderHost) then return end
 
     local powerBarShown = IsFrameShownSafe(frame.powerBar)
+    if data.CustomPercentText then
+        AnchorCustomPartyText(frame, data.CustomPercentText, powerBarShown)
+    end
     local powerBarUsedHeight = 0
     local rawPowerBarUsedHeight = frame.powerBarUsedHeight
     if not IsUnreadableNumber(rawPowerBarUsedHeight) then
@@ -154,14 +166,14 @@ local function UpdateCustomPartyHP(self)
     if not percentText then return end
     
     if not UnitIsConnected(unit) then
-        RefineUI:SetFontStringValue(percentText, "OFFLINE", { emptyText = "" })
+        RefineUI:SetFontStringValue(percentText, "OFFLINE")
         percentText:SetTextColor(0.5, 0.5, 0.5)
     elseif UnitIsDeadOrGhost(unit) then
-        RefineUI:SetFontStringValue(percentText, "DEAD", { emptyText = "" })
+        RefineUI:SetFontStringValue(percentText, "DEAD")
         percentText:SetTextColor(0.5, 0.5, 0.5)
     else
         local percent = UnitHealthPercent(unit, true, RefineUI.GetPercentCurve())
-        RefineUI:SetFontStringValue(percentText, percent, { emptyText = "" })
+        RefineUI:SetFontStringValue(percentText, percent)
         percentText:SetTextColor(1, 1, 1)
     end
     percentText:Show()
@@ -178,20 +190,30 @@ local function CreateCustomPartyText(frame)
         local text = frame.healthBar:CreateFontString(nil, "OVERLAY")
         RefineUI.Font(text, 20, nil, "OUTLINE", false)
         text:SetTextColor(1, 1, 1)
-        text:SetPoint("CENTER", frame.healthBar, "CENTER", 0, 0)
+        AnchorCustomPartyText(frame, text, IsFrameShownSafe(frame.powerBar))
         data.CustomPercentText = text
-        
-        local function OnPartyEvent()
+        data.customTextHandler = function()
             UpdateCustomPartyHP({ frame = frame })
         end
-        
         local frameName = frame.GetName and frame:GetName()
-        local key = "Party_"..(frameName or tostring(frame))
-        RefineUI:OnUnitEvents(frame.unit, { "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, OnPartyEvent, key)
-        
+        data.customTextKey = "Party_"..(frameName or tostring(frame))
         data.customTextCreated = true
     end
-    
+
+    -- Blizzard reassigns member units on roster/sort changes (CompactPartyFrame RefreshMembers).
+    local unit = frame.unit
+    if data.customTextUnit ~= unit then
+        local key = data.customTextKey
+        local oldUnit = data.customTextUnit
+        if oldUnit then
+            for _, event in ipairs(PARTY_HP_EVENTS) do
+                RefineUI:OffUnitEvent(event, oldUnit, key .. ":" .. event)
+            end
+        end
+        RefineUI:OnUnitEvents(unit, PARTY_HP_EVENTS, data.customTextHandler, key)
+        data.customTextUnit = unit
+    end
+
     UpdateCustomPartyHP({frame=frame})
 end
 
@@ -485,8 +507,6 @@ function UF.StyleCompactPartyFrame(frame)
               data.powerBarBorderHooksInstalled = true
          end
 
-         P.UpdateCompactPartyDispelBorderColor(frame)
-
          if isPetFrame then
              UpdateCompactPetFrameColors(frame)
          end
@@ -498,8 +518,9 @@ function UF.StyleCompactPartyFrame(frame)
         frame.statusText:SetAlpha(0)
     end
 
-    P.ApplyCompactAuraStylingForFrame(frame)
     UpdateCompactRaidTargetMark(frame)
+    P.UpdateCompactGroupBuffs(frame)
+    P.UpdateCompactGroupDebuffs(frame)
 
     UpdateCompactPartyNameColor(frame)
     if not isPetFrame then

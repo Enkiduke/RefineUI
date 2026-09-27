@@ -7,11 +7,9 @@
     <Script file="CooldownCatalog.lua"/>
     <Script file="ExternalCooldowns.lua"/>
     <Script file="BlizzardSync.lua"/>
-    <Script file="AuraProbePayload.lua"/>
-    <Script file="RuntimeResolver.lua"/>
-    <Script file="AuraProbeRegistry.lua"/>
     <Script file="TrackersLayout.lua"/>
     <Script file="TrackersRender.lua"/>
+    <Script file="TrackersBlizzard.lua"/>
     <Script file="SettingsDragDrop.lua"/>
     <Script file="SettingsUI.lua"/>
     <Script file="VisualsStyles.lua"/>

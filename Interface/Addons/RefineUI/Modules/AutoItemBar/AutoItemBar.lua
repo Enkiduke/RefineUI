@@ -36,7 +36,6 @@ AutoItemBar.CATEGORY_SCHEMA_VERSION = 2
 
 AutoItemBar.buttonSize = 36
 AutoItemBar.buttonSpacing = 6
-AutoItemBar.currentConsumables = AutoItemBar.currentConsumables or {}
 
 ----------------------------------------------------------------------------------------
 --	Registry
@@ -54,21 +53,4 @@ function AutoItemBar:GetButtonState(button)
         self.ButtonState[button] = state
     end
     return state
-end
-
-function AutoItemBar:GetButtonData(button, key, defaultValue)
-    local state = self:GetButtonState(button)
-    if not state then return defaultValue end
-
-    local value = state[key]
-    if value == nil then
-        return defaultValue
-    end
-    return value
-end
-
-function AutoItemBar:SetButtonData(button, key, value)
-    local state = self:GetButtonState(button)
-    if not state then return end
-    state[key] = value
 end

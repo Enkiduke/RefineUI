@@ -9,9 +9,6 @@ local _, RefineUI = ...
 -- Module
 ----------------------------------------------------------------------------------------
 local Tooltip = RefineUI:GetModule("Tooltip")
-if not Tooltip then
-    return
-end
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
@@ -44,9 +41,6 @@ local GameTooltip = _G.GameTooltip
 local STORAGE_KEY = "TooltipItemCount"
 local OWNED_TEXT = "Owned"
 local YOU_TEXT = _G.YOU or "You"
-
-local ITEM_COUNT_HANDLER_KEY = "ItemCount"
-local ITEM_COUNT_RENDER_FLAG = "Tooltip:ItemCount:Added"
 
 local ITEM_COUNT_EVENT_BAG_UPDATE_KEY = "Tooltip:ItemCount:BAG_UPDATE"
 local ITEM_COUNT_EVENT_BAG_DELAYED_KEY = "Tooltip:ItemCount:BAG_UPDATE_DELAYED"
@@ -328,18 +322,6 @@ local function GetItemCountLines(itemID)
     return lines
 end
 
-local function HasRenderFlag(context, key)
-    local flags = context and context.flags
-    return type(flags) == "table" and flags[key] == true
-end
-
-local function SetRenderFlag(context, key)
-    local flags = context and context.flags
-    if type(flags) == "table" then
-        flags[key] = true
-    end
-end
-
 ----------------------------------------------------------------------------------------
 -- Event Handling
 ----------------------------------------------------------------------------------------
@@ -417,19 +399,13 @@ function Tooltip:InitializeItemCount()
     RefineUI:RegisterEventCallback("BANK_TABS_CHANGED", HandleBankTabsChanged, ITEM_COUNT_EVENT_BANK_TABS_KEY)
     RefineUI:RegisterEventCallback("PLAYER_EQUIPMENT_CHANGED", UpdateEquippedCounts, ITEM_COUNT_EVENT_EQUIPMENT_KEY)
 
-    Tooltip:RegisterItemHandler(ITEM_COUNT_HANDLER_KEY, function(tooltip, data, context)
+    Tooltip:RegisterItemHandler(function(tooltip, data)
         if tooltip ~= GameTooltip then
-            return
-        end
-        if not Tooltip:IsGameTooltipFrameSafe(tooltip) then
             return
         end
 
         local lines = GetItemCountLines(Tooltip:ReadSafeNumber(data.id))
         if not lines then
-            return
-        end
-        if HasRenderFlag(context, ITEM_COUNT_RENDER_FLAG) then
             return
         end
 
@@ -440,7 +416,5 @@ function Tooltip:InitializeItemCount()
         for index = 2, #lines, 2 do
             tooltip:AddDoubleLine(lines[index], lines[index + 1])
         end
-
-        SetRenderFlag(context, ITEM_COUNT_RENDER_FLAG)
     end)
 end

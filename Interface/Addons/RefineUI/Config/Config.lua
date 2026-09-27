@@ -122,6 +122,10 @@ C.UnitFrames = {
         LargeSize = 22, -- Size for player-cast/important auras
         Spacing = 0,    -- Space between icons
         CompactPartyRaidSpacing = 6, -- Extra spacing for Blizzard compact party/raid aura icons
+        CompactPartyRaidDispelBorder = true, -- Color party/raid borders by debuffs you can dispel
+        CompactPartyRaidDispelGlow = true, -- Glow party/raid frames by debuffs you can dispel
+        CompactPartyRaidShowDebuffs = true, -- RefineUI party/raid debuffs (Blizzard's "Display Debuffs" must be off)
+        -- CompactPartyRaidLargerRoleDebuffs / CompactPartyRaidOnlyDispellableDebuffs are seeded from Blizzard's CVars.
     },
 
     TargetAuras = {
@@ -157,9 +161,8 @@ C.UnitFrames = {
     },
 
     ClassBuffs = {
-        ImportantSort = "MANUAL", -- MANUAL, ASCENDING, DESCENDING
         ManualOrder = {},
-        SpellSettings = {},
+        SpellSettings = {}, -- [key] = { Important, Untracked, FrameColor, BorderColor }
     },
 
     DataBars = {
@@ -185,6 +188,7 @@ C.UnitFrames = {
             Scale = 1.0,
             Mouseover = false,
             Alpha = 0.5,
+            TextFormat = "NONE", -- "NONE", "PERCENT", "COMPACT", "COMPLETE"
         },
     },
 }
@@ -254,7 +258,6 @@ C.ClickCasting = {
     Enable = true,
     SchemaVersion = 1,
     TrackedEntries = {},
-    SpecBindings = {},
     UI = {
         PanelShown = false,
     },
@@ -433,6 +436,13 @@ C.EntranceDifficulty = {
 }
 
 ----------------------------------------------------------------------------------------
+-- 9.8 Boss Banner
+----------------------------------------------------------------------------------------
+C.BossBanner = {
+    Enable = true,
+}
+
+----------------------------------------------------------------------------------------
 -- Bags
 ----------------------------------------------------------------------------------------
 C.Bags = {
@@ -446,6 +456,12 @@ C.Bags = {
 ----------------------------------------------------------------------------------------
 C.Skins = {
     Enable = true,
+    DamageMeter = {
+        ShowPercentage = false,
+        AutoResetCombat = false,
+        AutoResetBoss = false,
+        AutoResetInstance = false,
+    },
     CharacterPanel = {
         Enable = true,
         ShowCurrentMaxItemLevel = true,
@@ -453,10 +469,7 @@ C.Skins = {
         ShowEnchantIndicators = true,
         ShowFilledGemIndicators = true,
         ShowEmptySocketIndicators = true,
-        ShowNoSocketIndicators = true,
-        ShowNoItemIndicators = true,
         ShowIndicatorText = false,
-        ShowMissingIndicatorText = false,
     },
 }
 
@@ -484,6 +497,7 @@ C.Maps = {
     ZoomReset = true,
     ResetTime = 5,
     WorldMap = true,
+    GroupIcons = true, -- Class-colored player and party/raid portraits on the Minimap and WorldMap
     Waypoint = {
         Enable = true,
         FontSize = 16,
@@ -635,7 +649,6 @@ C.Combat = {
     
     StickyTargeting = true,      -- Prevent clicking on world to deselect target
     DisableRightClickInteraction = false, -- Disable right click interaction (Camera Only)
-    AutoTargetOnClick = false,   -- Auto target mouseover on click (CAUTION)
 }
 
 ----------------------------------------------------------------------------------------
@@ -718,17 +731,28 @@ C.MythicPlus = {
 ----------------------------------------------------------------------------------------
 C.Toasts = {
     Enable = true,
-    SkinBlizzard = true, -- Route covered Blizzard alert toasts through the RefineUI renderer
-    ShowCurrency = true, -- Add custom currency-delta toasts into AlertFrame pipeline
-    ShowMoney = true, -- Add custom money-delta toasts into AlertFrame pipeline
-    ShowNegative = true, -- Show spent/lost values in addition to gains
-    MinimumCurrencyChange = 1, -- Absolute minimum change to show a currency toast
-    MinimumMoneyChange = 1, -- Copper threshold (1 = show all money changes)
-    Scale = 1.0, -- Global toast scale
-    VisibleCount = 4, -- Max visible RefineUI toasts
-    Spacing = 12, -- Vertical spacing between stacked toasts
-    Duration = 4.0, -- Seconds before a toast fades out
-    Sound = true, -- Play toast sounds for RefineUI-rendered toasts
+    Duration = 5, -- Seconds a RefineUI toast stays (Blizzard toasts keep Blizzard timing)
+    MaxVisible = 5, -- Toasts shown at once (Blizzard and RefineUI); new ones wait until one leaves
+    Sound = true, -- Play sounds for RefineUI toasts that have one
+    LootQuality = 2, -- Minimum item quality for the loot feed (2 = Uncommon)
+    Blizzard = true, -- Skin Blizzard alert toasts as RefineUI cards
+    Loot = true, -- Loot feed from your own loot messages
+    Currency = true, -- Currency gains
+    Money = true, -- Gold gains
+    Social = true, -- Show Battle.net toasts in the toast stack (Blizzard toast settings still apply)
+    Alerts = { -- Alert toasts (orange border, badge, alert sound)
+        Cooldown = 60, -- Minutes before mail, bags, durability, calendar, vault, and rare alerts can repeat (survives reloads)
+        Mail = true, -- New mail
+        Auction = true, -- Auction sold, expired, outbid, won
+        Bags = true, -- Free bag slots drop below BagSlots
+        BagSlots = 5,
+        Durability = true, -- Lowest equipped durability drops below DurabilityPercent
+        DurabilityPercent = 20,
+        Rares = true, -- Rare or treasure appears on the minimap
+        Calendar = true, -- New pending calendar invite
+        Vault = true, -- Great Vault rewards waiting
+        Keystone = true, -- Each new or upgraded keystone once, and new weekly bests
+    },
 }
 
 ----------------------------------------------------------------------------------------

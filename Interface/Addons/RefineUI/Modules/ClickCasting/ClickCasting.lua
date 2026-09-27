@@ -9,10 +9,10 @@ local ClickCasting = RefineUI:RegisterModule("ClickCasting", "ClickCasting")
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
-local _G = _G
+local C_AddOns = C_AddOns
+local C_ClickBindings = C_ClickBindings
 local InCombatLockdown = InCombatLockdown
-local type = type
-local issecretvalue = _G.issecretvalue
+local hooksecurefunc = hooksecurefunc
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -21,75 +21,44 @@ local REBUILD_DEBOUNCE_KEY = "ClickCasting:Rebuild"
 local MACRO_REBUILD_FOLLOWUP_KEY = "ClickCasting:Rebuild:MacroFollowup"
 local EVENT_PREFIX = "ClickCasting:Event"
 
-local REBUILD_EVENTS = {
-    PLAYER_LOGIN = true,
-    PLAYER_ENTERING_WORLD = true,
-    PLAYER_SPECIALIZATION_CHANGED = true,
-    ACTIONBAR_SLOT_CHANGED = true,
-    UPDATE_BINDINGS = true,
-    UPDATE_MACROS = true,
-    SPELLS_CHANGED = true,
-    ACTIONBAR_PAGE_CHANGED = true,
-    UPDATE_BONUS_ACTIONBAR = true,
-    UPDATE_OVERRIDE_ACTIONBAR = true,
+local MODULE_EVENTS = {
+    "PLAYER_ENTERING_WORLD",
+    "ACTIONBAR_SLOT_CHANGED",
+    "UPDATE_BINDINGS",
+    "UPDATE_MACROS",
+    "SPELLS_CHANGED",
+    "ACTIONBAR_PAGE_CHANGED",
+    "UPDATE_BONUS_ACTIONBAR",
+    "UPDATE_OVERRIDE_ACTIONBAR",
+    "PLAYER_REGEN_ENABLED",
+    "ADDON_LOADED",
 }
 
 ----------------------------------------------------------------------------------------
 -- Helpers
 ----------------------------------------------------------------------------------------
-function ClickCasting:IsModuleEnabled()
-    local cfg = self:GetConfig()
-    return cfg and cfg.Enable ~= false
-end
-
-function ClickCasting:RequestRebuild(reason)
-    if not self:IsModuleEnabled() then
-        return
-    end
-
-    if self.IsCliqueLoaded and self:IsCliqueLoaded() then
-        self.pendingRebuild = false
-        self.pendingSecureApply = false
-        self:RefreshConflictState()
-        return
-    end
-
+function ClickCasting:RequestRebuild()
     self.pendingRebuild = true
-    self.pendingSecureApply = true
-
-    RefineUI:Debounce(REBUILD_DEBOUNCE_KEY, 0.05, function()
-        self:FlushRebuild()
-    end)
+    if InCombatLockdown() then
+        return
+    end
+    RefineUI:Debounce(REBUILD_DEBOUNCE_KEY, 0.05, self.flushRebuildCallback)
 end
 
 function ClickCasting:FlushRebuild()
-    if not self:IsModuleEnabled() then
-        self.pendingRebuild = false
-        self.pendingSecureApply = false
-        self:DisableSecureSystem("disabled")
-        self:RefreshSpellbookPanel()
-        return
-    end
-
     if InCombatLockdown() then
         self.pendingRebuild = true
-        self.pendingSecureApply = true
         return
     end
 
     self.pendingRebuild = false
 
-    local hasConflict = self:RefreshConflictState()
-    if hasConflict then
-        self.pendingSecureApply = false
-        self:DisableSecureSystem("conflict")
-        self:RefreshSpellbookPanel()
-        return
+    if self:RefreshConflictState() then
+        self:DisableSecureSystem()
+    else
+        self:RebuildActiveSpecBindings()
+        self:ApplySecureSystem()
     end
-
-    self:RebuildActiveSpecBindings()
-    self:ApplySecureSystem()
-    self.pendingSecureApply = false
     self:RefreshSpellbookPanel()
 end
 
@@ -98,95 +67,63 @@ end
 ----------------------------------------------------------------------------------------
 function ClickCasting:HandleEvent(event, ...)
     if event == "PLAYER_REGEN_ENABLED" then
-        if self.pendingRebuild or self.pendingSecureApply or self.pendingFrameRegistration then
-            self:DiscoverSupportedFrames()
+        if self.pendingFrameRegistration then
+            self:FlushPendingFrameRegistrations()
+        end
+        if self.pendingRebuild then
             self:FlushRebuild()
         end
         return
     end
 
-    if event == "PLAYER_SPECIALIZATION_CHANGED" then
-        local unit = ...
-        if unit and ((issecretvalue and issecretvalue(unit)) or type(unit) ~= "string" or unit ~= "player") then
-            return
+    if event == "ADDON_LOADED" then
+        if ... == "Blizzard_PlayerSpells" then
+            self:AttachSpellbookTabIfReady()
         end
-    elseif event == "ADDON_LOADED" then
-        local addonName = ...
-        if issecretvalue and issecretvalue(addonName) then
-            return
-        end
-        if self.HandleAddonLoaded then
-            self:HandleAddonLoaded(addonName)
-        end
-        if addonName == "Clique" then
-            self:RefreshConflictState()
-            return
-        end
-    elseif event == "GROUP_ROSTER_UPDATE" or event == "INSTANCE_ENCOUNTER_ENGAGE_UNIT" or event == "PLAYER_ENTERING_WORLD" then
-        self:DiscoverSupportedFrames()
+        return
     end
 
-    if REBUILD_EVENTS[event] then
-        self:RequestRebuild(event)
-        if event == "UPDATE_MACROS" then
-            RefineUI:Debounce(MACRO_REBUILD_FOLLOWUP_KEY, 0.25, function()
-                self:RequestRebuild("UPDATE_MACROS:followup")
-            end)
-        end
-    elseif event == "ADDON_LOADED" then
-        local addonName = ...
-        if addonName == "Blizzard_MacroUI" or addonName == "Blizzard_PlayerSpells" then
-            self:RequestRebuild(event .. ":" .. addonName)
-        end
+    self:RequestRebuild()
+    if event == "UPDATE_MACROS" then
+        RefineUI:Debounce(MACRO_REBUILD_FOLLOWUP_KEY, 0.25, self.requestRebuildCallback)
     end
 end
 
 function ClickCasting:RegisterModuleEvents()
-    local events = {
-        "PLAYER_LOGIN",
-        "PLAYER_ENTERING_WORLD",
-        "PLAYER_SPECIALIZATION_CHANGED",
-        "ACTIONBAR_SLOT_CHANGED",
-        "UPDATE_BINDINGS",
-        "UPDATE_MACROS",
-        "SPELLS_CHANGED",
-        "ACTIONBAR_PAGE_CHANGED",
-        "UPDATE_BONUS_ACTIONBAR",
-        "UPDATE_OVERRIDE_ACTIONBAR",
-        "PLAYER_REGEN_ENABLED",
-        "GROUP_ROSTER_UPDATE",
-        "INSTANCE_ENCOUNTER_ENGAGE_UNIT",
-        "ADDON_LOADED",
-    }
-
-    RefineUI:OnEvents(events, function(event, ...)
+    local function OnEvent(event, ...)
         self:HandleEvent(event, ...)
-    end, EVENT_PREFIX)
+    end
+    RefineUI:OnEvents(MODULE_EVENTS, OnEvent, EVENT_PREFIX)
+    RefineUI:OnUnitEvents("player", { "PLAYER_SPECIALIZATION_CHANGED" }, OnEvent, EVENT_PREFIX)
+
+    -- Blizzard click bindings change only through these calls; no event reports it.
+    hooksecurefunc(C_ClickBindings, "SetProfileByInfo", self.requestRebuildCallback)
+    hooksecurefunc(C_ClickBindings, "ResetCurrentProfile", self.requestRebuildCallback)
 end
 
 ----------------------------------------------------------------------------------------
 -- Lifecycle
 ----------------------------------------------------------------------------------------
 function ClickCasting:OnEnable()
-    if not self:IsModuleEnabled() then
+    -- Clique owns click casting and cannot unload without a reload.
+    if C_AddOns.IsAddOnLoaded("Clique") then
         return
     end
 
     self.pendingRebuild = false
-    self.pendingSecureApply = false
     self.pendingFrameRegistration = false
-    self.isSuspended = false
-    self.suspendReason = nil
+    self.flushRebuildCallback = function()
+        self:FlushRebuild()
+    end
+    self.requestRebuildCallback = function()
+        self:RequestRebuild()
+    end
 
     self:InitializeData()
     self:InitializeSecureSystem()
-    self:InitializeFrameDiscovery()
-    self:InitializeSpellbookUI()
     self:RegisterModuleEvents()
-    if self.SetConflictWatchEnabled then
-        self:SetConflictWatchEnabled(false)
-    end
 
     self:DiscoverSupportedFrames()
-    self:RequestRebuild("enable")
+    self:AttachSpellbookTabIfReady()
+    self:RequestRebuild()
 end

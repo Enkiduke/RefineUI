@@ -77,6 +77,13 @@ function AdventureGuideInstances:RegisterRuntimeEvents()
         end
     end, self:BuildKey("Runtime", "EJ_DIFFICULTY_UPDATE"))
 
+    -- Visible rows re-read their completion; the list itself is reused.
+    RefineUI:RegisterEventCallback("ACHIEVEMENT_EARNED", function()
+        if self.customTabActive then
+            self:RefreshCustomTabContent()
+        end
+    end, self:BuildKey("Runtime", "ACHIEVEMENT_EARNED"))
+
     self.runtimeEventsRegistered = true
 end
 
@@ -147,6 +154,9 @@ function AdventureGuideInstances:OnEncounterJournalTabSet(tabID)
         self:DeactivateCustomTab()
     end
     self:UpdateCustomTabAvailability()
+    if self._guideInstanceListInstalled then
+        self:UpdateGuideListControls()
+    end
 end
 
 function AdventureGuideInstances:OnEncounterJournalHidden()
@@ -157,9 +167,7 @@ function AdventureGuideInstances:OnEncounterJournalHidden()
     end
     self.currentInstanceID = nil
     self.pendingRowRefreshInstanceID = nil
-    if self.CancelPendingInstanceRowBuilds then
-        self:CancelPendingInstanceRowBuilds()
-    end
+    self:CancelPendingInstanceRowBuilds()
     self:DeactivateCustomTab()
 end
 

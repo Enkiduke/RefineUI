@@ -10,25 +10,18 @@ local function IsPersonalView()
 end
 Window.IsPersonalView = IsPersonalView
 
-local function IsDungeonCategory(categoryID)
-    local seen = {}
-    while type(categoryID) == "number" and categoryID > 0 and not seen[categoryID] do
-        if categoryID == 168 then return true end
-        seen[categoryID] = true
-        local _, parent = GetCategoryInfo(categoryID)
-        categoryID = parent
-    end
-    return false
-end
-
 function Window:BuildGroups()
     if self.groups then return end
-    local groups = {}
+    -- Dungeons & Raids (168) and every category below it.
+    local groups, dungeon = {}, {}
+    for _, categoryID in ipairs(RefineUI.InstanceAchievements:GetDescendantCategoryIDs(168, true)) do
+        dungeon[categoryID] = true
+    end
     for instanceID, instance in pairs(RefineUI.AchievementInstanceData) do
         for _, achievementID in ipairs(instance.ids) do
             if C_AchievementInfo.IsValidAchievement(achievementID) then
                 local categoryID = GetAchievementCategory(achievementID)
-                if IsDungeonCategory(categoryID) then
+                if dungeon[categoryID] then
                     local group = groups[categoryID]
                     if not group then
                         group = { instances = {}, byID = {} }
@@ -71,7 +64,7 @@ function Window:SelectInstance(entry)
     scrollBox:SetScrollPercentage(scrollPercentage, ScrollBoxConstants.NoScrollInterpolation)
     AchievementFrameAchievements_UpdateDataProvider()
     AchievementFrameAchievements.ScrollBox:ScrollToBegin()
-    if self.QueueSearch then self:QueueSearch() end
+    self:QueueSearch()
 end
 
 function Window:OnCategorySelected(elementData)
@@ -96,7 +89,7 @@ function Window:OnCategorySelected(elementData)
     if type(elementData.id) == "number" then
         AchievementFrameAchievements_UpdateDataProvider()
     end
-    if self.QueueSearch then self:QueueSearch() end
+    self:QueueSearch()
 end
 
 function Window:UpdateCategories()
@@ -110,23 +103,24 @@ function Window:UpdateCategories()
     local scrollBox = AchievementFrameCategories.ScrollBox
     local source = scrollBox:GetDataProvider()
     if not source then return end
-    local provider = CreateDataProvider()
+    -- Collect rows first: a bulk insert raises one size event instead of one per row.
+    local rows = {}
     for _, element in source:Enumerate() do
-        provider:Insert(element)
-        if element.id == "summary" and self.ShowAlmostCompleted then
-            provider:Insert({ id = "summary", parent = "summary", isChild = true, refineAlmostRow = true })
+        rows[#rows + 1] = element
+        if element.id == "summary" then
+            rows[#rows + 1] = { id = "summary", parent = "summary", isChild = true, refineAlmostRow = true }
         end
         if group and element.id == categoryID then
-            provider:Insert({ id = categoryID, parent = categoryID, isChild = true,
-                refineInstanceRow = true, name = ALL or "All", selected = not self.activeInstance })
+            rows[#rows + 1] = { id = categoryID, parent = categoryID, isChild = true,
+                refineInstanceRow = true, name = ALL or "All", selected = not self.activeInstance }
             for _, entry in ipairs(group.instances) do
-                provider:Insert({ id = categoryID, parent = categoryID, isChild = true,
+                rows[#rows + 1] = { id = categoryID, parent = categoryID, isChild = true,
                     refineInstanceRow = true, instance = entry, name = entry.name,
-                    selected = self.activeInstance == entry })
+                    selected = self.activeInstance == entry }
             end
         end
     end
-    scrollBox:SetDataProvider(provider, ScrollBoxConstants.RetainScrollPosition)
+    scrollBox:SetDataProvider(CreateDataProvider(rows), ScrollBoxConstants.RetainScrollPosition)
 end
 
 function Window:DecorateCategory(frame)
@@ -190,19 +184,24 @@ function Window:FilterAchievements()
     if self.emptyText then self.emptyText:Hide() end
     if not IsPersonalView() then return end
     local scrollBox = AchievementFrameAchievements.ScrollBox
-    local source = scrollBox:GetDataProvider()
-    if not source then return end
-    local rows = {}
-    for _, element in source:Enumerate() do
-        if self.activeInstance and element.category ~= self.expandedCategory then return end
-        rows[#rows + 1] = element
+    local provider = scrollBox:GetDataProvider()
+    if not provider then return end
+    -- Blizzard's provider already applies its own completion filter in native
+    -- order. Rebuild only when a RefineUI filter, sort, or reveal changes rows.
+    if self.revealID or self:HasRowFilters() then
+        local rows = provider:GetCollection()
+        if self.activeInstance then
+            for _, element in ipairs(rows) do
+                if element.category ~= self.expandedCategory then return end
+            end
+        end
+        local category = self:GetSelectedCategory()
+        if (self:GetSettings().CharacterCompletion or self.revealID) and type(category) == "number" then
+            rows = self:GetCategoryRows(category)
+        end
+        provider = self:ProcessRows(rows)
+        scrollBox:SetDataProvider(provider)
     end
-    local category = self:GetSelectedCategory()
-    if (self:GetSettings().CharacterCompletion or self.revealID) and type(category) == "number" then
-        rows = self:GetCategoryRows(category)
-    end
-    local provider = self:ProcessRows(rows)
-    scrollBox:SetDataProvider(provider)
     if provider:GetSize() == 0 then
         if not self.emptyText then
             self.emptyText = AchievementFrameAchievements:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -220,6 +219,9 @@ function Window:Install()
         or not ScrollUtil or not ScrollUtil.AddInitializedFrameCallback
         or type(AchievementFrameCategories_SelectElementData) ~= "function" then return end
     self.installed = true
+    -- 12.1 moved the header controls under HeaderDetails.Filters.
+    local filters = AchievementFrame.HeaderDetails.Filters
+    self.filterDropdown, self.searchBox = filters.FilterDropdown, filters.SearchBox
     self:InstallFilterMenu()
     self:InstallSearch()
     ScrollUtil.AddInitializedFrameCallback(AchievementFrameCategories.ScrollBox, function(_, frame)
@@ -280,16 +282,26 @@ function Window:OnEnable()
     RefineUI:RegisterEventCallback("ITEM_DATA_LOAD_RESULT", function(_, itemID)
         if self.almostPendingItems and self.almostPendingItems[itemID] == true then
             self.almostPendingItems[itemID] = "requested"
-            self:RenderAlmostCompleted()
+            self:RefreshAlmostCards()
         end
         if self.pendingRewardItems and self.pendingRewardItems[itemID] == true then
             self.pendingRewardItems[itemID] = "requested"
-            if self.installed then self:RefreshFilters() end
+            -- A category can request many reward items; refresh once per burst.
+            if self.installed and not self.rewardRefreshQueued then
+                self.rewardRefreshQueued = true
+                C_Timer.After(0.1, function()
+                    self.rewardRefreshQueued = nil
+                    self:RefreshFilters()
+                end)
+            end
         end
     end, "AchievementWindow:RewardItems")
     for _, event in ipairs({"ACHIEVEMENT_EARNED", "CRITERIA_UPDATE", "RECEIVED_ACHIEVEMENT_LIST"}) do
         RefineUI:RegisterEventCallback(event, function(_, achievementID)
-            if self.InvalidateAlmostCompleted then self:InvalidateAlmostCompleted(event, achievementID) end
+            self:InvalidateAlmostCompleted(event, achievementID)
+            -- Criteria progress changes neither the indexed search text nor
+            -- completion, so it must not force a full search reindex.
+            if event == "CRITERIA_UPDATE" then return end
             self.searchCacheDirty = true
             if self.installed then
                 if event == "ACHIEVEMENT_EARNED" then self:RefreshFilters()

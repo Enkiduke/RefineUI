@@ -4,6 +4,7 @@
     <Script file="Minimap.lua"/>
     <Script file="Portals.lua"/>
     <Script file="WorldMap.lua"/>
+    <Script file="GroupIcons.lua"/>
     <Script file="ButtonCollect.lua"/>
     <Script file="WorldQuestList.lua"/>
 </Ui>

@@ -564,12 +564,6 @@ function CDM:EnsureRadialTrackerDisplay(frame)
     radialDisplay.Cooldown = CreateFrame("Cooldown", nil, radialDisplay, "CooldownFrameTemplate")
     radialDisplay.Cooldown:SetAllPoints()
 
-    radialDisplay.CountdownText = radialDisplay:CreateFontString(nil, "OVERLAY")
-    radialDisplay.CountdownText:SetJustifyH("CENTER")
-    radialDisplay.CountdownText:SetJustifyV("MIDDLE")
-    radialDisplay.CountdownText:SetFont(RefineUI.Media.Fonts.Number, 22, "OUTLINE")
-    radialDisplay.CountdownText:SetText("")
-
     frame.RadialDisplay = radialDisplay
     return radialDisplay
 end

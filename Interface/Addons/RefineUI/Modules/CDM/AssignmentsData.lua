@@ -374,13 +374,6 @@ function CDM:AssignCooldownToBucket(cooldownID, bucketName, destIndex, layoutKey
     if self.MarkAssignedCooldownSnapshotDirty then
         self:MarkAssignedCooldownSnapshotDirty()
     end
-    local isExternalCooldown = self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID)
-    if not isExternalCooldown and self.MarkReloadRecommendationPending then
-        self:MarkReloadRecommendationPending()
-    end
-    if self.HandleAssignmentConfigurationChanged then
-        self:HandleAssignmentConfigurationChanged(cooldownID)
-    end
     return true
 end
 
@@ -392,17 +385,8 @@ function CDM:UnassignCooldownID(cooldownID, layoutKey)
         local bucket = self.TRACKER_BUCKETS[i]
         changed = RemoveFromArray(scoped[bucket], cooldownID) or changed
     end
-    local isExternalCooldown = self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID)
-    if changed and not isExternalCooldown and self.MarkReloadRecommendationPending then
-        self:MarkReloadRecommendationPending()
-    end
-    if changed then
-        if self.MarkAssignedCooldownSnapshotDirty then
-            self:MarkAssignedCooldownSnapshotDirty()
-        end
-        if self.HandleAssignmentConfigurationChanged then
-            self:HandleAssignmentConfigurationChanged(cooldownID)
-        end
+    if changed and self.MarkAssignedCooldownSnapshotDirty then
+        self:MarkAssignedCooldownSnapshotDirty()
     end
     return changed
 end
@@ -469,9 +453,6 @@ function CDM:PruneCurrentLayoutAssignments()
     local changed = self:PruneAssignments(self:GetCurrentLayoutKey(), validSet)
     if changed and self.MarkAssignedCooldownSnapshotDirty then
         self:MarkAssignedCooldownSnapshotDirty()
-    end
-    if changed and self.HandleAssignmentConfigurationChanged then
-        self:HandleAssignmentConfigurationChanged()
     end
     self.assignmentsPruneDirty = nil
     return changed

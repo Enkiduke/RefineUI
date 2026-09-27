@@ -1,4 +1,6 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
-    <!-- <Include file="ToastsTemplates.xml"/>
-    <Script file="Toasts.lua"/> -->
+    <Include file="ToastsTemplates.xml"/>
+    <Script file="Toasts.lua"/>
+    <Script file="Sources.lua"/>
+    <Script file="Alerts.lua"/>
 </Ui>

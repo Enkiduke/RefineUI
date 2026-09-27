@@ -13,6 +13,7 @@ end
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local InCombatLockdown = InCombatLockdown
+local UnitIsDeadOrGhost = UnitIsDeadOrGhost
 local ipairs = ipairs
 local pairs = pairs
 
@@ -23,18 +24,37 @@ local Private = UnitFrames:GetPrivate()
 local Runtime = Private.Runtime
 
 local EVENT_KEY = {
-    POWER_MAX = "UnitFrames:PowerType:Max",
-    POWER_DISPLAY = "UnitFrames:PowerType:Display",
+    POWER = "UnitFrames:PowerType",
     PET_HEALTH = "UnitFrames:PetHealth",
     PET_UNIT = "UnitFrames:PetUnit",
     PET_UI = "UnitFrames:PetUI",
     BOSS_ENGAGE = "UnitFrames:BossEngage",
     REGEN_ENABLED = "UnitFrames:RegenEnabled",
+    UI_SCALE = "UnitFrames:UIScaleChanged",
+    DISPLAY_SIZE = "UnitFrames:DisplaySizeChanged",
 }
+
+local POWER_EVENT_UNITS = { "player", "vehicle", "target", "focus" }
+for index = 1, Private.Constants.MAX_BOSS_FRAMES do
+    POWER_EVENT_UNITS[#POWER_EVENT_UNITS + 1] = "boss" .. index
+end
 
 ----------------------------------------------------------------------------------------
 -- Shared Helpers
 ----------------------------------------------------------------------------------------
+-- TargetFrameMixin:Update and UNIT_FACTION both run CheckFaction, so it tracks the
+-- unit, reaction, and tap changes that decide the cached bar colors.
+local function OnCheckFaction(frame)
+    UnitFrames:ApplyDynamicStyle(frame)
+end
+
+-- CheckDead runs on every UNIT_HEALTH, so only a death or resurrection recolors.
+local function OnCheckDead(frame)
+    if UnitIsDeadOrGhost(frame.unit) ~= UnitFrames:GetFrameData(frame).isDead then
+        UnitFrames:ApplyDynamicStyle(frame)
+    end
+end
+
 local function RegisterBossFrameHooks(frame)
     if not frame or frame == PlayerFrame or frame == TargetFrame or frame == FocusFrame then
         return
@@ -44,10 +64,9 @@ local function RegisterBossFrameHooks(frame)
         return
     end
 
-    if frame.CheckClassification then
-        RefineUI:HookOnce(UnitFrames:BuildHookKey(frame, "CheckClassification:Boss"), frame, "CheckClassification", function(selfFrame)
-            UnitFrames:StyleFrame(selfFrame)
-        end)
+    if frame.CheckFaction then
+        RefineUI:HookOnce(UnitFrames:BuildHookKey(frame, "CheckFaction:Boss"), frame, "CheckFaction", OnCheckFaction)
+        RefineUI:HookOnce(UnitFrames:BuildHookKey(frame, "CheckDead:Boss"), frame, "CheckDead", OnCheckDead)
     end
     RefineUI:HookScriptOnce(UnitFrames:BuildHookKey(frame, "OnShow:Boss"), frame, "OnShow", function(selfFrame)
         UnitFrames:StyleFrame(selfFrame)
@@ -71,16 +90,6 @@ function UnitFrames:FlushQueuedStaticStyles()
 end
 
 function UnitFrames:RefreshFrame(frame)
-    if not frame then
-        return
-    end
-
-    self:ApplyDynamicStyle(frame)
-    if InCombatLockdown() then
-        self:QueueStaticStyle(frame)
-        return
-    end
-
     self:StyleFrame(frame)
 end
 
@@ -128,15 +137,13 @@ function UnitFrames:RegisterRuntimeHooks()
         end)
     end
 
-    if TargetFrame and TargetFrame.CheckClassification then
-        RefineUI:HookOnce("UnitFrames:TargetFrame:CheckClassification", TargetFrame, "CheckClassification", function()
-            UnitFrames:StyleFrame(TargetFrame)
+    for _, frame in ipairs({ TargetFrame, FocusFrame }) do
+        local frameName = frame:GetName()
+        RefineUI:HookOnce("UnitFrames:" .. frameName .. ":CheckClassification", frame, "CheckClassification", function(selfFrame)
+            UnitFrames:StyleFrame(selfFrame)
         end)
-    end
-    if FocusFrame and FocusFrame.CheckClassification then
-        RefineUI:HookOnce("UnitFrames:FocusFrame:CheckClassification", FocusFrame, "CheckClassification", function()
-            UnitFrames:StyleFrame(FocusFrame)
-        end)
+        RefineUI:HookOnce("UnitFrames:" .. frameName .. ":CheckFaction", frame, "CheckFaction", OnCheckFaction)
+        RefineUI:HookOnce("UnitFrames:" .. frameName .. ":CheckDead", frame, "CheckDead", OnCheckDead)
     end
 
     for _, frame in ipairs(self:GetManagedFrames()) do
@@ -168,7 +175,7 @@ function UnitFrames:RegisterRuntimeEvents()
     end
 
     local function OnPowerEvent(_, unit)
-        if unit == "player" then
+        if unit == PlayerFrame.unit then
             UnitFrames:RefreshFrame(PlayerFrame)
         elseif unit == "target" then
             UnitFrames:RefreshFrame(TargetFrame)
@@ -179,11 +186,13 @@ function UnitFrames:RegisterRuntimeEvents()
         end
     end
 
-    RefineUI:RegisterEventCallback("UNIT_MAXPOWER", OnPowerEvent, EVENT_KEY.POWER_MAX)
-    RefineUI:RegisterEventCallback("UNIT_DISPLAYPOWER", OnPowerEvent, EVENT_KEY.POWER_DISPLAY)
+    for _, unit in ipairs(POWER_EVENT_UNITS) do
+        RefineUI:OnUnitEvents(unit, { "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER" }, OnPowerEvent, EVENT_KEY.POWER .. ":" .. unit)
+    end
 
-    RefineUI:OnUnitEvents("pet", { "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, function()
-        UnitFrames:ApplyPetFrameDynamicStyle(PetFrame)
+    -- Health changes already reach the text through PetFrameHealthBar's OnValueChanged hook.
+    RefineUI:OnUnitEvents("pet", { "UNIT_MAXHEALTH", "UNIT_CONNECTION" }, function()
+        UnitFrames:UpdatePetFrameHealthText(PetFrame)
     end, EVENT_KEY.PET_HEALTH)
 
     RefineUI:RegisterEventCallback("UNIT_PET", function(_, ownerUnit)
@@ -208,6 +217,16 @@ function UnitFrames:RegisterRuntimeEvents()
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
         UnitFrames:FlushQueuedStaticStyles()
     end, EVENT_KEY.REGEN_ENABLED)
+
+    -- Deferred a frame so RefineUI.mult is updated before pixel sizes are recomputed.
+    local function ReapplyStylesAfterScaleChange()
+        UnitFrames:ReapplyStyles()
+    end
+    local function OnScaleChanged()
+        C_Timer.After(0, ReapplyStylesAfterScaleChange)
+    end
+    RefineUI:RegisterEventCallback("UI_SCALE_CHANGED", OnScaleChanged, EVENT_KEY.UI_SCALE)
+    RefineUI:RegisterEventCallback("DISPLAY_SIZE_CHANGED", OnScaleChanged, EVENT_KEY.DISPLAY_SIZE)
 
     Runtime.runtimeEventsRegistered = true
 end

@@ -12,7 +12,14 @@ local BADGES = {
     { key = "mounts", label = "Mounts", icon = 132261 },
     { key = "toys", label = "Toys", icon = 134859 },
 }
+Module.COMPLETION_BADGES = BADGES
 local EMPTY_COUNT = { earned = 0, total = 0, unknown = 0 }
+local HEADER_HEIGHT = 40
+local CHIP_ICON = 15
+local CHIP_GAP = 10
+local PERCENT_WIDTH = 50
+-- Header is the 338px list minus its 20px scrollbar gutter, with 7px padding.
+local CHIPS_RIGHT = 318 - 7 - PERCENT_WIDTH - 6
 local PROGRESS_RED = { 0.9, 0.27, 0.24 }
 local PROGRESS_AMBER = { 0.96, 0.69, 0.24 }
 local PROGRESS_GREEN = { 0.39, 0.87, 0.46 }
@@ -26,6 +33,19 @@ local function IsReady(summary, key)
     if not summary then return false end
     if key == "achievements" then return summary.achievementsReady end
     return summary.lootReady
+end
+
+function Module:IsCompletionReady(summary, key)
+    return IsReady(summary, key)
+end
+
+-- The summary only applies to the journal's current instance and difficulty.
+function Module:GetActiveCompletionSummary()
+    local summary = self._completionSummary
+    if summary and summary.instanceID == self:GetCurrentJournalInstanceID()
+        and summary.difficultyID == EJ_GetDifficulty() then
+        return summary
+    end
 end
 
 function Module:GetCompletionColor(rate)
@@ -66,10 +86,9 @@ end
 
 function Module:ShowCompletionTooltip(owner, bossID, kind)
     local tooltip = _G.GameTooltip
-    local summary = self._completionSummary
     if not tooltip then return end
-    if not summary or summary.instanceID ~= self:GetCurrentJournalInstanceID()
-        or summary.difficultyID ~= EJ_GetDifficulty() then
+    local summary = self:GetActiveCompletionSummary()
+    if not summary then
         tooltip:Hide()
         return
     end
@@ -114,7 +133,7 @@ function Module:ShowCompletionTooltip(owner, bossID, kind)
     tooltip:Show()
 end
 
-function Module:DecorateCompletionBoss(button)
+function Module:DecorateCompletionBoss(button, summary)
     if not button or not button.encounterID then return end
     if not button.RefineCompletionBadges then
         local badges = {}
@@ -146,9 +165,7 @@ function Module:DecorateCompletionBoss(button)
             badges[descriptor.key] = badge
         end
     end
-    local summary = self._completionSummary
-    if summary and (summary.instanceID ~= self:GetCurrentJournalInstanceID()
-        or summary.difficultyID ~= EJ_GetDifficulty()) then summary = nil end
+    if summary == nil then summary = self:GetActiveCompletionSummary() end
     local counts = summary and summary.bosses[button.encounterID]
     local offset = 0
     local availableWidth = math.max(1, button:GetWidth() - 115)
@@ -160,11 +177,11 @@ function Module:DecorateCompletionBoss(button)
     local badgeWidth = math.min(60, availableWidth / math.max(1, visibleCount))
     for _, descriptor in ipairs(BADGES) do
         local badge = button.RefineCompletionBadges[descriptor.key]
-        local text, r, g, b = self:FormatCompletionCount(counts and counts[descriptor.key], IsReady(summary, descriptor.key))
         local count = counts and counts[descriptor.key]
         local shown = count and count.total > 0
         badge:SetShown(shown == true)
         if shown then
+            local text, r, g, b = self:FormatCompletionCount(count, IsReady(summary, descriptor.key))
             badge:ClearAllPoints()
             badge:SetPoint("TOPLEFT", button, "TOPLEFT", 105 + offset, -34)
             badge:SetSize(badgeWidth - 2, 14)
@@ -188,11 +205,11 @@ function Module:InstallCompletionUI()
     end, self)
 
     local header = CreateFrame("Frame", nil, info, "BackdropTemplate")
-    header:SetSize(318, 28)
+    header:SetSize(318, HEADER_HEIGHT)
     local oldHeight = scrollBox:GetHeight()
-    scrollBox:SetHeight(math.max(150, oldHeight - 64))
+    scrollBox:SetHeight(math.max(150, oldHeight - 24 - HEADER_HEIGHT - 12))
     -- Reserve 24px below the original list top for the instance portrait,
-    -- then 28px for the summary and 12px above the first boss artwork.
+    -- then the summary and 12px above the first boss artwork.
     header:SetPoint("BOTTOMLEFT", scrollBox, "TOPLEFT", 0, 12)
     header:SetPoint("BOTTOMRIGHT", scrollBox, "TOPRIGHT", -20, 12)
     header:SetBackdrop({
@@ -207,27 +224,48 @@ function Module:InstallCompletionUI()
     shadow:SetHeight(2)
     shadow:SetColorTexture(0.16, 0.09, 0.03, 0.18)
     header:EnableMouse(true)
-    header.Title = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    header.Title:SetPoint("TOPLEFT", 7, -4)
-    header.Title:SetPoint("TOPRIGHT", -7, -4)
-    header.Title:SetHeight(14)
-    header.Title:SetWordWrap(false)
-    header.Title:SetMaxLines(1)
-    header.Title:SetShadowOffset(1, -1)
-    header.Title:SetShadowColor(0.9, 0.75, 0.5, 0.35)
-    header.Title:SetTextColor(1, 0.82, 0)
-    header.Title:SetJustifyH("LEFT")
-    header.Title:SetText("Instance completion")
+    -- Overall percentage on the right; one compact count per available category.
+    header.Percent = header:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    header.Percent:SetPoint("TOPRIGHT", -7, -5)
+    header.Percent:SetSize(PERCENT_WIDTH, 18)
+    header.Percent:SetJustifyH("RIGHT")
+    header.Status = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    header.Status:SetPoint("TOPLEFT", 7, -7)
+    header.Status:SetPoint("RIGHT", header.Percent, "LEFT", -4, 0)
+    header.Status:SetJustifyH("LEFT")
+    header.Status:SetWordWrap(false)
+    header.Chips = {}
+    for _, descriptor in ipairs(BADGES) do
+        local chip = CreateFrame("Button", nil, header)
+        chip:SetHeight(18)
+        chip.Icon = chip:CreateTexture(nil, "ARTWORK")
+        chip.Icon:SetSize(CHIP_ICON, CHIP_ICON)
+        chip.Icon:SetPoint("LEFT")
+        chip.Icon:SetTexture(descriptor.icon)
+        chip.Icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        chip.Text = chip:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        chip.Text:SetPoint("LEFT", chip.Icon, "RIGHT", 3, 0)
+        chip.Text:SetPoint("RIGHT")
+        chip.Text:SetJustifyH("LEFT")
+        chip.Text:SetWordWrap(false)
+        chip:SetScript("OnEnter", function(frame) self:ShowCompletionTooltip(frame, nil, descriptor.key) end)
+        chip:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
+        header.Chips[descriptor.key] = chip
+    end
+    -- A thicker native-textured bar in a dark inset reads clearly on the parchment.
+    local inset = header:CreateTexture(nil, "BORDER")
+    inset:SetPoint("BOTTOMLEFT", 6, 5)
+    inset:SetPoint("BOTTOMRIGHT", -6, 5)
+    inset:SetHeight(8)
+    inset:SetColorTexture(0.1, 0.06, 0.02, 0.85)
     header.Bar = CreateFrame("StatusBar", nil, header)
-    header.Bar:SetPoint("BOTTOMLEFT", 7, 4)
-    header.Bar:SetPoint("BOTTOMRIGHT", -7, 4)
-    header.Bar:SetHeight(3)
-    header.Bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-    header.Bar:SetStatusBarColor(0.36, 0.46, 0.22)
+    header.Bar:SetPoint("TOPLEFT", inset, "TOPLEFT", 1, -1)
+    header.Bar:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", -1, 1)
+    header.Bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
     header.Bar:SetMinMaxValues(0, 1)
-    local background = header.Bar:CreateTexture(nil, "BACKGROUND")
-    background:SetAllPoints()
-    background:SetColorTexture(0.32, 0.22, 0.1, 0.18)
+    local track = header.Bar:CreateTexture(nil, "BACKGROUND")
+    track:SetAllPoints()
+    track:SetColorTexture(0.32, 0.22, 0.1, 0.35)
     header:SetScript("OnEnter", function(frame) self:ShowCompletionTooltip(frame) end)
     header:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
     scrollBox:HookScript("OnShow", function() header:Show(); self:ScheduleCompletionRefresh() end)
@@ -239,28 +277,56 @@ function Module:InstallCompletionUI()
     self:RenderCompletionProgress()
 end
 
+function Module:RenderCompletionHeader(summary)
+    local header = self.completionHeader
+    local counts = summary and summary.instance
+    local offset = 0
+    for _, descriptor in ipairs(BADGES) do
+        local chip = header.Chips[descriptor.key]
+        local count = counts and counts[descriptor.key]
+        local shown = count and count.total > 0
+        chip:SetShown(shown == true)
+        if shown then
+            local text, r, g, b = self:FormatCompletionCount(count, IsReady(summary, descriptor.key))
+            chip.Text:SetText(text)
+            chip.Text:SetTextColor(r, g, b)
+            -- Size each count to its text; the last one truncates rather than meet the percentage.
+            local width = math.min(CHIP_ICON + 3 + chip.Text:GetUnboundedStringWidth(), CHIPS_RIGHT - 7 - offset)
+            chip:SetShown(width > CHIP_ICON)
+            chip:SetWidth(width)
+            chip:SetPoint("TOPLEFT", 7 + offset, -5)
+            offset = offset + width + CHIP_GAP
+        end
+    end
+    local rate, _, total = self:GetCompletionRate(summary)
+    if offset == 0 then
+        local text = summary and summary.unavailable and "Collection data unavailable"
+            or total == 0 and "No tracked rewards" or "Loading collection..."
+        header.Status:SetText(text)
+        header.Status:SetTextColor(0.72, 0.62, 0.45)
+    end
+    header.Status:SetShown(offset == 0)
+    if rate then
+        local r, g, b = self:GetCompletionColor(rate)
+        header.Percent:SetFormattedText("%.0f%%", rate * 100)
+        header.Percent:SetTextColor(r, g, b)
+        header.Bar:SetStatusBarColor(r, g, b)
+    else
+        header.Percent:SetText(offset > 0 and "--" or "")
+        header.Percent:SetTextColor(0.65, 0.65, 0.65)
+    end
+    header.Bar:SetValue(rate or 0)
+end
+
 function Module:RenderCompletionProgress()
     if not self._completionUIInstalled then return end
     local info = GetInfoFrame()
     local scrollBox = info and info.BossesScrollBox
     if not scrollBox then return end
-    local summary = self._completionSummary
-    if summary and (summary.instanceID ~= self:GetCurrentJournalInstanceID()
-        or summary.difficultyID ~= EJ_GetDifficulty()) then summary = nil end
-    local header = self.completionHeader
-    if header then
-        local rate, earned, total = self:GetCompletionRate(summary)
-        header.Bar:SetValue(rate or 0)
-        if rate then
-            header.Title:SetText(string.format("Completion  %.0f%%  |  %d/%d", rate * 100, earned, total))
-        else
-            header.Title:SetText("Instance completion  --")
-        end
-        if not rate then
-            header.Title:SetText(total == 0 and "No tracked rewards" or "Completion  �  loading / unknown")
-        end
-    end
+    -- false marks "no active summary" so each row skips the journal lookup.
+    local summary = self:GetActiveCompletionSummary() or false
+    if self.completionHeader then self:RenderCompletionHeader(summary) end
     if scrollBox.GetFrames then
-        for _, button in ipairs(scrollBox:GetFrames()) do self:DecorateCompletionBoss(button) end
+        for _, button in ipairs(scrollBox:GetFrames()) do self:DecorateCompletionBoss(button, summary) end
     end
 end

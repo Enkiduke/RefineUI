@@ -256,7 +256,7 @@ local function ResolveBorderCoord(value, repeatX, repeatY)
     return value
 end
 
-local function UpdateManagedBorder(button, size)
+local function UpdateManagedBorder(button, width, height)
     local border = button and button.RefineManagedBorder
     if not border then return end
 
@@ -266,9 +266,9 @@ local function UpdateManagedBorder(button, size)
     if _G.issecretvalue and _G.issecretvalue(effectiveScale) then
         effectiveScale = 1
     end
-    local length = size + BORDER_INSET * 2
-    local repeatX = max(0, (length / BORDER_EDGE_SIZE) * effectiveScale - 2 - BORDER_COORD_START)
-    local repeatY = repeatX
+    local inset, edgeSize = border.inset, border.edgeSize
+    local repeatX = max(0, ((width + inset * 2) / edgeSize) * effectiveScale - 2 - BORDER_COORD_START)
+    local repeatY = max(0, (((height or width) + inset * 2) / edgeSize) * effectiveScale - 2 - BORDER_COORD_START)
 
     for pieceName, coords in pairs(BORDER_TEXTURE_UVS) do
         local texture = border[pieceName]
@@ -293,14 +293,19 @@ local function SetManagedBorderColor(button, color)
     end
 end
 
-local function CreateManagedBorder(button)
+local function CreateManagedBorder(button, inset, edgeSize)
     -- CustomAuraContainer buttons can already be secret/restricted here. Build the
     -- border directly in initializeFrame and avoid scripts/hooks on the aura button.
+    inset = inset or BORDER_INSET
+    edgeSize = edgeSize or BORDER_EDGE_SIZE
+
     local border = CreateFrame("Frame", nil, button)
-    border:SetPoint("TOPLEFT", button, "TOPLEFT", -BORDER_INSET, BORDER_INSET)
-    border:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", BORDER_INSET, -BORDER_INSET)
+    border:SetPoint("TOPLEFT", button, "TOPLEFT", -inset, inset)
+    border:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", inset, -inset)
     border:SetFrameLevel(button:GetFrameLevel() + 2)
     border:EnableMouse(false)
+    border.inset = inset
+    border.edgeSize = edgeSize
     border.Pieces = {}
 
     for index = 1, #BORDER_PIECE_ORDER do
@@ -321,26 +326,31 @@ local function CreateManagedBorder(button)
     tr:SetPoint("TOPRIGHT", border, "TOPRIGHT")
     bl:SetPoint("BOTTOMLEFT", border, "BOTTOMLEFT")
     br:SetPoint("BOTTOMRIGHT", border, "BOTTOMRIGHT")
-    tl:SetSize(BORDER_EDGE_SIZE, BORDER_EDGE_SIZE)
-    tr:SetSize(BORDER_EDGE_SIZE, BORDER_EDGE_SIZE)
-    bl:SetSize(BORDER_EDGE_SIZE, BORDER_EDGE_SIZE)
-    br:SetSize(BORDER_EDGE_SIZE, BORDER_EDGE_SIZE)
+    tl:SetSize(edgeSize, edgeSize)
+    tr:SetSize(edgeSize, edgeSize)
+    bl:SetSize(edgeSize, edgeSize)
+    br:SetSize(edgeSize, edgeSize)
 
     top:SetPoint("TOPLEFT", tl, "TOPRIGHT")
     top:SetPoint("TOPRIGHT", tr, "TOPLEFT")
-    top:SetHeight(BORDER_EDGE_SIZE)
+    top:SetHeight(edgeSize)
     bottom:SetPoint("BOTTOMLEFT", bl, "BOTTOMRIGHT")
     bottom:SetPoint("BOTTOMRIGHT", br, "BOTTOMLEFT")
-    bottom:SetHeight(BORDER_EDGE_SIZE)
+    bottom:SetHeight(edgeSize)
     left:SetPoint("TOPLEFT", tl, "BOTTOMLEFT")
     left:SetPoint("BOTTOMLEFT", bl, "TOPLEFT")
-    left:SetWidth(BORDER_EDGE_SIZE)
+    left:SetWidth(edgeSize)
     right:SetPoint("TOPRIGHT", tr, "BOTTOMRIGHT")
     right:SetPoint("BOTTOMRIGHT", br, "TOPRIGHT")
-    right:SetWidth(BORDER_EDGE_SIZE)
+    right:SetWidth(edgeSize)
 
     button.RefineManagedBorder = border
 end
+
+-- Shared with the Compact Party/Raid tracked-buff containers.
+Auras.CreateManagedBorder = CreateManagedBorder
+Auras.UpdateManagedBorder = UpdateManagedBorder
+Auras.SetManagedBorderColor = SetManagedBorderColor
 
 local function ApplyButtonStyle(button, style)
     if not button or not style then return end

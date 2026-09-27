@@ -58,6 +58,7 @@ local MODULE_ROWS = {
     { moduleName = "EntranceDifficulty", label = "EntranceDifficulty" },
     { moduleName = "Chat", label = "Chat" },
     { moduleName = "Maps", label = "Maps" },
+    { moduleName = "GroupIcons", label = "Maps: Group Icons" },
     { moduleName = "MythicPlus", label = "Mythic+" },
     { moduleName = "UnitFrames", label = "UnitFrames" },
     { moduleName = "Nameplates", label = "Nameplates" },

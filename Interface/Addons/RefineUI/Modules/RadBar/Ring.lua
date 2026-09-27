@@ -75,17 +75,6 @@ function RadBar:ResolveAction(info)
     return { type = actionType, value = value, macro = macro, icon = icon or Private.DEFAULT_EMPTY_ICON }
 end
 
--- Compatibility helpers for callers that only need one resolved field.
-function RadBar:GetMacroForAction(actionType, value)
-    local action = self:ResolveAction({ type = actionType, value = value })
-    return action and action.macro or ""
-end
-
-function RadBar:GetIconForAction(actionType, value)
-    local action = self:ResolveAction({ type = actionType, value = value })
-    return action and action.icon or Private.DEFAULT_EMPTY_ICON
-end
-
 function RadBar:GetRingConfig(ringName)
     local ring = self.db.Rings[ringName or self.activeRing or "Main"]
     return type(ring) == "table" and ring or nil
@@ -185,15 +174,11 @@ end
 function RadBar:IsActionUsable(actionType, actionValue)
     if not actionType or actionValue == nil then return true end
     local usable
-    if actionType == "spell" and C_Spell and C_Spell.IsSpellUsable then
+    if actionType == "spell" then
         usable = C_Spell.IsSpellUsable(actionValue)
     elseif actionType == "item" then
-        if C_Item and C_Item.IsUsableItem then
-            usable = C_Item.IsUsableItem(actionValue)
-        elseif IsUsableItem then
-            usable = IsUsableItem(actionValue)
-        end
-    elseif actionType == "mount" and C_MountJournal and C_MountJournal.GetMountInfoByID then
+        usable = C_Item.IsUsableItem(actionValue)
+    elseif actionType == "mount" then
         local _, _, _, _, canUse = C_MountJournal.GetMountInfoByID(actionValue)
         usable = canUse
     end
@@ -201,10 +186,9 @@ function RadBar:IsActionUsable(actionType, actionValue)
     return usable
 end
 
-function RadBar:UpdateUsabilityVisuals(forceClear)
+function RadBar:UpdateUsabilityVisuals()
     if not self.Core then return end
-    local canTint = not forceClear and self.mode == "selecting"
-        and self.Core:IsShown() and self.Content:IsShown()
+    local canTint = self.mode == "selecting" and self.Core:IsShown() and self.Content:IsShown()
     for index = 0, Private.SLOT_COUNT do
         local btn = index == 0 and self.CenterButton or self.Buttons[index]
         if btn then

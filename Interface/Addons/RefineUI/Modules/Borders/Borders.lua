@@ -163,62 +163,20 @@ local function ResolveCollectibleKnownState(itemLink, itemID)
         return true, cachedKnown
     end
 
-    if itemID and C_MountJournal and C_MountJournal.GetMountFromItem and C_MountJournal.GetMountInfoByID then
-        local mountID = C_MountJournal.GetMountFromItem(itemID)
-        if mountID then
-            local _, _, _, _, _, _, _, _, _, _, isCollected = C_MountJournal.GetMountInfoByID(mountID)
-            return CacheCollectibleKnownState(itemLink, itemID, isCollected)
-        end
-    end
-
-    if itemID and C_PetJournal and C_PetJournal.GetPetInfoByItemID and C_PetJournal.GetNumCollectedInfo then
-        local _, _, _, _, _, _, _, _, _, _, _, _, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
-        if type(speciesID) == "number" then
-            local owned = C_PetJournal.GetNumCollectedInfo(speciesID)
-            return CacheCollectibleKnownState(itemLink, itemID, (owned or 0) > 0)
-        end
-    end
-
-    if itemID and PlayerHasToy and C_ToyBox and (C_ToyBox.GetToyLink(itemID) or C_ToyBox.GetToyInfo(itemID)) then
-        return CacheCollectibleKnownState(itemLink, itemID, PlayerHasToy(itemID))
+    -- Transmog uses account-wide appearance ownership so Journal icons agree
+    -- with completion totals, even when this exact source is unlearned.
+    local kind, _, owned = RefineUI.Collections:ClassifyItem(itemID, itemLink)
+    if kind and kind ~= "appearances" then
+        return CacheCollectibleKnownState(itemLink, itemID, owned)
     end
 
     if itemID then
         RequestItemDataByIDOnce(itemID)
     end
 
-    if itemLink and C_TransmogCollection and C_TransmogCollection.GetItemInfo then
-        local appearanceID, sourceID = C_TransmogCollection.GetItemInfo(itemLink)
-        if type(appearanceID) == "number" and appearanceID > 0
-            and type(sourceID) == "number" and sourceID > 0 then
-            -- An exact modified source can be uncollected while another source
-            -- for the same visual is owned. Use the shared account-wide resolver
-            -- so Journal icons agree with completion totals.
-            local collections = RefineUI.Collections
-            if collections and type(collections.IsAppearanceCollected) == "function" then
-                local known = collections:IsAppearanceCollected(appearanceID, sourceID)
-                if known ~= nil then
-                    return CacheCollectibleKnownState(itemLink, itemID, known)
-                end
-
-                -- A positive exact-source result is conclusive. A negative is
-                -- not, so leave unresolved ownership uncached for the next pass.
-                if C_TransmogCollection.GetSourceInfo then
-                    local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
-                    if sourceInfo and sourceInfo.isCollected == true then
-                        return CacheCollectibleKnownState(itemLink, itemID, true)
-                    end
-                end
-                return false, nil
-            end
-
-            if C_TransmogCollection.GetSourceInfo then
-                local sourceInfo = C_TransmogCollection.GetSourceInfo(sourceID)
-                if sourceInfo then
-                    return CacheCollectibleKnownState(itemLink, itemID, sourceInfo.isCollected)
-                end
-            end
-        end
+    -- Unresolved appearance ownership stays uncached for the next pass.
+    if owned ~= nil then
+        return CacheCollectibleKnownState(itemLink, itemID, owned)
     end
 
     return false, nil

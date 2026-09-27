@@ -105,12 +105,16 @@ function UnitFrames:EnforceHiddenRegion(region, hiddenFrame)
         return
     end
 
+    -- A hidden parent already hides the region, so it needs no hooks.
+    if hiddenFrame and not InCombatLockdown() and region.SetParent then
+        if region:GetParent() ~= hiddenFrame then
+            region:SetParent(hiddenFrame)
+        end
+        return
+    end
+
     region:SetAlpha(0)
     region:Hide()
-
-    if hiddenFrame and not InCombatLockdown() and region.SetParent then
-        region:SetParent(hiddenFrame)
-    end
 
     RefineUI:HookOnce(self:BuildHookKey(region, "SetAlpha:Hidden"), region, "SetAlpha", function(selfRegion, alpha)
         if alpha ~= 0 then

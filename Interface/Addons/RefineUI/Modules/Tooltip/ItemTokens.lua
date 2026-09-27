@@ -7,16 +7,14 @@ local COLLECTED_STATUS = CHECK .. COLLECTED
 local UNCOLLECTED_STATUS = MISSING .. "Uncollected"
 
 function Tooltip:InitializeItemTokens()
-    self:RegisterItemHandler("ItemTokens", function(tooltip, data)
+    self:RegisterItemHandler(function(tooltip, data)
         local itemID = self:ReadSafeNumber(data.id)
         if not itemID or not RefineUI.TokenAppearanceData[itemID]
-            or not self:IsAugmentableTooltipFrame(tooltip)
-            or self:HasTooltipRenderFlag(tooltip, "ItemTokens") then return end
+            or not self:IsAugmentableTooltipFrame(tooltip) then return end
         local _, link = tooltip:GetItem()
         link = self:ReadSafeString(link)
         local _, _, rows = RefineUI:GetTokenAppearanceStatus(link, itemID)
         if not rows then return end
-        self:SetTooltipRenderFlag(tooltip, "ItemTokens")
         tooltip:AddLine(" ")
         local statusWidth
         local maxTotal = 1
@@ -48,7 +46,7 @@ function Tooltip:InitializeItemTokens()
             tooltip:AddDoubleLine(label, status, 1, 1, 1,
                 complete and 0.2 or 1, complete and 1 or 0.3, 0.2)
             local lineIndex = self:ReadSafeNumber(tooltip:NumLines())
-            local rightLine = lineIndex and self:GetCachedRightLine(tooltip, lineIndex)
+            local rightLine = lineIndex and tooltip:GetRightLine(lineIndex)
             if rightLine and row.ready then
                 -- Measure using this tooltip's font, once per render. Both statuses
                 -- reserve the same width, even when every class has the same status.

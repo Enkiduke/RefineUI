@@ -117,24 +117,23 @@ local SetCastBarTimerActive
 -- Helper Functions
 ----------------------------------------------------------------------------------------
 
+local TIMER_NUMBER_OPTS = { format = "%.1f", emptyText = "" }
+local timer
+
+local function SetTimerText(text)
+    RefineUI:SetFontStringValue(timer, text)
+end
+
+local function SetTimerNumber(value, durationObj)
+    TIMER_NUMBER_OPTS.duration = durationObj
+    RefineUI:SetFontStringValue(timer, value, TIMER_NUMBER_OPTS)
+    TIMER_NUMBER_OPTS.duration = nil
+end
+
 local function UpdateTime(self, elapsed)
     local data = GetCastBarData(self)
-    local timer = data.timer
+    timer = data.timer
     if not timer then return end
-
-    local function SetTimerText(text)
-        RefineUI:SetFontStringValue(timer, text, {
-            emptyText = "",
-        })
-    end
-
-    local function SetTimerNumber(value, durationObj)
-        RefineUI:SetFontStringValue(timer, value, {
-            format = "%.1f",
-            duration = durationObj,
-            emptyText = "",
-        })
-    end
 
     -- WoW 12.0: Check for secret values to prevent arithmetic crashes
     if IsSecret(self.maxValue) or IsSecret(self.value) then
@@ -290,7 +289,8 @@ end
 local function PostCastStart(self, unit)
     local data = GetCastBarData(self)
     self:SetAlpha(1)
-    if self.Spark then self.Spark:SetHeight(self:GetHeight()) end
+    local height = Config.UnitFrames.CastBars.Height
+    if self.Spark then self.Spark:SetHeight(height) end
 
     -- WoW 12.0: Handle Secret Values using Engine Duration
     if IsSecret(self.maxValue) or IsSecret(self.value) then
@@ -323,14 +323,14 @@ local function PostCastStart(self, unit)
         EnsureIconLayering(self, data)
 
         self.Icon:ClearAllPoints()
-        self.Icon:SetSize(self:GetHeight() + 20, self:GetHeight() + 20)
+        self.Icon:SetSize(height + 20, height + 20)
         self.Icon:SetPoint("CENTER", self, "LEFT", -10, 0)
         self.Icon:SetAlpha(1)
         self.Icon:Show()
         
         if data.iconBorder then
             data.iconBorder:Show()
-            data.iconBorder:SetSize(self:GetHeight() + 20, self:GetHeight() + 20)
+            data.iconBorder:SetSize(height + 20, height + 20)
         end
     end
     

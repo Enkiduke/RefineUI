@@ -293,7 +293,11 @@ function CDM:EndInjectedOrderChange(applyDrop)
     local targetCategoryData = drag.targetCategory and self:StateGet(drag.targetCategory, "categoryData")
     local targetItemData = self:GetInjectedItemData(drag.targetItem)
 
-    if applyDrop and not self:IsStandaloneSettingsReadOnly() and sourceData and sourceData.cooldownID and targetCategoryData then
+    if drag.onDrop then
+        if applyDrop and not self:IsStandaloneSettingsReadOnly() and drag.targetCategory then
+            drag.onDrop(drag.sourceItem, drag.targetCategory, drag.targetItem, drag.reorderOffset)
+        end
+    elseif applyDrop and not self:IsStandaloneSettingsReadOnly() and sourceData and sourceData.cooldownID and targetCategoryData then
         local cooldownID = sourceData.cooldownID
         local sourceBucket = sourceData.bucketKey
         local sourceAssignmentIndex = sourceData.assignmentIndex
@@ -339,7 +343,9 @@ function CDM:EndInjectedOrderChange(applyDrop)
     self:RequestRefresh(true)
 end
 
-function CDM:BeginInjectedOrderChange(settingsFrame, itemFrame)
+-- onDrop(sourceItem, targetCategory, targetItem, reorderOffset) replaces the cooldown
+-- assignment drop for callers that own their own item data.
+function CDM:BeginInjectedOrderChange(settingsFrame, itemFrame, onDrop)
     if self.dragState or not settingsFrame or not itemFrame then
         return
     end
@@ -348,7 +354,7 @@ function CDM:BeginInjectedOrderChange(settingsFrame, itemFrame)
     end
 
     local itemData = self:GetInjectedItemData(itemFrame)
-    if not itemData or itemData.isEmpty or not itemData.cooldownID then
+    if not onDrop and (not itemData or itemData.isEmpty or not itemData.cooldownID) then
         return
     end
 
@@ -362,6 +368,7 @@ function CDM:BeginInjectedOrderChange(settingsFrame, itemFrame)
         targetCategory = self:StateGet(itemFrame, "categoryFrame"),
         targetItem = itemFrame,
         reorderOffset = 0,
+        onDrop = onDrop,
     }
 
     itemFrame:SetReorderLocked(true)

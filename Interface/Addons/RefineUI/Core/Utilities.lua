@@ -102,9 +102,11 @@ end
 --   format:       string format (e.g. "%.1f")
 --   duration:     DurationObject for SetTimerDuration
 --   emptyText:    text for nil non-secret values (default "")
+local EMPTY_FONTSTRING_OPTS = {}
+
 function RefineUI:SetFontStringValue(fontString, value, opts)
     if not fontString then return false end
-    opts = opts or {}
+    opts = opts or EMPTY_FONTSTRING_OPTS
 
     local emptyText = opts.emptyText
     if emptyText == nil then emptyText = "" end

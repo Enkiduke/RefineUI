@@ -13,6 +13,7 @@ function Window:BuildSearchCache()
     -- Count each criteria read as work too; a very large meta achievement cannot
     -- monopolize a tick. This index contains localized text, not completion state.
     self.cacheTicker = C_Timer.NewTicker(0.02, function(ticker)
+        if InCombatLockdown() then return end
         for _ = 1, 40 do
             if pending then
                 if pending.criterion <= pending.count then
@@ -51,13 +52,12 @@ function Window:BuildSearchCache()
 end
 
 function Window:QueueSearch()
-    if not AchievementFrame or not AchievementFrame.SearchBox or not C_Timer then return end
     self.searchGeneration = (self.searchGeneration or 0) + 1
     local generation = self.searchGeneration
     if self.queryTicker then self.queryTicker:Cancel(); self.queryTicker = nil end
     if not self:IsPersonalView() then return end
-    if not AchievementFrame.SearchBox:HasFocus() and not AchievementFrame.SearchResults:IsShown() then return end
-    local query = AchievementFrame.SearchBox:GetText()
+    if not self.searchBox:HasFocus() and not AchievementFrame.SearchResults:IsShown() then return end
+    local query = self.searchBox:GetText()
     if #query < (MIN_CHARACTER_SEARCH or 3) then
         self.searchRows, self.searchQuery = nil, nil
         return
@@ -67,12 +67,12 @@ function Window:QueueSearch()
         if generation ~= self.searchGeneration or not self:IsPersonalView() then return end
         self:BuildSearchCache()
         local cache = self.searchCache
-        local nativeCount = AchievementFrame.SearchBox.fullSearchFinished and GetNumFilteredAchievements() or 0
+        local nativeCount = self.searchBox.fullSearchFinished and GetNumFilteredAchievements() or 0
         local cursor, nativeCursor = 1, 1
         local rows, seen, needle = {}, {}, Fold(query)
         self.queryTicker = C_Timer.NewTicker(0.02, function(ticker)
             if generation ~= self.searchGeneration or not self:IsPersonalView()
-                or AchievementFrame.SearchBox:GetText() ~= query then
+                or self.searchBox:GetText() ~= query then
                 ticker:Cancel()
                 return
             end
@@ -81,8 +81,12 @@ function Window:QueueSearch()
                 if nativeCursor <= nativeCount then
                     local id = GetFilteredAchievementID(nativeCursor)
                     nativeCursor = nativeCursor + 1
-                    if id and C_AchievementInfo.IsValidAchievement(id) then row = { id = id } end
+                    if id and C_AchievementInfo.IsValidAchievement(id) then
+                        local _, _, _, _, _, _, _, _, _, _, _, guild, _, _, statistic = GetAchievementInfo(id)
+                        if not guild and not statistic then row = { id = id } end
+                    end
                 elseif cursor <= #cache then
+                    -- Cached rows already exclude guild achievements and statistics.
                     local candidate = cache[cursor]
                     cursor = cursor + 1
                     if candidate.text:find(needle, 1, true) then row = candidate end
@@ -96,14 +100,11 @@ function Window:QueueSearch()
                     return
                 end
                 if row and not seen[row.id] then
-                    local _, _, _, _, _, _, _, _, _, _, _, guild, _, _, statistic = GetAchievementInfo(row.id)
-                    if not guild and not statistic then
-                        seen[row.id] = true
-                        -- Do reward/credit lookups within the batch budget too.
-                        -- Chat-link reveal exceptions do not apply to search.
-                        local prepared = self:PrepareRow(row, #rows + 1, true)
-                        if prepared then rows[#rows + 1] = prepared end
-                    end
+                    seen[row.id] = true
+                    -- Do reward/credit lookups within the batch budget too.
+                    -- Chat-link reveal exceptions do not apply to search.
+                    local prepared = self:PrepareRow(row, #rows + 1, true)
+                    if prepared then rows[#rows + 1] = prepared end
                 end
             end
         end)
@@ -111,20 +112,18 @@ function Window:QueueSearch()
 end
 
 function Window:GetSearchResults()
-    if not self:IsPersonalView() or self.searchQuery ~= AchievementFrame.SearchBox:GetText() then return nil end
+    if not self:IsPersonalView() or self.searchQuery ~= self.searchBox:GetText() then return nil end
     return self.searchRows
 end
 
 function Window:RenderSearchPreview()
-    if not self:IsPersonalView() or not AchievementFrame.SearchBox:HasFocus() then return end
-    if #AchievementFrame.SearchBox:GetText() < (MIN_CHARACTER_SEARCH or 3) then return end
+    if not self:IsPersonalView() or not self.searchBox:HasFocus() then return end
+    if #self.searchBox:GetText() < (MIN_CHARACTER_SEARCH or 3) then return end
     local results = self:GetSearchResults()
-    local container = AchievementFrame.SearchPreviewContainer
+    local container = self.searchBox.SearchPreviewContainer
     local count, last = results and results:GetSize() or 0, nil
-    local rows = {}
-    if results then for _, row in results:Enumerate() do rows[#rows + 1] = row end end
     for index, button in ipairs(container.searchPreviews) do
-        local row = rows[index]
+        local row = results and results:Find(index)
         button.achievementID = row and row.id or nil
         if row then
             local _, name, _, _, _, _, _, _, _, icon = GetAchievementInfo(row.id)
@@ -159,25 +158,19 @@ function Window:InitSearchRow(button, row)
     button.Name:SetText(name)
     button.Icon:SetTexture(icon)
     button.ResultType:SetText(self:IsComplete(row.id) and ACHIEVEMENTFRAME_FILTER_COMPLETED or ACHIEVEMENTFRAME_FILTER_INCOMPLETE)
-    local category, names, seen = GetAchievementCategory(row.id), {}, {}
-    while category and category > 0 and not seen[category] do
-        seen[category] = true
-        local title, parent = GetCategoryInfo(category)
-        table.insert(names, 1, title or "")
-        category = parent
-    end
-    button.Path:SetText(table.concat(names, " > "))
+    button.Path:SetText(RefineUI.InstanceAchievements:GetCategoryPath(GetAchievementCategory(row.id)))
 end
 
 function Window:RenderFullSearch()
     if not self:IsPersonalView() then return end
     local results = self:GetSearchResults()
-    local provider = CreateDataProvider()
+    local rows = {}
     if results then
-        for _, row in results:Enumerate() do provider:Insert({ id = row.id, refineSearch = true }) end
+        for index, row in results:Enumerate() do rows[index] = { id = row.id, refineSearch = true } end
     end
+    local provider = CreateDataProvider(rows)
     AchievementFrame.SearchResults.ScrollBox:SetDataProvider(provider)
-    local title = string.format(ENCOUNTER_JOURNAL_SEARCH_RESULTS, AchievementFrame.SearchBox:GetText(), provider:GetSize())
+    local title = string.format(ENCOUNTER_JOURNAL_SEARCH_RESULTS, self.searchBox:GetText(), provider:GetSize())
     if provider:GetSize() == 0 then
         title = title .. " — " .. (self.cacheTicker and "Indexing criteria…" or not results and "Searching…" or "No achievements match the selected filters.")
     end
@@ -185,7 +178,6 @@ function Window:RenderFullSearch()
 end
 
 function Window:InstallSearch()
-    if not AchievementFrame.SearchBox then return end
     local scroll = AchievementFrame.SearchResults.ScrollBox
     -- Keep Blizzard's template and its native click handler. Its default
     -- initializer requires a native search index, so supplemental ID rows use
@@ -194,7 +186,7 @@ function Window:InstallSearch()
         if row.refineSearch and self:IsPersonalView() then self:InitSearchRow(button, row)
         else button:Init(row) end
     end)
-    AchievementFrame.SearchBox:HookScript("OnTextChanged", function() self:QueueSearch() end)
+    self.searchBox:HookScript("OnTextChanged", function() self:QueueSearch() end)
     hooksecurefunc("AchievementFrame_ShowSearchPreviewResults", function()
         self:RenderSearchPreview()
         self:QueueSearch()
@@ -204,7 +196,7 @@ function Window:InstallSearch()
         if not self:IsPersonalView() then return end
         self:RenderFullSearch()
         AchievementFrame_HideSearchPreview()
-        AchievementFrame.SearchBox:ClearFocus()
+        self.searchBox:ClearFocus()
         -- Native code hides the frame when *native* matches are empty, even if
         -- supplemental criteria matches exist. Show the same frame afterward.
         AchievementFrame.SearchResults:Show()

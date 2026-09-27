@@ -10,9 +10,6 @@ local _, RefineUI = ...
 ----------------------------------------------------------------------------------------
 local Tooltip = RefineUI:GetModule("Tooltip")
 local Chat = RefineUI:GetModule("Chat")
-if not Tooltip then
-    return
-end
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
@@ -27,11 +24,6 @@ local type = type
 ----------------------------------------------------------------------------------------
 local EventRegistry = _G.EventRegistry
 local GameTooltip = _G.GameTooltip
-
-----------------------------------------------------------------------------------------
--- State
-----------------------------------------------------------------------------------------
-local callbacksRegistered = false
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -56,10 +48,7 @@ local function ShouldSuppressHyperlinkTooltip()
     if Chat and Chat.ShouldSuspendOptionalEnhancements and Chat:ShouldSuspendOptionalEnhancements() then
         return true
     end
-    if type(Tooltip.MaybeHideInCombat) == "function" then
-        return Tooltip:MaybeHideInCombat(GameTooltip) == true
-    end
-    return false
+    return Tooltip:MaybeHideInCombat(GameTooltip)
 end
 
 local function OnHyperlinkEnter(_, frame, link)
@@ -111,15 +100,6 @@ end
 -- Initialization
 ----------------------------------------------------------------------------------------
 function Tooltip:InitializeHyperlinkSupport()
-    if callbacksRegistered then
-        return
-    end
-
-    if not EventRegistry or type(EventRegistry.RegisterCallback) ~= "function" then
-        return
-    end
-
-    callbacksRegistered = true
     EventRegistry:RegisterCallback("ChatFrame.OnHyperlinkEnter", OnHyperlinkEnter, self)
     EventRegistry:RegisterCallback("ChatFrame.OnHyperlinkLeave", OnHyperlinkLeave, self)
 end

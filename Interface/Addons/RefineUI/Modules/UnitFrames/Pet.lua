@@ -202,9 +202,14 @@ end
 ----------------------------------------------------------------------------------------
 -- Pet Helpers
 ----------------------------------------------------------------------------------------
-local function GetPetPercentValue()
+-- Blizzard swaps PetFrame to "player" while the player drives a vehicle.
+local function GetPetUnit()
+    return PetFrame and PetFrame.unit or "pet"
+end
+
+local function GetPetPercentValue(unit)
     if UnitHealthPercent and RefineUI.GetPercentCurve then
-        return UnitHealthPercent("pet", true, RefineUI.GetPercentCurve())
+        return UnitHealthPercent(unit, true, RefineUI.GetPercentCurve())
     end
     return nil
 end
@@ -221,24 +226,25 @@ function UnitFrames:UpdatePetFrameHealthText(frame)
         return
     end
 
-    if not UnitExists("pet") then
-        RefineUI:SetFontStringValue(percentText, nil, { emptyText = "" })
+    local unit = GetPetUnit()
+    if not UnitExists(unit) then
+        RefineUI:SetFontStringValue(percentText, nil)
         return
     end
 
-    if not UnitIsConnected("pet") then
-        RefineUI:SetFontStringValue(percentText, "OFFLINE", { emptyText = "" })
+    if not UnitIsConnected(unit) then
+        RefineUI:SetFontStringValue(percentText, "OFFLINE")
         percentText:SetTextColor(0.5, 0.5, 0.5)
         return
     end
 
-    if UnitIsDeadOrGhost("pet") then
-        RefineUI:SetFontStringValue(percentText, "DEAD", { emptyText = "" })
+    if UnitIsDeadOrGhost(unit) then
+        RefineUI:SetFontStringValue(percentText, "DEAD")
         percentText:SetTextColor(0.5, 0.5, 0.5)
         return
     end
 
-    RefineUI:SetFontStringValue(percentText, GetPetPercentValue(), { emptyText = "" })
+    RefineUI:SetFontStringValue(percentText, GetPetPercentValue(unit))
     percentText:SetTextColor(1, 1, 1)
 end
 
@@ -352,24 +358,6 @@ local function HidePetNativeStatusRegions(hiddenFrame)
         PetFrameHealthBarTextRight,
     }) do
         UnitFrames:EnforceHiddenRegion(region, hiddenFrame)
-
-        if region and region.SetShown then
-            RefineUI:HookOnce(UnitFrames:BuildHookKey(region, "SetShown:Hidden"), region, "SetShown", function(selfRegion, shown)
-                if shown then
-                    selfRegion:Hide()
-                end
-            end)
-        end
-
-        if region and region.SetText then
-            RefineUI:HookOnce(UnitFrames:BuildHookKey(region, "SetText:Hidden"), region, "SetText", function(selfRegion)
-                UnitFrames:WithStateGuard(selfRegion, "PetNativeTextHidden", function()
-                    RefineUI:SetFontStringValue(selfRegion, nil, { emptyText = "" })
-                    selfRegion:SetAlpha(0)
-                    selfRegion:Hide()
-                end)
-            end)
-        end
     end
 end
 
@@ -444,7 +432,9 @@ function UnitFrames:ApplyPetFrameDynamicStyle(frame)
         return
     end
 
-    local hr, hg, hb = self.GetUnitHealthColor("pet")
+    local data = self:GetFrameData(frame)
+    local hr, hg, hb = self.GetUnitHealthColor(GetPetUnit())
+    data.hr, data.hg, data.hb = hr, hg, hb
     PetFrameHealthBar:SetStatusBarTexture(C.TEXTURE_HEALTH_BAR)
     PetFrameHealthBar:SetStatusBarDesaturated(true)
     PetFrameHealthBar:SetStatusBarColor(hr, hg, hb)
@@ -536,10 +526,10 @@ function UnitFrames:StylePetFrame(frame)
     HidePetAuras(frame)
 
     if PetFrameHealthBar then
-        RefineUI:HookOnce(self:BuildHookKey(PetFrameHealthBar, "SetStatusBarColor:Pet"), PetFrameHealthBar, "SetStatusBarColor", function(selfBar, r1, g1, b1)
-            local r2, g2, b2 = UnitFrames.GetUnitHealthColor("pet")
-            if r1 ~= r2 or g1 ~= g2 or b1 ~= b2 then
-                selfBar:SetStatusBarColor(r2, g2, b2)
+        RefineUI:HookOnce(self:BuildHookKey(PetFrameHealthBar, "SetStatusBarColor:Pet"), PetFrameHealthBar, "SetStatusBarColor", function(selfBar, r, g, b)
+            local hr, hg, hb = data.hr, data.hg, data.hb
+            if hr and (r ~= hr or g ~= hg or b ~= hb) then
+                selfBar:SetStatusBarColor(hr, hg, hb)
             end
         end)
         RefineUI:HookOnce(self:BuildHookKey(PetFrameHealthBar, "SetStatusBarTexture:Pet"), PetFrameHealthBar, "SetStatusBarTexture", function(selfBar, texture)

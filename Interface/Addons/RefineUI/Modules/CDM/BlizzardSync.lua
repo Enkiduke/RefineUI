@@ -14,8 +14,6 @@ end
 ----------------------------------------------------------------------------------------
 local _G = _G
 local type = type
-local pairs = pairs
-local tinsert = table.insert
 local InCombatLockdown = InCombatLockdown
 local Enum = Enum
 local issecretvalue = _G.issecretvalue
@@ -26,7 +24,6 @@ local issecretvalue = _G.issecretvalue
 local REFINE_BLIZZARD_LAYOUT_NAME = "RefineUI CDM"
 local DEFAULT_LAYOUT_ID = 0
 local TRACKED_BUFF_CATEGORY = Enum and Enum.CooldownViewerCategory and Enum.CooldownViewerCategory.TrackedBuff or nil
-local HIDDEN_AURA_CATEGORY = Enum and Enum.CooldownViewerCategory and Enum.CooldownViewerCategory.HiddenAura or -2
 
 ----------------------------------------------------------------------------------------
 -- Private Helpers
@@ -163,99 +160,6 @@ local function FindLayoutByName(layoutManager, layoutName, specTag)
     return nil
 end
 
-local function SetTableValue(target, key, value)
-    if type(target) == "table" and key ~= nil then
-        target[key] = value
-    end
-end
-
-local function CopyAssignedCooldownIDs(snapshot)
-    local ordered = {}
-    local assignedSet = {}
-    if type(snapshot) ~= "table" or type(snapshot.bucketCooldownIDs) ~= "table" then
-        return ordered, assignedSet
-    end
-
-    for i = 1, #CDM.TRACKER_BUCKETS do
-        local bucket = CDM.TRACKER_BUCKETS[i]
-        local ids = snapshot.bucketCooldownIDs[bucket]
-        if type(ids) == "table" then
-            for n = 1, #ids do
-                local cooldownID = ids[n]
-                local isExternalCooldown = CDM.IsExternalCooldownID and CDM:IsExternalCooldownID(cooldownID)
-                if type(cooldownID) == "number"
-                    and cooldownID > 0
-                    and not isExternalCooldown
-                    and not assignedSet[cooldownID]
-                then
-                    assignedSet[cooldownID] = true
-                    ordered[#ordered + 1] = cooldownID
-                end
-            end
-        end
-    end
-
-    return ordered, assignedSet
-end
-
-local function BuildOrderedCooldownIDs(defaultOrderedCooldownIDs, assignedOrderedIDs, assignedSet)
-    local ordered = {}
-    local seen = {}
-
-    if type(assignedOrderedIDs) == "table" then
-        for i = 1, #assignedOrderedIDs do
-            local cooldownID = assignedOrderedIDs[i]
-            if type(cooldownID) == "number" and cooldownID > 0 and not seen[cooldownID] then
-                seen[cooldownID] = true
-                ordered[#ordered + 1] = cooldownID
-            end
-        end
-    end
-
-    if type(defaultOrderedCooldownIDs) == "table" then
-        for i = 1, #defaultOrderedCooldownIDs do
-            local cooldownID = defaultOrderedCooldownIDs[i]
-            if type(cooldownID) == "number" and cooldownID > 0 and not seen[cooldownID] then
-                seen[cooldownID] = true
-                ordered[#ordered + 1] = cooldownID
-            end
-        end
-    end
-
-    if type(assignedSet) == "table" then
-        for cooldownID in pairs(assignedSet) do
-            if type(cooldownID) == "number" and cooldownID > 0 and not seen[cooldownID] then
-                seen[cooldownID] = true
-                ordered[#ordered + 1] = cooldownID
-            end
-        end
-    end
-
-    return ordered
-end
-
-local function BuildCategoryCooldownIDs(validAuraCooldownIDs, assignedSet)
-    local trackedBuffIDs = {}
-    local hiddenAuraIDs = {}
-
-    if type(validAuraCooldownIDs) ~= "table" then
-        return trackedBuffIDs, hiddenAuraIDs
-    end
-
-    for i = 1, #validAuraCooldownIDs do
-        local cooldownID = validAuraCooldownIDs[i]
-        if type(cooldownID) == "number" and cooldownID > 0 then
-            if type(assignedSet) == "table" and assignedSet[cooldownID] then
-                trackedBuffIDs[#trackedBuffIDs + 1] = cooldownID
-            else
-                hiddenAuraIDs[#hiddenAuraIDs + 1] = cooldownID
-            end
-        end
-    end
-
-    return trackedBuffIDs, hiddenAuraIDs
-end
-
 local function NeedsCategoryWrite(layoutManager, layout, cooldownIDs, category)
     if not layoutManager or not layout or type(cooldownIDs) ~= "table" then
         return false
@@ -280,28 +184,6 @@ end
 ----------------------------------------------------------------------------------------
 function CDM:GetRefineBlizzardLayoutName()
     return REFINE_BLIZZARD_LAYOUT_NAME
-end
-
-function CDM:IsBlizzardPrimaryAuraRuntimeActive()
-    return self:IsRefineRuntimeOwnerActive()
-        and self.auraProbeInitialized == true
-        and self.blizzardAssignmentSyncActive == true
-end
-
-function CDM:MarkBlizzardAssignmentSyncDirty(reason)
-    self.blizzardAssignmentSyncDirty = true
-    if type(reason) == "string" and reason ~= "" then
-        self.blizzardAssignmentSyncReason = reason
-    end
-end
-
-function CDM:ClearBlizzardAssignmentSyncDirty()
-    self.blizzardAssignmentSyncDirty = nil
-    self.blizzardAssignmentSyncReason = nil
-end
-
-function CDM:GetStoredBlizzardSyncState()
-    return GetStoredSyncState()
 end
 
 function CDM:GetBlizzardAssignmentSyncContext()
@@ -357,7 +239,6 @@ function CDM:EnsureRefineBlizzardLayout()
     if layoutID then
         self.refineBlizzardLayoutID = layoutID
         self.refineBlizzardLayoutSpecTag = specTag
-        self.refineRuntimeTouchedBlizzard = true
     end
 
     return layoutID
@@ -411,26 +292,6 @@ function CDM:SwitchToRefineBlizzardLayout()
     end
 
     self.refineBlizzardLayoutID = refineLayoutID
-    self.refineRuntimeTouchedBlizzard = true
-    return true
-end
-
-function CDM:IsStoredBlizzardAssignmentSyncCurrent(layoutManager)
-    local storedState = GetStoredSyncState()
-    if type(storedState) ~= "table" then
-        return false
-    end
-
-    local currentLayoutKey = self.GetCurrentLayoutKey and self:GetCurrentLayoutKey() or nil
-    if currentLayoutKey ~= storedState.layoutKey then
-        return false
-    end
-
-    local currentSpecTag = GetCurrentSpecTag(layoutManager)
-    if currentSpecTag ~= storedState.specTag then
-        return false
-    end
-
     return true
 end
 
@@ -439,19 +300,16 @@ function CDM:CanUseStoredRefineBlizzardLayout()
     if not layoutManager then
         return false
     end
-    if not self:IsStoredBlizzardAssignmentSyncCurrent(layoutManager) then
-        return false
-    end
 
     local specTag = GetCurrentSpecTag(layoutManager)
     local refineLayout = FindLayoutByName(layoutManager, REFINE_BLIZZARD_LAYOUT_NAME, specTag)
     local refineLayoutID = GetLayoutID(refineLayout)
-    if type(refineLayoutID) ~= "number" then
+    if type(refineLayoutID) ~= "number" or GetActiveLayoutID(layoutManager) ~= refineLayoutID then
         return false
     end
 
-    local activeLayoutID = GetActiveLayoutID(layoutManager)
-    if activeLayoutID ~= refineLayoutID then
+    -- Every valid aura stays tracked, so assignment changes never rewrite Blizzard's layout.
+    if NeedsCategoryWrite(layoutManager, refineLayout, self:GetValidAuraCooldownIDs(true), TRACKED_BUFF_CATEGORY) then
         return false
     end
 
@@ -460,38 +318,11 @@ function CDM:CanUseStoredRefineBlizzardLayout()
     return true
 end
 
-function CDM:ActivateStoredRefineBlizzardLayout()
-    local settingsFrame, layoutManager = GetLoadedSyncContext()
-    if not settingsFrame or not layoutManager then
-        return false
-    end
-    if not self:IsStoredBlizzardAssignmentSyncCurrent(layoutManager) then
-        return false
-    end
-
-    local specTag = GetCurrentSpecTag(layoutManager)
-    local refineLayout = FindLayoutByName(layoutManager, REFINE_BLIZZARD_LAYOUT_NAME, specTag)
-    local refineLayoutID = GetLayoutID(refineLayout)
-    if type(refineLayoutID) ~= "number" then
-        return false
-    end
-
-    self:SnapshotPreviousBlizzardLayout(layoutManager, refineLayoutID)
-
-    local activeLayoutID = GetActiveLayoutID(layoutManager)
-    if activeLayoutID ~= refineLayoutID and type(layoutManager.SetActiveLayoutByID) == "function" then
-        layoutManager:SetActiveLayoutByID(refineLayoutID)
-        if type(settingsFrame.SaveCurrentLayout) == "function" then
-            settingsFrame:SaveCurrentLayout()
-        elseif type(layoutManager.SaveLayouts) == "function" then
-            layoutManager:SaveLayouts()
-        end
-    end
-
-    self.refineBlizzardLayoutID = refineLayoutID
-    self.refineBlizzardLayoutSpecTag = specTag
-    self.refineRuntimeTouchedBlizzard = true
-    return true
+function CDM:NeedsBlizzardTrackerSetup()
+    return self:IsRefineRuntimeOwnerActive()
+        and self:GetAssignedCooldownSnapshot().hasAuraAssignments
+        and GetLoadedSyncContext() ~= nil
+        and not self:CanUseStoredRefineBlizzardLayout()
 end
 
 function CDM:RestorePreviousBlizzardLayout()
@@ -502,7 +333,6 @@ function CDM:RestorePreviousBlizzardLayout()
 
     local specTag = GetCurrentSpecTag(layoutManager)
     self.blizzardAssignmentSyncActive = nil
-    self.blizzardPrimaryAuraRuntimeActive = nil
 
     local previousLayoutIDBySpec = self.previousBlizzardLayoutIDBySpec
     if type(previousLayoutIDBySpec) ~= "table" then
@@ -555,144 +385,32 @@ function CDM:RestorePreviousBlizzardLayout()
     return changed
 end
 
+-- Addon writes leave Blizzard's layout tables addon-modified, which breaks its secure
+-- aura handling in combat. Only call this immediately before ReloadUI().
 function CDM:SyncAssignmentsToBlizzardLayout()
-    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
+    if not self:IsRefineRuntimeOwnerActive() or InCombatLockdown() then
         return false
     end
-    if type(InCombatLockdown) == "function" and InCombatLockdown() then
-        self:MarkBlizzardAssignmentSyncDirty("combat")
-        return false
-    end
-
     if not self:SwitchToRefineBlizzardLayout() then
-        self:MarkBlizzardAssignmentSyncDirty("layout")
         return false
     end
 
     local settingsFrame, layoutManager, dataProvider = GetLoadedSyncContext()
-    if not settingsFrame or not layoutManager or not dataProvider then
-        self:MarkBlizzardAssignmentSyncDirty("context")
-        return false
-    end
-
-    local validAuraCooldownIDs = self.GetValidAuraCooldownIDs and self:GetValidAuraCooldownIDs(true) or {}
-    local snapshot = self.GetAssignedCooldownSnapshot and self:GetAssignedCooldownSnapshot() or nil
-    local assignedOrderedIDs, assignedSet = CopyAssignedCooldownIDs(snapshot)
-    local defaultOrderedCooldownIDs = type(dataProvider.GetDefaultOrderedCooldownIDs) == "function" and dataProvider:GetDefaultOrderedCooldownIDs() or {}
-    local orderedCooldownIDs = BuildOrderedCooldownIDs(defaultOrderedCooldownIDs, assignedOrderedIDs, assignedSet)
-    local trackedBuffIDs, hiddenAuraIDs = BuildCategoryCooldownIDs(validAuraCooldownIDs, assignedSet)
-    local refineLayout = type(layoutManager.GetLayout) == "function" and layoutManager:GetLayout(self.refineBlizzardLayoutID) or nil
-
+    local refineLayout = layoutManager and layoutManager:GetLayout(self.refineBlizzardLayoutID)
     if not refineLayout then
-        self:MarkBlizzardAssignmentSyncDirty("layout")
         return false
     end
 
-    if type(layoutManager.LockNotifications) == "function" then
+    local trackedCooldownIDs = self:GetValidAuraCooldownIDs(true)
+    if NeedsCategoryWrite(layoutManager, refineLayout, trackedCooldownIDs, TRACKED_BUFF_CATEGORY) then
         layoutManager:LockNotifications()
-    end
-
-    local categoryChanged = false
-    if type(layoutManager.WriteCooldownCategoryToLayout) == "function" then
-        if NeedsCategoryWrite(layoutManager, refineLayout, trackedBuffIDs, TRACKED_BUFF_CATEGORY) then
-            layoutManager:WriteCooldownCategoryToLayout(refineLayout, TRACKED_BUFF_CATEGORY, trackedBuffIDs)
-            categoryChanged = true
-        end
-        if NeedsCategoryWrite(layoutManager, refineLayout, hiddenAuraIDs, HIDDEN_AURA_CATEGORY) then
-            layoutManager:WriteCooldownCategoryToLayout(refineLayout, HIDDEN_AURA_CATEGORY, hiddenAuraIDs)
-            categoryChanged = true
-        end
-    end
-
-    if categoryChanged and type(layoutManager.SetHasPendingChanges) == "function" then
+        layoutManager:WriteCooldownCategoryToLayout(refineLayout, TRACKED_BUFF_CATEGORY, trackedCooldownIDs)
         layoutManager:SetHasPendingChanges(true, true)
-    end
-
-    if type(dataProvider.MarkDirty) == "function" then
         dataProvider:MarkDirty()
-    end
-
-    if type(layoutManager.WriteCooldownOrderToActiveLayout) == "function" then
-        local accessMode = Enum and Enum.CDMLayoutMode and Enum.CDMLayoutMode.AllowCreate or nil
-        layoutManager:WriteCooldownOrderToActiveLayout(orderedCooldownIDs, accessMode)
-    end
-
-    if type(dataProvider.MarkDirty) == "function" then
-        dataProvider:MarkDirty()
-    end
-
-    if type(layoutManager.UnlockNotifications) == "function" then
         layoutManager:UnlockNotifications(true)
     end
 
-    if type(settingsFrame.SaveCurrentLayout) == "function" then
-        settingsFrame:SaveCurrentLayout()
-    elseif type(layoutManager.SaveLayouts) == "function" then
-        layoutManager:SaveLayouts()
-    end
-
-    self.refineRuntimeTouchedBlizzard = true
+    settingsFrame:SaveCurrentLayout()
     self.blizzardAssignmentSyncActive = true
-    self.blizzardPrimaryAuraRuntimeActive = true
-    local syncedLayoutKey = self.GetCurrentLayoutKey and self:GetCurrentLayoutKey() or nil
-    local syncedSpecTag = GetCurrentSpecTag(layoutManager)
-
-    local storedState = GetStoredSyncState()
-    if storedState then
-        storedState.layoutKey = syncedLayoutKey
-        storedState.specTag = syncedSpecTag
-    end
-
-    self:ClearBlizzardAssignmentSyncDirty()
     return true
-end
-
-function CDM:NeedsBlizzardAssignmentSync()
-    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
-        return false
-    end
-
-    if self.blizzardAssignmentSyncDirty then
-        return true
-    end
-
-    local _settingsFrame, layoutManager = GetLoadedSyncContext()
-    if not self:IsStoredBlizzardAssignmentSyncCurrent(layoutManager) then
-        return true
-    end
-
-    local refineLayoutID = self:EnsureRefineBlizzardLayout()
-    local activeLayoutID = GetActiveLayoutID(layoutManager)
-    return refineLayoutID ~= nil and activeLayoutID ~= refineLayoutID
-end
-
-function CDM:ApplyPendingBlizzardAssignmentSync()
-    if not self:IsRefineRuntimeOwnerActive() then
-        return false
-    end
-
-    if not self:NeedsBlizzardAssignmentSync() then
-        return false
-    end
-
-    return self:SyncAssignmentsToBlizzardLayout()
-end
-
-function CDM:HandleAssignmentConfigurationChanged(cooldownID)
-    if self.IsExternalCooldownID and self:IsExternalCooldownID(cooldownID) then
-        return
-    end
-    self:MarkBlizzardAssignmentSyncDirty("assignments")
-
-    if not self:IsRefineRuntimeOwnerActive() then
-        return
-    end
-
-    if self.blizzardAssignmentSyncActive == true
-        and self.MarkReloadRecommendationPending
-        and self.ShowReloadRecommendationIfPending
-    then
-        self:MarkReloadRecommendationPending()
-        self:ShowReloadRecommendationIfPending()
-    end
 end

@@ -127,16 +127,6 @@ function CDM:GetConfig()
 
     cfg.SourceScope = "all_auras"
 
-    if type(cfg.PayloadGhostTTL) ~= "number" then
-        cfg.PayloadGhostTTL = 0.20
-    end
-
-    if cfg.PayloadGhostTTL < 0 then
-        cfg.PayloadGhostTTL = 0
-    elseif cfg.PayloadGhostTTL > 2 then
-        cfg.PayloadGhostTTL = 2
-    end
-
     if type(cfg.LayoutAssignments) ~= "table" then
         cfg.LayoutAssignments = {}
     end
@@ -196,8 +186,6 @@ end
 
 function CDM:SetEnabled(enabled)
     local cfg = self:GetConfig()
-    local previousEnabled = self:IsEnabled()
-    local previousMode = self:GetAuraMode()
     local desired = enabled and true or false
     cfg.Enable = desired
 
@@ -205,7 +193,7 @@ function CDM:SetEnabled(enabled)
         self:HandleSettingsOwnerStateChanged()
     end
     if self.HandleRuntimeModeConfigurationChanged then
-        self:HandleRuntimeModeConfigurationChanged(previousEnabled, previousMode)
+        self:HandleRuntimeModeConfigurationChanged()
     elseif self.HandleRuntimeOwnerStateChanged then
         self:HandleRuntimeOwnerStateChanged()
     end
@@ -239,20 +227,6 @@ function CDM:GetSourceScope()
     return "all_auras"
 end
 
-function CDM:GetPayloadGhostTTL()
-    local ttl = self:GetConfig().PayloadGhostTTL
-    if type(ttl) ~= "number" then
-        return 0.20
-    end
-    if ttl < 0 then
-        return 0
-    end
-    if ttl > 2 then
-        return 2
-    end
-    return ttl
-end
-
 function CDM:GetAuraMode()
     local cfg = self:GetConfig()
     if cfg.AuraMode == "blizzard" then
@@ -267,8 +241,6 @@ end
 
 function CDM:SetAuraMode(mode)
     local cfg = self:GetConfig()
-    local previousEnabled = self:IsEnabled()
-    local previousMode = self:GetAuraMode()
     if mode == "blizzard" then
         cfg.AuraMode = "blizzard"
     else
@@ -279,7 +251,7 @@ function CDM:SetAuraMode(mode)
         self:HandleSettingsOwnerStateChanged()
     end
     if self.HandleRuntimeModeConfigurationChanged then
-        self:HandleRuntimeModeConfigurationChanged(previousEnabled, previousMode)
+        self:HandleRuntimeModeConfigurationChanged()
     elseif self.HandleRuntimeOwnerStateChanged then
         self:HandleRuntimeOwnerStateChanged()
     end

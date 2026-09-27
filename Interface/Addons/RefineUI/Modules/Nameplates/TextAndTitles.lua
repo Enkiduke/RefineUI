@@ -41,36 +41,21 @@ local EMPTY_TEXT_OPTS = {
 ----------------------------------------------------------------------------------------
 -- Locals
 ----------------------------------------------------------------------------------------
-local function IsRuntimeSuppressedNameplate(unitFrame, data)
-    if not unitFrame then
-        return false
-    end
+local Private = Nameplates:GetPrivate()
+local Util = Private.Util
+local Runtime = Private.Runtime
+local Constants = Private.Constants
+local ActiveNameplates = Private.ActiveNameplates
+local NameplateData = RefineUI.NameplateData
+local IsNameOnly = Util.IsNameOnly
+local HEALTH_BAR_TEXTURE = Private.Textures.HEALTH_BAR
 
-    if RefineUI.IsRuntimeSuppressedNameplate then
-        return RefineUI:IsRuntimeSuppressedNameplate(unitFrame, data)
-    end
-
-    if not data then
-        data = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame] or nil
-    end
-
-    return data and data.RefineHidden == true or false
-end
-
-local function GetUtil()
-    local private = Nameplates:GetPrivate()
-    return private and private.Util
-end
-
-local function GetCacheableUnitGUID(unit, util)
+local function GetCacheableUnitGUID(unit)
     local guid = UnitGUID(unit)
 
     -- Protected NPCs can return a secret value whose type is still "string".
     -- Gate it before any comparison or table indexing.
-    if util.IsSecret(guid) or not util.IsAccessibleValue(guid) then
-        return nil
-    end
-    if type(guid) ~= "string" or guid == "" then
+    if not Util.IsAccessibleValue(guid) or type(guid) ~= "string" or guid == "" then
         return nil
     end
 
@@ -78,61 +63,19 @@ local function GetCacheableUnitGUID(unit, util)
 end
 
 local function GetNativeNameSource(unitFrame)
-    if not unitFrame then
-        return nil
-    end
-
     return unitFrame.name or (unitFrame.NameContainer and unitFrame.NameContainer.Name)
 end
 
-local function SetRegionShownIfChanged(region, shouldShow)
-    if not region or not region.IsShown then
-        return
-    end
-
-    local ok, isShown = pcall(region.IsShown, region)
-    if not ok then
-        return
-    end
-
-    if shouldShow then
-        if not isShown and region.Show then
-            region:Show()
-        end
-    elseif isShown and region.Hide then
-        region:Hide()
-    end
-end
-
 local function IsNpcTitleFeatureEnabled()
-    local cfg = Nameplates:GetConfiguredNameplatesConfig()
-    return cfg and cfg.ShowNPCTitles ~= false
+    return Nameplates:GetConfiguredNameplatesConfig().ShowNPCTitles ~= false
 end
 
 local function ShouldSuppressNpcTitleScanning()
-    local util = GetUtil()
-    if not util then
-        return false
-    end
-
-    local playerInCombat = util.ReadSafeBoolean(UnitAffectingCombat("player")) == true
-    if playerInCombat then
-        return true
-    end
-
-    if IsInInstance then
-        local inInstance = IsInInstance()
-        if inInstance == true then
-            return true
-        end
-    end
-
-    return false
+    return Util.ReadSafeBoolean(UnitAffectingCombat("player")) == true or IsInInstance() == true
 end
 
 local function TrimTooltipLineText(text)
-    local util = GetUtil()
-    if util and (util.IsSecret(text) or type(text) ~= "string" or not util.IsAccessibleValue(text)) then
+    if type(text) ~= "string" or not Util.IsAccessibleValue(text) then
         return nil
     end
 
@@ -146,56 +89,37 @@ end
 
 local function NormalizeNpcTitleText(text)
     local normalized = TrimTooltipLineText(text)
-    if not normalized then
-        return nil
-    end
-
-    if strsub(normalized, 1, 1) == "<" and strsub(normalized, -1) == ">" then
+    if normalized and strsub(normalized, 1, 1) == "<" and strsub(normalized, -1) == ">" then
         normalized = TrimTooltipLineText(strsub(normalized, 2, -2))
-    end
-
-    if normalized == "" then
-        return nil
     end
 
     return normalized
 end
 
 local function IsEligibleNpcTitleUnit(unit, data)
-    local util = GetUtil()
-    if not util or not util.IsUsableUnitToken(unit) then
-        return false
-    end
-
     local isPlayerUnit
-    if data and data.isPlayer ~= nil then
+    if data.isPlayer ~= nil then
         isPlayerUnit = data.isPlayer == true
     else
-        isPlayerUnit = util.ReadSafeBoolean(UnitIsPlayer(unit)) == true
+        isPlayerUnit = Util.ReadSafeBoolean(UnitIsPlayer(unit)) == true
     end
 
     if isPlayerUnit then
         return false
     end
 
-    return util.ReadSafeBoolean(UnitIsFriend("player", unit)) == true
+    return Util.ReadSafeBoolean(UnitIsFriend("player", unit)) == true
 end
 
 local function EnsureNpcTitleFontString(unitFrame, data)
-    if not unitFrame or not data or not data.RefineName then
-        return nil
-    end
-
-    local private = Nameplates:GetPrivate()
-    local constants = private and private.Constants
-    if not constants then
+    if not data.RefineName then
         return nil
     end
 
     if not data.RefineNpcTitle then
         data.RefineNpcTitle = unitFrame:CreateFontString(nil, "OVERLAY")
-        RefineUI.Font(data.RefineNpcTitle, constants.NPC_TITLE_FONT_SIZE, nil, "OUTLINE")
-        data.RefineNpcTitle:SetTextColor(constants.NPC_TITLE_COLOR[1], constants.NPC_TITLE_COLOR[2], constants.NPC_TITLE_COLOR[3])
+        RefineUI.Font(data.RefineNpcTitle, Constants.NPC_TITLE_FONT_SIZE, nil, "OUTLINE")
+        data.RefineNpcTitle:SetTextColor(Constants.NPC_TITLE_COLOR[1], Constants.NPC_TITLE_COLOR[2], Constants.NPC_TITLE_COLOR[3])
         data.RefineNpcTitle:SetJustifyH("CENTER")
         data.RefineNpcTitle:SetJustifyV("MIDDLE")
         data.RefineNpcTitle:Hide()
@@ -211,18 +135,11 @@ local function EnsureNpcTitleFontString(unitFrame, data)
 end
 
 local function BuildUnitLevelPattern()
-    local private = Nameplates:GetPrivate()
-    local runtime = private and private.Runtime
-    local util = private and private.Util
-    if not runtime or not util then
-        return nil
+    if Runtime.unitLevelPattern ~= nil then
+        return Runtime.unitLevelPattern
     end
 
-    if runtime.unitLevelPattern ~= nil then
-        return runtime.unitLevelPattern
-    end
-
-    if util.IsSecret(TOOLTIP_UNIT_LEVEL) or type(TOOLTIP_UNIT_LEVEL) ~= "string" or not util.IsAccessibleValue(TOOLTIP_UNIT_LEVEL) then
+    if type(TOOLTIP_UNIT_LEVEL) ~= "string" or not Util.IsAccessibleValue(TOOLTIP_UNIT_LEVEL) then
         return nil
     end
 
@@ -230,55 +147,37 @@ local function BuildUnitLevelPattern()
     escaped = strgsub(escaped, "%%%%s", ".+")
     escaped = strgsub(escaped, "%%%%d", "%%d+")
 
-    runtime.unitLevelPattern = "^" .. escaped
-    return runtime.unitLevelPattern
+    Runtime.unitLevelPattern = "^" .. escaped
+    return Runtime.unitLevelPattern
 end
 
 local function IsTooltipLevelLine(text)
     local pattern = BuildUnitLevelPattern()
-    if not pattern or not text then
-        return false
-    end
-
-    return strfind(text, pattern) ~= nil
+    return pattern ~= nil and strfind(text, pattern) ~= nil
 end
 
 local function GetTooltipLineText(line)
-    local util = GetUtil()
-    if not util or not line or not util.IsAccessibleValue(line) then
+    if not line or not Util.IsAccessibleValue(line) then
         return nil
     end
 
-    local leftText = util.SafeTableIndex(line, "leftText")
-    local normalizedLeftText = TrimTooltipLineText(leftText)
-    if normalizedLeftText then
-        return normalizedLeftText
-    end
-
-    local text = util.SafeTableIndex(line, "text")
-    return TrimTooltipLineText(text)
+    return TrimTooltipLineText(Util.SafeTableIndex(line, "leftText"))
+        or TrimTooltipLineText(Util.SafeTableIndex(line, "text"))
 end
 
 local function ExtractNpcTitleFromTooltipData(tooltipData)
-    local private = Nameplates:GetPrivate()
-    local constants = private and private.Constants
-    local util = private and private.Util
-    if not constants or not util then
+    if not Util.IsAccessibleValue(tooltipData) then
         return nil
     end
 
-    if not tooltipData or not util.IsAccessibleValue(tooltipData) then
-        return nil
-    end
-
-    local lines = util.SafeTableIndex(tooltipData, "lines")
-    if type(lines) ~= "table" or util.IsSecret(lines) or not util.IsAccessibleValue(lines) then
+    local lines = Util.SafeTableIndex(tooltipData, "lines")
+    if type(lines) ~= "table" or not Util.IsAccessibleValue(lines) then
         return nil
     end
 
     local nameLineIndex = nil
     for i, line in ipairs(lines) do
-        if util.SafeTableIndex(line, "type") == constants.TOOLTIP_LINE_TYPE_UNIT_NAME then
+        if Util.SafeTableIndex(line, "type") == Constants.TOOLTIP_LINE_TYPE_UNIT_NAME then
             nameLineIndex = i
             break
         end
@@ -290,8 +189,7 @@ local function ExtractNpcTitleFromTooltipData(tooltipData)
 
     local candidate = nil
     for i = nameLineIndex + 1, #lines do
-        local line = lines[i]
-        local text = GetTooltipLineText(line)
+        local text = GetTooltipLineText(lines[i])
         if text then
             if IsTooltipLevelLine(text) then
                 return NormalizeNpcTitleText(candidate)
@@ -303,32 +201,8 @@ local function ExtractNpcTitleFromTooltipData(tooltipData)
     return nil
 end
 
-local function ResolveNpcTitle(unit)
-    local private = Nameplates:GetPrivate()
-    local runtime = private and private.Runtime
-    local util = private and private.Util
-    if not runtime or not util then
-        return nil, true
-    end
-
-    if not util.IsUsableUnitToken(unit) then
-        return nil, true
-    end
-    if not C_TooltipInfo or type(C_TooltipInfo.GetUnit) ~= "function" then
-        return nil, true
-    end
-
-    local cacheGUID = GetCacheableUnitGUID(unit, util)
-    if cacheGUID then
-        local cachedTitle = runtime.npcTitleCacheByGUID[cacheGUID]
-        if cachedTitle ~= nil then
-            if cachedTitle == false then
-                return nil, true
-            end
-            return cachedTitle, true
-        end
-    end
-
+-- Returns title, isResolved. Unresolved means tooltip data was not ready yet.
+local function ResolveNpcTitle(unit, cacheGUID)
     local ok, tooltipData = pcall(C_TooltipInfo.GetUnit, unit)
     if not ok then
         return nil, true
@@ -339,95 +213,66 @@ local function ResolveNpcTitle(unit)
 
     local title = ExtractNpcTitleFromTooltipData(tooltipData)
     if cacheGUID then
-        runtime.npcTitleCacheByGUID[cacheGUID] = title or false
+        Runtime.npcTitleCacheByGUID[cacheGUID] = title or false
     end
 
     return title, true
 end
 
 local function NormalizeNameText(text, unit)
-    local util = GetUtil()
-    if not text then
-        return ""
-    end
-
-    local isPlayerUnit = false
-    if util and util.IsUsableUnitToken(unit) then
-        isPlayerUnit = util.ReadSafeBoolean(UnitIsPlayer(unit)) == true
-    end
-
-    if util and not util.IsSecret(text) and isPlayerUnit then
+    if Util.IsUsableUnitToken(unit) and Util.ReadSafeBoolean(UnitIsPlayer(unit)) == true then
         text = text:gsub(" %(*.*%)", ""):gsub("%-.*", "")
     end
 
     return text
 end
 
-local function SetRefineNameTextIfChanged(data, text)
-    if not data or not data.RefineName then
-        return
+local function SetRegionShownIfChanged(region, shouldShow)
+    if region:IsShown() == shouldShow then
+        return false
     end
 
-    local util = GetUtil()
-    if util and util.IsSecret(text) then
-        data.RefineName:SetText(text)
-        data.RefineNameText = nil
-        return
-    end
-
-    local finalText = text or ""
-    if data.RefineNameText == finalText then
-        return
-    end
-
-    data.RefineName:SetText(finalText)
-    data.RefineNameText = finalText
+    region:SetShown(shouldShow)
+    return true
 end
 
 function Nameplates:IsNativeNameShown(unitFrame, nameSource)
     local nativeName = nameSource or GetNativeNameSource(unitFrame)
-    if not nativeName or not nativeName.IsShown then
-        return false
-    end
-
-    local ok, isShown = pcall(nativeName.IsShown, nativeName)
-    return ok and isShown == true
+    return nativeName ~= nil and nativeName:IsShown() == true
 end
 
 function Nameplates:ApplyRefineTextVisibility(data, nativeNameShown)
-    if not data then
-        return
-    end
-
     local shouldShowName = nativeNameShown == true
-    local shouldShowHealth = shouldShowName and data.RefineHidden ~= true
 
-    if data.RefineName then
-        SetRegionShownIfChanged(data.RefineName, shouldShowName)
+    -- The name's height feeds the enemy aura anchors; re-anchor when it appears or hides.
+    if data.RefineName and SetRegionShownIfChanged(data.RefineName, shouldShowName) then
+        data.AuraLayoutStale = true
     end
 
     if data.RefineHealth then
-        SetRegionShownIfChanged(data.RefineHealth, shouldShowHealth)
+        SetRegionShownIfChanged(data.RefineHealth, shouldShowName and data.RefineHidden ~= true)
     end
 end
 
+-- Blizzard's name update runs on every health change, so normalization only reruns
+-- when the native text actually changes.
 function Nameplates:SyncRefineNameFromNative(unitFrame, unit, nameSource)
-    if not unitFrame then
-        return false
-    end
-
-    local data = self:GetNameplateData(unitFrame)
+    local data = NameplateData[unitFrame]
     if not data or not data.RefineName then
         return false
     end
 
     local nativeName = nameSource or GetNativeNameSource(unitFrame)
     local nativeNameShown = self:IsNativeNameShown(unitFrame, nativeName)
+    local text = nativeNameShown and nativeName:GetText() or ""
 
-    if nativeNameShown and nativeName and nativeName.GetText then
-        SetRefineNameTextIfChanged(data, NormalizeNameText(nativeName:GetText() or "", unit))
-    else
-        SetRefineNameTextIfChanged(data, "")
+    if Util.IsSecret(text) then
+        data.RefineName:SetText(text)
+        data.RefineNameRaw = nil
+    elseif text ~= data.RefineNameRaw then
+        data.RefineNameRaw = text
+        data.RefineName:SetText(NormalizeNameText(text, unit))
+        data.AuraLayoutStale = true
     end
 
     self:ApplyRefineTextVisibility(data, nativeNameShown)
@@ -438,7 +283,7 @@ end
 -- Shared Color Helpers (used by Threat component)
 ----------------------------------------------------------------------------------------
 function Nameplates:SetNameColorIfChanged(data, r, g, b)
-    if not data or not data.RefineName then
+    if not data.RefineName then
         return
     end
 
@@ -453,10 +298,6 @@ function Nameplates:SetNameColorIfChanged(data, r, g, b)
 end
 
 function Nameplates:SetBarColorIfChanged(statusbar, r, g, b)
-    if not statusbar or not statusbar.GetStatusBarColor or not statusbar.SetStatusBarColor then
-        return
-    end
-
     local cr, cg, cb = statusbar:GetStatusBarColor()
     if cr ~= r or cg ~= g or cb ~= b then
         statusbar:SetStatusBarColor(r, g, b)
@@ -466,25 +307,19 @@ end
 ----------------------------------------------------------------------------------------
 -- NPC Title API
 ----------------------------------------------------------------------------------------
+-- ApplyNpcTitleVisual modes:
+--   nil       passive refresh: show a cached title, never scan the tooltip
+--   "resolve" scan the tooltip now, or queue it when many plates are visible
+--   "queue"   drained from the resolve queue
+--   "retry"   delayed rescan after tooltip data was not ready
 local function ShouldDeferNpcTitleResolve(data)
-    local private = Nameplates:GetPrivate()
-    local constants = private and private.Constants
-    local activeNameplates = private and private.ActiveNameplates
-    if not constants then
-        return false
-    end
-
-    if data and data.RefineHidden == true then
+    if data.RefineHidden == true then
         return true
     end
 
-    local threshold = constants.NPC_TITLE_DEFER_ACTIVE_PLATE_THRESHOLD or 0
-    if threshold <= 0 or type(activeNameplates) ~= "table" then
-        return false
-    end
-
+    local threshold = Constants.NPC_TITLE_DEFER_ACTIVE_PLATE_THRESHOLD
     local count = 0
-    for _ in pairs(activeNameplates) do
+    for _ in pairs(ActiveNameplates) do
         count = count + 1
         if count >= threshold then
             return true
@@ -494,156 +329,91 @@ local function ShouldDeferNpcTitleResolve(data)
     return false
 end
 
-function Nameplates:SetNpcTitleResolveJobEnabled(enabled)
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    if not constants or not RefineUI.SetUpdateJobEnabled then
-        return
-    end
+local function DrainNpcTitleResolveQueue()
+    Nameplates:DrainNpcTitleResolveQueue()
+end
 
-    RefineUI:SetUpdateJobEnabled(constants.NPC_TITLE_RESOLVE_JOB_KEY, enabled == true, false)
+function Nameplates:SetNpcTitleResolveJobEnabled(enabled)
+    RefineUI:SetUpdateJobEnabled(Constants.NPC_TITLE_RESOLVE_JOB_KEY, enabled == true, false)
 end
 
 function Nameplates:EnsureNpcTitleResolveJob()
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    if not constants or not RefineUI.RegisterUpdateJob then
-        return false
+    if RefineUI:IsUpdateJobRegistered(Constants.NPC_TITLE_RESOLVE_JOB_KEY) then
+        return
     end
 
-    if RefineUI.IsUpdateJobRegistered and RefineUI:IsUpdateJobRegistered(constants.NPC_TITLE_RESOLVE_JOB_KEY) then
-        return true
-    end
-
-    local interval = constants.NPC_TITLE_RESOLVE_INTERVAL_SECONDS or 0.03
     RefineUI:RegisterUpdateJob(
-        constants.NPC_TITLE_RESOLVE_JOB_KEY,
-        interval,
-        function()
-            Nameplates:DrainNpcTitleResolveQueue()
-        end,
+        Constants.NPC_TITLE_RESOLVE_JOB_KEY,
+        Constants.NPC_TITLE_RESOLVE_INTERVAL_SECONDS,
+        DrainNpcTitleResolveQueue,
         {
             enabled = false,
             safe = true,
             disableOnError = true,
         }
     )
-
-    return true
 end
 
 function Nameplates:CancelNpcTitleResolve(unitFrame)
-    if not unitFrame then
-        return
-    end
-
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    if not runtime then
-        return
-    end
-
-    local queued = runtime.npcTitleResolveQueuedByFrame[unitFrame]
+    local queued = Runtime.npcTitleResolveQueuedByFrame[unitFrame]
     if queued then
         queued.cancelled = true
-        runtime.npcTitleResolveQueuedByFrame[unitFrame] = nil
+        Runtime.npcTitleResolveQueuedByFrame[unitFrame] = nil
     end
 end
 
 function Nameplates:ClearNpcTitleResolveQueue()
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    if not runtime then
-        return
-    end
-
-    wipe(runtime.npcTitleResolveQueue)
-    wipe(runtime.npcTitleResolveQueuedByFrame)
-    runtime.npcTitleResolveHead = 1
+    wipe(Runtime.npcTitleResolveQueue)
+    wipe(Runtime.npcTitleResolveQueuedByFrame)
+    Runtime.npcTitleResolveHead = 1
     self:SetNpcTitleResolveJobEnabled(false)
 end
 
 function Nameplates:EnqueueNpcTitleResolve(nameplate, unitFrame, unit)
-    if not nameplate or not unitFrame or not unit then
-        return false
-    end
-    if ShouldSuppressNpcTitleScanning() then
-        return false
-    end
-
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    local util = private and private.Util
-    if not runtime or not util then
-        return false
-    end
-
-    local resolvedUnit = util.ResolveUnitToken(unit, unitFrame.unit)
-    if not resolvedUnit then
-        return false
-    end
-
-    if not self:EnsureNpcTitleResolveJob() then
-        return false
-    end
-
-    local existing = runtime.npcTitleResolveQueuedByFrame[unitFrame]
+    local existing = Runtime.npcTitleResolveQueuedByFrame[unitFrame]
     if existing then
-        existing.unit = resolvedUnit
+        existing.unit = unit
         existing.nameplate = nameplate
         existing.cancelled = false
-        return true
+        return
     end
+
+    self:EnsureNpcTitleResolveJob()
 
     local entry = {
         nameplate = nameplate,
         unitFrame = unitFrame,
-        unit = resolvedUnit,
+        unit = unit,
         cancelled = false,
     }
-    runtime.npcTitleResolveQueuedByFrame[unitFrame] = entry
-    tinsert(runtime.npcTitleResolveQueue, entry)
+    Runtime.npcTitleResolveQueuedByFrame[unitFrame] = entry
+    tinsert(Runtime.npcTitleResolveQueue, entry)
     self:SetNpcTitleResolveJobEnabled(true)
-    return true
 end
 
 function Nameplates:DrainNpcTitleResolveQueue()
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    local constants = private and private.Constants
-    local util = private and private.Util
-    if not runtime or not constants or not util then
-        return
-    end
-
-    local queue = runtime.npcTitleResolveQueue
-    local head = runtime.npcTitleResolveHead or 1
+    local queue = Runtime.npcTitleResolveQueue
+    local head = Runtime.npcTitleResolveHead
     local tail = #queue
-    if head > tail then
-        wipe(queue)
-        runtime.npcTitleResolveHead = 1
-        self:SetNpcTitleResolveJobEnabled(false)
-        return
-    end
-
-    local budget = constants.NPC_TITLE_RESOLVE_BUDGET_PER_TICK or 4
+    local budget = Constants.NPC_TITLE_RESOLVE_BUDGET_PER_TICK
     local processed = 0
+
     while processed < budget and head <= tail do
         local entry = queue[head]
         queue[head] = nil
         head = head + 1
 
-        if entry and entry.unitFrame then
-            runtime.npcTitleResolveQueuedByFrame[entry.unitFrame] = nil
+        local unitFrame = entry.unitFrame
+        if Runtime.npcTitleResolveQueuedByFrame[unitFrame] == entry then
+            Runtime.npcTitleResolveQueuedByFrame[unitFrame] = nil
+        end
 
-            if not entry.cancelled then
-                local unitFrame = entry.unitFrame
-                local nameplate = unitFrame.GetParent and unitFrame:GetParent() or nil
-                if nameplate and nameplate.UnitFrame == unitFrame then
-                    local unit = util.ResolveUnitToken(entry.unit, unitFrame.unit)
-                    if unit then
-                        self:ApplyNpcTitleVisual(nameplate, unit, { allowResolve = true, fromQueue = true })
-                    end
+        if not entry.cancelled then
+            local nameplate = unitFrame:GetParent()
+            if nameplate and nameplate.UnitFrame == unitFrame then
+                local unit = Util.ResolveUnitToken(entry.unit, unitFrame.unit)
+                if unit then
+                    self:ApplyNpcTitleVisual(nameplate, unit, "queue")
                 end
             end
         end
@@ -651,105 +421,108 @@ function Nameplates:DrainNpcTitleResolveQueue()
         processed = processed + 1
     end
 
-    runtime.npcTitleResolveHead = head
     if head > tail then
         wipe(queue)
-        runtime.npcTitleResolveHead = 1
+        Runtime.npcTitleResolveHead = 1
         self:SetNpcTitleResolveJobEnabled(false)
     else
-        self:SetNpcTitleResolveJobEnabled(true)
+        Runtime.npcTitleResolveHead = head
     end
-end
-
-function Nameplates:BuildNpcTitleTimerKey(unitFrame)
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    return (constants and constants.NPC_TITLE_TIMER_KEY_PREFIX or "Nameplates:NPCTitleRetry:") .. tostring(unitFrame)
 end
 
 function Nameplates:CancelNpcTitleRetry(unitFrame)
-    if not unitFrame then
+    local data = NameplateData[unitFrame]
+    if not data then
         return
     end
 
-    local data = self:GetNameplateData(unitFrame)
-    if data then
-        data.NpcTitleRetryGUID = nil
+    data.NpcTitleRetryGUID = nil
+    if data.NpcTitleRetryPending then
+        data.NpcTitleRetryPending = nil
+        RefineUI:CancelTimer(data.NpcTitleTimerKey)
     end
-
-    RefineUI:CancelTimer(self:BuildNpcTitleTimerKey(unitFrame))
 end
 
 function Nameplates:SetNpcTitleText(data, title)
-    if not data or not data.RefineNpcTitle then
+    local titleText = data.RefineNpcTitle
+    if not titleText then
         return
     end
 
-    local util = GetUtil()
-    if util and (util.IsSecret(title) or type(title) ~= "string" or not util.IsAccessibleValue(title)) then
+    if type(title) ~= "string" or not Util.IsAccessibleValue(title) then
         title = nil
     end
 
     if title then
         local formattedTitle = "<" .. title .. ">"
         if data.RefineNpcTitleFormatted ~= formattedTitle then
-            data.RefineNpcTitle:SetText(formattedTitle)
+            titleText:SetText(formattedTitle)
             data.RefineNpcTitleFormatted = formattedTitle
         end
-        data.RefineNpcTitle:Show()
+        titleText:Show()
         return
     end
 
     if data.RefineNpcTitleFormatted ~= "" then
-        data.RefineNpcTitle:SetText("")
+        titleText:SetText("")
         data.RefineNpcTitleFormatted = ""
     end
-    data.RefineNpcTitle:Hide()
+    if titleText:IsShown() then
+        titleText:Hide()
+    end
 end
 
-function Nameplates:ApplyNpcTitleVisual(nameplate, unit, opts)
-    if not nameplate then
-        return
-    end
+local function ClearNpcTitle(unitFrame, data)
+    Nameplates:CancelNpcTitleResolve(unitFrame)
+    Nameplates:CancelNpcTitleRetry(unitFrame)
+    Nameplates:SetNpcTitleText(data, nil)
+end
 
-    local unitFrame = nameplate.UnitFrame
+function Nameplates:ScheduleNpcTitleRetry(unitFrame, data, expectedGUID)
+    data.NpcTitleTimerKey = data.NpcTitleTimerKey or (Constants.NPC_TITLE_TIMER_KEY_PREFIX .. tostring(unitFrame))
+    data.NpcTitleRetryGUID = expectedGUID
+    data.NpcTitleRetryPending = true
+
+    RefineUI:After(data.NpcTitleTimerKey, Constants.NPC_TITLE_RETRY_DELAY_SECONDS, function()
+        data.NpcTitleRetryGUID = nil
+        data.NpcTitleRetryPending = nil
+
+        if unitFrame:IsForbidden() then
+            return
+        end
+
+        local retryNameplate = unitFrame:GetParent()
+        if not retryNameplate or retryNameplate.UnitFrame ~= unitFrame then
+            return
+        end
+
+        local retryUnit = Util.ResolveUnitToken(unitFrame.unit)
+        if not retryUnit then
+            return
+        end
+
+        if expectedGUID and GetCacheableUnitGUID(retryUnit) ~= expectedGUID then
+            return
+        end
+
+        self:ApplyNpcTitleVisual(retryNameplate, retryUnit, "retry")
+    end)
+end
+
+function Nameplates:ApplyNpcTitleVisual(nameplate, unit, mode)
+    local unitFrame = nameplate and nameplate.UnitFrame
     if not unitFrame then
         return
     end
 
     local data = self:GetNameplateData(unitFrame)
+    local resolvedUnit = Util.ResolveUnitToken(unit, unitFrame.unit)
 
-    if not IsNpcTitleFeatureEnabled() then
-        self:CancelNpcTitleResolve(unitFrame)
-        self:CancelNpcTitleRetry(unitFrame)
-        if data.RefineNpcTitle then
-            self:SetNpcTitleText(data, nil)
-        end
-        return
-    end
-
-    if not self:IsNativeNameShown(unitFrame) then
-        self:CancelNpcTitleResolve(unitFrame)
-        self:CancelNpcTitleRetry(unitFrame)
-        if data.RefineNpcTitle then
-            self:SetNpcTitleText(data, nil)
-        end
-        return
-    end
-
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    if not util then
-        return
-    end
-
-    local resolvedUnit = util.ResolveUnitToken(unit, unitFrame.unit)
-    if not resolvedUnit or not IsEligibleNpcTitleUnit(resolvedUnit, data) then
-        self:CancelNpcTitleResolve(unitFrame)
-        self:CancelNpcTitleRetry(unitFrame)
-        if data.RefineNpcTitle then
-            self:SetNpcTitleText(data, nil)
-        end
+    if not resolvedUnit
+        or not IsNpcTitleFeatureEnabled()
+        or not self:IsNativeNameShown(unitFrame)
+        or not IsEligibleNpcTitleUnit(resolvedUnit, data) then
+        ClearNpcTitle(unitFrame, data)
         return
     end
 
@@ -757,48 +530,40 @@ function Nameplates:ApplyNpcTitleVisual(nameplate, unit, opts)
         return
     end
 
-    local runtime = private and private.Runtime
-    local cacheGUID = runtime and GetCacheableUnitGUID(resolvedUnit, util) or nil
-
-    if cacheGUID and runtime then
-        local cachedTitle = runtime.npcTitleCacheByGUID[cacheGUID]
+    local cacheGUID = GetCacheableUnitGUID(resolvedUnit)
+    if cacheGUID then
+        local cachedTitle = Runtime.npcTitleCacheByGUID[cacheGUID]
         if cachedTitle ~= nil then
             self:CancelNpcTitleResolve(unitFrame)
             self:CancelNpcTitleRetry(unitFrame)
-            self:SetNpcTitleText(data, cachedTitle ~= false and cachedTitle or nil)
+            self:SetNpcTitleText(data, cachedTitle or nil)
             return
         end
     end
 
-    if opts and opts.fromRetry ~= true and cacheGUID and data.NpcTitleRetryGUID == cacheGUID then
+    if mode ~= "retry" and cacheGUID and data.NpcTitleRetryGUID == cacheGUID then
         self:SetNpcTitleText(data, nil)
         return
     end
 
     if ShouldSuppressNpcTitleScanning() then
-        self:CancelNpcTitleResolve(unitFrame)
-        self:CancelNpcTitleRetry(unitFrame)
+        ClearNpcTitle(unitFrame, data)
+        return
+    end
+
+    -- Passive refreshes leave any queued resolve or pending retry in place.
+    if mode == nil then
         self:SetNpcTitleText(data, nil)
         return
     end
 
-    opts = opts or {}
-    if opts.allowResolve ~= true then
-        if opts.fromQueue ~= true then
-            self:CancelNpcTitleResolve(unitFrame)
-        end
+    if mode == "resolve" and ShouldDeferNpcTitleResolve(data) then
+        self:EnqueueNpcTitleResolve(nameplate, unitFrame, resolvedUnit)
         self:SetNpcTitleText(data, nil)
         return
     end
 
-    if opts.fromQueue ~= true and opts.fromRetry ~= true and ShouldDeferNpcTitleResolve(data) then
-        if self:EnqueueNpcTitleResolve(nameplate, unitFrame, resolvedUnit) then
-            self:SetNpcTitleText(data, nil)
-            return
-        end
-    end
-
-    local resolvedTitle, isResolved = ResolveNpcTitle(resolvedUnit)
+    local resolvedTitle, isResolved = ResolveNpcTitle(resolvedUnit, cacheGUID)
     if isResolved then
         self:CancelNpcTitleResolve(unitFrame)
         self:CancelNpcTitleRetry(unitFrame)
@@ -808,63 +573,27 @@ function Nameplates:ApplyNpcTitleVisual(nameplate, unit, opts)
 
     self:SetNpcTitleText(data, nil)
 
-    if opts.fromRetry == true then
-        return
+    if mode ~= "retry" then
+        self:ScheduleNpcTitleRetry(unitFrame, data, cacheGUID)
     end
-
-    local constants = private and private.Constants
-    local retryDelay = constants and constants.NPC_TITLE_RETRY_DELAY_SECONDS or 0.2
-    local expectedGUID = cacheGUID
-    local retryKey = self:BuildNpcTitleTimerKey(unitFrame)
-    if expectedGUID then
-        data.NpcTitleRetryGUID = expectedGUID
-    end
-
-    RefineUI:After(retryKey, retryDelay, function()
-        if data then
-            data.NpcTitleRetryGUID = nil
-        end
-
-        if not unitFrame or (unitFrame.IsForbidden and unitFrame:IsForbidden()) then
-            return
-        end
-
-        local retryNameplate = unitFrame:GetParent()
-        if not retryNameplate or retryNameplate.UnitFrame ~= unitFrame then
-            return
-        end
-
-        local retryUnit = util.ResolveUnitToken(unitFrame.unit)
-        if not retryUnit then
-            return
-        end
-
-        if expectedGUID then
-            local currentGUID = UnitGUID(retryUnit)
-            if util.IsSecret(currentGUID) or not util.IsAccessibleValue(currentGUID) or currentGUID ~= expectedGUID then
-                return
-            end
-        end
-
-        self:ApplyNpcTitleVisual(retryNameplate, retryUnit, { allowResolve = true, fromRetry = true })
-    end)
 end
 
 ----------------------------------------------------------------------------------------
 -- Text Rendering API
 ----------------------------------------------------------------------------------------
+-- Blizzard only sets the native name's text and visibility in CompactUnitFrame_UpdateName,
+-- which the Runtime hook already mirrors through UpdateName.
+local function HookNativeName(name)
+    RefineUI:HookOnce(Nameplates:BuildHookKey(name, "SetAlpha"), name, "SetAlpha", function(nameObj, alpha)
+        if alpha ~= 0 then
+            nameObj:SetAlpha(0)
+        end
+    end)
+end
+
 function Nameplates:UpdateName(nameplate, unit)
-    if not nameplate then
-        return
-    end
-
-    local unitFrame = nameplate.UnitFrame
-    if not unitFrame then
-        return
-    end
-
-    local name = GetNativeNameSource(unitFrame)
-    local health = unitFrame.healthBar or unitFrame.HealthBar
+    local unitFrame = nameplate and nameplate.UnitFrame
+    local name = unitFrame and GetNativeNameSource(unitFrame)
     if not name then
         return
     end
@@ -873,86 +602,46 @@ function Nameplates:UpdateName(nameplate, unit)
     local desiredNameFontSize = self:GetScaledNameplateNameFontSize()
 
     if not data.RefineName then
+        local health = unitFrame.healthBar or unitFrame.HealthBar
         data.RefineName = unitFrame:CreateFontString(nil, "OVERLAY")
         RefineUI.Font(data.RefineName, desiredNameFontSize)
-        local anchor = health or unitFrame
-        RefineUI.Point(data.RefineName, "BOTTOM", anchor, health and "TOP" or "CENTER", 0, health and 4 or 0)
+        RefineUI.Point(data.RefineName, "BOTTOM", health or unitFrame, health and "TOP" or "CENTER", 0, health and 4 or 0)
         data.RefineNameFontSize = desiredNameFontSize
     elseif data.RefineNameFontSize ~= desiredNameFontSize then
         RefineUI.Font(data.RefineName, desiredNameFontSize)
         data.RefineNameFontSize = desiredNameFontSize
+        data.AuraLayoutStale = true
     end
 
     if data.NameSource ~= name then
         data.NameSource = name
-
-        RefineUI:HookOnce(self:BuildHookKey(name, "SetText"), name, "SetText", function(nameObj)
-            local frameData = RefineUI.NameplateData[unitFrame]
-            if frameData and frameData.RefineName then
-                Nameplates:SyncRefineNameFromNative(unitFrame, unitFrame.unit, nameObj)
-            end
-        end)
-
-        RefineUI:HookOnce(self:BuildHookKey(name, "SetAlpha"), name, "SetAlpha", function(nameObj, alpha)
-            if alpha ~= 0 then
-                nameObj:SetAlpha(0)
-            end
-        end)
-
-        RefineUI:HookOnce(self:BuildHookKey(name, "Show"), name, "Show", function(nameObj)
-            local parent = unitFrame.GetParent and unitFrame:GetParent() or nil
-            Nameplates:SyncRefineNameFromNative(unitFrame, unitFrame.unit, nameObj)
-            if parent and parent.UnitFrame == unitFrame then
-                Nameplates:ApplyNpcTitleVisual(parent, unitFrame.unit, { allowResolve = false })
-            end
-        end)
-
-        RefineUI:HookOnce(self:BuildHookKey(name, "Hide"), name, "Hide", function(nameObj)
-            local parent = unitFrame.GetParent and unitFrame:GetParent() or nil
-            Nameplates:SyncRefineNameFromNative(unitFrame, unitFrame.unit, nameObj)
-            if parent and parent.UnitFrame == unitFrame then
-                Nameplates:ApplyNpcTitleVisual(parent, unitFrame.unit, { allowResolve = false })
-            end
-        end)
+        HookNativeName(name)
     end
 
-    name:SetAlpha(0)
-    self:SyncRefineNameFromNative(unitFrame, unit, name)
+    if name:GetAlpha() ~= 0 then
+        name:SetAlpha(0)
+    end
 
-    self:ApplyNpcTitleVisual(nameplate, unit, { allowResolve = false })
+    -- This runs on every health change; the title only depends on name visibility here.
+    local nativeNameShown = self:SyncRefineNameFromNative(unitFrame, unit, name)
+    if data.NpcTitleNameShown ~= nativeNameShown then
+        data.NpcTitleNameShown = nativeNameShown
+        self:ApplyNpcTitleVisual(nameplate, unit)
+    end
 end
 
 function Nameplates:UpdateHealth(nameplate, unit)
-    if not nameplate or not unit then
-        return
-    end
-
-    local unitFrame = nameplate.UnitFrame
-    if not unitFrame then
-        return
-    end
-
-    local health = unitFrame.healthBar or unitFrame.HealthBar
-    if not health then
-        return
-    end
-
-    local data = RefineUI.NameplateData[unitFrame]
-    if not data then
-        return
-    end
-
-    if data.RefineHidden then
-        self:ApplyRefineTextVisibility(data, self:IsNativeNameShown(unitFrame))
-        if data.RefineHealth then
-            RefineUI:SetFontStringValue(data.RefineHealth, nil, EMPTY_TEXT_OPTS)
-        end
+    local unitFrame = nameplate and nameplate.UnitFrame
+    local health = unitFrame and (unitFrame.healthBar or unitFrame.HealthBar)
+    local data = health and NameplateData[unitFrame]
+    if not data or not unit then
         return
     end
 
     local nativeNameShown = self:IsNativeNameShown(unitFrame)
-    if not nativeNameShown then
-        self:ApplyRefineTextVisibility(data, false)
+    if data.RefineHidden or not nativeNameShown then
+        -- Hides the health text; the name follows the native name.
+        self:ApplyRefineTextVisibility(data, nativeNameShown)
         if data.RefineHealth then
             RefineUI:SetFontStringValue(data.RefineHealth, nil, EMPTY_TEXT_OPTS)
         end
@@ -972,16 +661,10 @@ function Nameplates:UpdateHealth(nameplate, unit)
         data.RefineHealthFontSize = desiredHealthFontSize
     end
 
-    local private = self:GetPrivate()
-    local barTexture = private and private.Textures and private.Textures.HEALTH_BAR
-
-    if barTexture and health.SetStatusBarTexture and data.HealthTextureApplied ~= barTexture then
-        health:SetStatusBarTexture(barTexture)
-        data.HealthTextureApplied = barTexture
-    end
-    if health.SetStatusBarDesaturated and data.HealthTextureDesaturated ~= true then
+    if not data.HealthTextureApplied then
+        health:SetStatusBarTexture(HEALTH_BAR_TEXTURE)
         health:SetStatusBarDesaturated(true)
-        data.HealthTextureDesaturated = true
+        data.HealthTextureApplied = true
     end
 
     self:ApplyRefineTextVisibility(data, true)
@@ -993,134 +676,67 @@ end
 ----------------------------------------------------------------------------------------
 -- Public API (Compatibility)
 ----------------------------------------------------------------------------------------
-function Nameplates:HideAllNpcTitleFontStrings(_reason)
-    local private = self:GetPrivate()
-    local activeNameplates = private and private.ActiveNameplates or {}
+function Nameplates:HideAllNpcTitleFontStrings()
+    for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+        local unitFrame = nameplate.UnitFrame
+        if unitFrame then
+            self:CancelNpcTitleRetry(unitFrame)
 
-    local function HideTitleForNameplate(nameplate)
-        local unitFrame = nameplate and nameplate.UnitFrame
-        if not unitFrame then
-            return
-        end
-
-        self:CancelNpcTitleRetry(unitFrame)
-
-        local data = self:GetNameplateData(unitFrame)
-        if data and data.RefineNpcTitle then
-            self:SetNpcTitleText(data, nil)
-        end
-    end
-
-    if C_NamePlate and type(C_NamePlate.GetNamePlates) == "function" then
-        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
-            HideTitleForNameplate(nameplate)
-        end
-        return
-    end
-
-    for nameplate in pairs(activeNameplates) do
-        HideTitleForNameplate(nameplate)
-    end
-end
-
-function RefineUI:RefreshAllNameplateNpcTitles(_reason)
-    local private = Nameplates:GetPrivate()
-    local activeNameplates = private and private.ActiveNameplates or {}
-
-    if C_NamePlate and type(C_NamePlate.GetNamePlates) == "function" then
-        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
-            if nameplate and nameplate.UnitFrame then
-                Nameplates:ApplyNpcTitleVisual(nameplate, nameplate.UnitFrame.unit, { allowResolve = true })
-            end
-        end
-        return
-    end
-
-    for nameplate, unit in pairs(activeNameplates) do
-        if nameplate and nameplate.UnitFrame then
-            Nameplates:ApplyNpcTitleVisual(nameplate, unit, { allowResolve = true })
-        end
-    end
-end
-
-function RefineUI:RefreshAllNameplateTextScales(_reason)
-    local private = Nameplates:GetPrivate()
-    local activeNameplates = private and private.ActiveNameplates or {}
-    local util = private and private.Util
-
-    if C_NamePlate and type(C_NamePlate.GetNamePlates) == "function" then
-        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
-            local unitFrame = nameplate and nameplate.UnitFrame
-            local unit = unitFrame and util and util.ResolveUnitToken(unitFrame.unit)
-            if unit then
-                Nameplates:UpdateName(nameplate, unit)
-                if not IsRuntimeSuppressedNameplate(unitFrame) then
-                    Nameplates:UpdateHealth(nameplate, unit)
-                end
-            end
-        end
-        return
-    end
-
-    for nameplate, unit in pairs(activeNameplates) do
-        local unitFrame = nameplate and nameplate.UnitFrame
-        local resolvedUnit = util and util.ResolveUnitToken(unit, unitFrame and unitFrame.unit)
-        if resolvedUnit then
-            Nameplates:UpdateName(nameplate, resolvedUnit)
-            if not IsRuntimeSuppressedNameplate(unitFrame) then
-                Nameplates:UpdateHealth(nameplate, resolvedUnit)
+            local data = NameplateData[unitFrame]
+            if data then
+                self:SetNpcTitleText(data, nil)
             end
         end
     end
 end
 
-function RefineUI:RefreshAllNameplateNameRules(_reason)
-    local private = Nameplates:GetPrivate()
-    local activeNameplates = private and private.ActiveNameplates or {}
-    local util = private and private.Util
-
-    if C_NamePlate and type(C_NamePlate.GetNamePlates) == "function" then
-        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
-            local unitFrame = nameplate and nameplate.UnitFrame
-            local unit = unitFrame and util and util.ResolveUnitToken(unitFrame.unit)
-            if unit then
-                Nameplates:UpdateName(nameplate, unit)
-                if not IsRuntimeSuppressedNameplate(unitFrame) then
-                    Nameplates:UpdateHealth(nameplate, unit)
-                end
-                Nameplates:ApplyNpcTitleVisual(nameplate, unit, { allowResolve = true })
-            end
-        end
-        return
-    end
-
-    for nameplate, unit in pairs(activeNameplates) do
-        local unitFrame = nameplate and nameplate.UnitFrame
-        local resolvedUnit = util and util.ResolveUnitToken(unit, unitFrame and unitFrame.unit)
-        if resolvedUnit then
-            Nameplates:UpdateName(nameplate, resolvedUnit)
-            if not IsRuntimeSuppressedNameplate(unitFrame) then
-                Nameplates:UpdateHealth(nameplate, resolvedUnit)
-            end
-            Nameplates:ApplyNpcTitleVisual(nameplate, resolvedUnit, { allowResolve = true })
+function RefineUI:RefreshAllNameplateNpcTitles()
+    for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+        local unitFrame = nameplate.UnitFrame
+        if unitFrame then
+            Nameplates:ApplyNpcTitleVisual(nameplate, unitFrame.unit, "resolve")
         end
     end
+end
+
+local function RefreshAllNameplateText(resolveTitles)
+    for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+        local unitFrame = nameplate.UnitFrame
+        local unit = unitFrame and Util.ResolveUnitToken(unitFrame.unit)
+        if unit then
+            Nameplates:UpdateName(nameplate, unit)
+            if not IsNameOnly(unitFrame) then
+                Nameplates:UpdateHealth(nameplate, unit)
+            end
+            if resolveTitles then
+                Nameplates:ApplyNpcTitleVisual(nameplate, unit, "resolve")
+            end
+        end
+    end
+end
+
+function RefineUI:RefreshAllNameplateTextScales()
+    RefreshAllNameplateText(false)
+end
+
+function RefineUI:RefreshAllNameplateNameRules()
+    RefreshAllNameplateText(true)
 end
 
 function Nameplates:RegisterNpcTitleEvents()
     RefineUI:RegisterEventCallback("PLAYER_REGEN_DISABLED", function()
         Nameplates:ClearNpcTitleResolveQueue()
-        Nameplates:HideAllNpcTitleFontStrings("PLAYER_REGEN_DISABLED")
+        Nameplates:HideAllNpcTitleFontStrings()
     end, "Nameplates:NPCTitles:CombatStart")
 
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-        RefineUI:RefreshAllNameplateNpcTitles("PLAYER_REGEN_ENABLED")
+        RefineUI:RefreshAllNameplateNpcTitles()
     end, "Nameplates:NPCTitles:CombatEnd")
 
     RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
         if ShouldSuppressNpcTitleScanning() then
             Nameplates:ClearNpcTitleResolveQueue()
         end
-        RefineUI:RefreshAllNameplateNpcTitles("PLAYER_ENTERING_WORLD")
+        RefineUI:RefreshAllNameplateNpcTitles()
     end, "Nameplates:NPCTitles:WorldEntry")
 end

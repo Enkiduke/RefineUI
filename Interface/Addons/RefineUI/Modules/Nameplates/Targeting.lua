@@ -101,27 +101,23 @@ function RefineUI:UpdateTarget(frame)
     local previousNameOnly = data.lastTargetNameOnly
     local isTarget = IsTargetNameplateUnitFrame(frame)
     data.isTarget = isTarget
-    local isNameOnly = data.RefineHidden == true
-    if RefineUI.IsNameOnlyNameplate then
-        isNameOnly = RefineUI:IsNameOnlyNameplate(frame, data)
-    end
+    local isNameOnly = Nameplates:IsNameOnlyNameplateInternal(frame, data)
 
     -- Raid icon anchoring is already refreshed by visibility and Blizzard raid-target/
     -- anchor hooks. Only reapply here when our name-only mode actually changed.
-    if RefineUI.UpdateNameplateRaidIconAnchor and (previousNameOnly ~= isNameOnly or data.RaidIconAnchorMode == nil) then
-        RefineUI:UpdateNameplateRaidIconAnchor(frame, data, isNameOnly)
+    if previousNameOnly ~= isNameOnly or data.RaidIconAnchorMode == nil then
+        Nameplates:ApplyRaidIconAnchor(frame, data, isNameOnly)
     end
     data.lastTargetNameOnly = isNameOnly
-    
+
     -- 1. Border Colors (Centralized)
-    if (not isNameOnly) and RefineUI.UpdateBorderColors and previousTarget ~= isTarget then
+    if (not isNameOnly) and previousTarget ~= isTarget then
         RefineUI:UpdateBorderColors(frame)
     end
 
-    
-    -- 3. Arrows
-    if data and data.TargetArrows then
-        if Config.Nameplates and Config.Nameplates.TargetIndicator == false then
+    -- 2. Arrows
+    if data.TargetArrows then
+        if Config.Nameplates.TargetIndicator == false then
             if data.TargetArrowsShown ~= false then
                 data.TargetArrows:Hide()
                 data.TargetArrowsShown = false
@@ -180,10 +176,10 @@ function RefineUI:UpdateTarget(frame)
         end
     end
     
-    -- 4. Alpha (Opacity)
-    local nonTargetAlpha = ClampAlpha(Config.Nameplates and Config.Nameplates.Alpha, 0.5)
-    local noTargetAlpha = ClampAlpha(Config.Nameplates and Config.Nameplates.NoTargetAlpha, 1)
-    local castingAlpha = ClampAlpha(Config.Nameplates and Config.Nameplates.CastAlpha, 0.75)
+    -- 3. Alpha (Opacity)
+    local nonTargetAlpha = ClampAlpha(Config.Nameplates.Alpha, 0.5)
+    local noTargetAlpha = ClampAlpha(Config.Nameplates.NoTargetAlpha, 1)
+    local castingAlpha = ClampAlpha(Config.Nameplates.CastAlpha, 0.75)
     local hasTarget = UnitExists("target")
     local finalAlpha
 
@@ -193,7 +189,7 @@ function RefineUI:UpdateTarget(frame)
         finalAlpha = 1
     else
         finalAlpha = nonTargetAlpha
-        if (not isNameOnly) and data and data.isCasting == true and castingAlpha > finalAlpha then
+        if (not isNameOnly) and data.isCasting == true and castingAlpha > finalAlpha then
             finalAlpha = castingAlpha
         end
     end

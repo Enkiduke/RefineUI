@@ -28,14 +28,6 @@ local DEFAULTS = {
     Orientation = AutoItemBar.ORIENTATION_HORIZONTAL,
     ButtonWrap = AutoItemBar.WRAP_FORWARD,
     ButtonDirection = AutoItemBar.DIRECTION_FORWARD,
-    ShowPotions = true,
-    ShowFlasks = true,
-    ShowFoodAndDrink = true,
-    ShowItemEnhancements = true,
-    ShowOtherConsumables = true,
-    TrackedItems = {},
-    HiddenItems = {},
-    EnabledOrder = {},
 }
 
 ----------------------------------------------------------------------------------------
@@ -43,6 +35,10 @@ local DEFAULTS = {
 ----------------------------------------------------------------------------------------
 
 function AutoItemBar:GetConfig()
+    return Config.Automation.AutoItemBar
+end
+
+function AutoItemBar:NormalizeConfig()
     Config.Automation = Config.Automation or {}
     Config.Automation.AutoItemBar = Config.Automation.AutoItemBar or {}
 
@@ -80,11 +76,6 @@ function AutoItemBar:GetConfig()
         cfg.BarVisible = AutoItemBar.VISIBILITY_MOUSEOVER
     end
     if cfg.MinItemLevel == nil then cfg.MinItemLevel = DEFAULTS.MinItemLevel end
-    if cfg.ShowPotions == nil then cfg.ShowPotions = DEFAULTS.ShowPotions end
-    if cfg.ShowFlasks == nil then cfg.ShowFlasks = DEFAULTS.ShowFlasks end
-    if cfg.ShowFoodAndDrink == nil then cfg.ShowFoodAndDrink = DEFAULTS.ShowFoodAndDrink end
-    if cfg.ShowItemEnhancements == nil then cfg.ShowItemEnhancements = DEFAULTS.ShowItemEnhancements end
-    if cfg.ShowOtherConsumables == nil then cfg.ShowOtherConsumables = DEFAULTS.ShowOtherConsumables end
     if cfg.Orientation ~= AutoItemBar.ORIENTATION_VERTICAL then
         cfg.Orientation = AutoItemBar.ORIENTATION_HORIZONTAL
     end
@@ -119,31 +110,21 @@ function AutoItemBar:GetConfig()
     return cfg
 end
 
+-- The getters below read values kept valid by NormalizeConfig and the Edit Mode setters.
 function AutoItemBar:GetButtonLimit()
-    local cfg = self:GetConfig()
-    return cfg.ButtonLimit or AutoItemBar.BUTTONS_PER_LINE
+    return self:GetConfig().ButtonLimit
 end
 
 function AutoItemBar:GetBarVisibilityMode()
-    local cfg = self:GetConfig()
-    local mode = cfg.BarVisible
-    if mode == AutoItemBar.VISIBILITY_ALWAYS
-        or mode == AutoItemBar.VISIBILITY_IN_COMBAT
-        or mode == AutoItemBar.VISIBILITY_OUT_OF_COMBAT
-        or mode == AutoItemBar.VISIBILITY_NEVER then
-        return mode
-    end
-    return AutoItemBar.VISIBILITY_MOUSEOVER
+    return self:GetConfig().BarVisible
 end
 
 function AutoItemBar:GetButtonWrap()
-    local cfg = self:GetConfig()
-    return (cfg.ButtonWrap == AutoItemBar.WRAP_REVERSE) and AutoItemBar.WRAP_REVERSE or AutoItemBar.WRAP_FORWARD
+    return self:GetConfig().ButtonWrap
 end
 
 function AutoItemBar:GetButtonDirection()
-    local cfg = self:GetConfig()
-    return (cfg.ButtonDirection == AutoItemBar.DIRECTION_REVERSE) and AutoItemBar.DIRECTION_REVERSE or AutoItemBar.DIRECTION_FORWARD
+    return self:GetConfig().ButtonDirection
 end
 
 function AutoItemBar:GetButtonDirectionLabel(value)
@@ -170,8 +151,7 @@ function AutoItemBar:GetCategoryDefaultEnabled(definition)
 end
 
 function AutoItemBar:GetOrientation()
-    local cfg = self:GetConfig()
-    return (cfg.Orientation == AutoItemBar.ORIENTATION_VERTICAL) and AutoItemBar.ORIENTATION_VERTICAL or AutoItemBar.ORIENTATION_HORIZONTAL
+    return self:GetConfig().Orientation
 end
 
 function AutoItemBar:RegisterEditModeSettings()
@@ -206,9 +186,7 @@ function AutoItemBar:RegisterEditModeSettings()
         set = function(_, value)
             local config = self:GetConfig()
             config.Orientation = (value == AutoItemBar.ORIENTATION_VERTICAL) and AutoItemBar.ORIENTATION_VERTICAL or AutoItemBar.ORIENTATION_HORIZONTAL
-            if self.InvalidateLayoutCache then
-                self:InvalidateLayoutCache()
-            end
+            self:InvalidateLayoutCache()
             self:RequestUpdate()
         end,
     }
@@ -227,9 +205,7 @@ function AutoItemBar:RegisterEditModeSettings()
             local config = self:GetConfig()
             config.ButtonSize = value
             self.buttonSize = value
-            if self.InvalidateLayoutCache then
-                self:InvalidateLayoutCache()
-            end
+            self:InvalidateLayoutCache()
             self:RequestUpdate()
         end,
     }
@@ -248,9 +224,7 @@ function AutoItemBar:RegisterEditModeSettings()
             local config = self:GetConfig()
             config.ButtonSpacing = value
             self.buttonSpacing = value
-            if self.InvalidateLayoutCache then
-                self:InvalidateLayoutCache()
-            end
+            self:InvalidateLayoutCache()
             self:RequestUpdate()
         end,
     }
@@ -274,9 +248,7 @@ function AutoItemBar:RegisterEditModeSettings()
                 limit = AutoItemBar.BUTTONS_PER_LINE
             end
             config.ButtonLimit = limit
-            if self.InvalidateLayoutCache then
-                self:InvalidateLayoutCache()
-            end
+            self:InvalidateLayoutCache()
             self:RequestUpdate()
         end,
     }

@@ -524,11 +524,6 @@ function Install:CheckInstalledLayout()
         return
     end
 
-    local EditMode = RefineUI:GetModule("EditMode")
-    if not EditMode or type(EditMode.EnsureRefineUILayout) ~= "function" then
-        return
-    end
-
     local readyOk, isReady = SafeOverrideCall("IsReady")
     if not readyOk or not isReady then
         return
@@ -539,39 +534,11 @@ function Install:CheckInstalledLayout()
         return
     end
 
-    local activeOk, activeLayout = SafeOverrideCall("GetActiveLayout")
-    if not activeOk then
-        return
+    -- Activating and binding the managed layout is owned by the EditMode module.
+    if not HasAnyManagedLayout() then
+        self:SetFailure("layout_not_found", "RefineUI could not find any managed Edit Mode layout.", "preflight", "repair")
+        self:Toggle(true)
     end
-
-    if not RefineUI:IsManagedLayoutName(activeLayout) then
-        if not HasAnyManagedLayout() then
-            self:SetFailure("layout_not_found", "RefineUI could not find any managed Edit Mode layout.", "preflight", "repair")
-            self:Toggle(true)
-        end
-        return
-    end
-
-    local activeTier = RefineUI:GetManagedLayoutTier(activeLayout)
-    EditMode:EnsureRefineUILayout(false, false, {
-        onBlocked = function()
-            -- Login while in combat can delay layout verification until later.
-            self.PendingLoginLayoutCheck = true
-            RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function(...)
-                self:OnEvent(...)
-            end, EVENT_KEY_REGEN_ENABLED)
-        end,
-        onFailure = function(payload)
-            local code = payload and payload.code or "layout_not_found"
-            local message = "RefineUI could not find its Edit Mode layout."
-            if code ~= "layout_not_found" then
-                message = payload and payload.message or "RefineUI failed to verify its Edit Mode layout."
-            end
-
-            self:SetFailure(code, message, "preflight", "repair")
-            self:Toggle(true)
-        end,
-    }, activeTier)
 end
 
 function Install:SyncReadyStateWithExistingLayout()
@@ -805,11 +772,6 @@ function Install:OnEvent(event)
     end
 
     if event == "PLAYER_REGEN_ENABLED" then
-        if self.PendingLoginLayoutCheck then
-            self.PendingLoginLayoutCheck = nil
-            self:CheckInstalledLayout()
-        end
-
         if self.PendingCombatResume then
             local pending = self.PendingCombatResume
             self.PendingCombatResume = nil

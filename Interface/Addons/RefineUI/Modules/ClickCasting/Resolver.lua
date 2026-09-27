@@ -18,20 +18,15 @@ local C_Macro = C_Macro
 local C_Spell = C_Spell
 local C_SpellBook = C_SpellBook
 local Enum = Enum
-local FindBaseSpellByID = FindBaseSpellByID
 local GetActionInfo = GetActionInfo
 local GetBindingKey = GetBindingKey
 local GetMacroIndexByName = GetMacroIndexByName
 local GetMacroInfo = GetMacroInfo
 local GetNumMacros = GetNumMacros
-local GetSpecialization = GetSpecialization
-local GetSpecializationInfo = GetSpecializationInfo
 local GetSpecializationInfoByID = GetSpecializationInfoByID
 local GetFlyoutInfo = GetFlyoutInfo
 local GetFlyoutSlotInfo = GetFlyoutSlotInfo
-local IsPlayerSpell = IsPlayerSpell
-local IsSpellKnown = IsSpellKnown
-local IsSpellKnownOrOverridesKnown = IsSpellKnownOrOverridesKnown
+local IsSpellKnown = C_SpellBook.IsSpellKnown
 local MAX_ACCOUNT_MACROS = MAX_ACCOUNT_MACROS or 120
 local tostring = tostring
 local tonumber = tonumber
@@ -74,57 +69,13 @@ local function BuildLookupList(set)
     return list
 end
 
-local function GetBaseSpellID(spellID)
-    local idNum = tonumber(spellID)
-    if not idNum or idNum <= 0 then
-        return nil
-    end
+local GetBaseSpellID = ClickCasting.GetBaseSpellID
 
-    if type(FindBaseSpellByID) == "function" then
-        local ok, baseID = pcall(FindBaseSpellByID, idNum)
-        if ok and tonumber(baseID) then
-            return tonumber(baseID)
-        end
-    end
-
-    return idNum
-end
-
+-- Not IsSpellInSpellBook(..., includeOverrides): it is true for off-spec talent spells
+-- (Holy Shock as Protection). Overrides are covered by the base spell check instead.
 local function IsSpellKnownForCurrentSpec(spellID, baseSpellID)
-    local candidates = {}
-    local spellNum = tonumber(spellID)
-    local baseNum = tonumber(baseSpellID)
-    if spellNum and spellNum > 0 then
-        candidates[spellNum] = true
-    end
-    if baseNum and baseNum > 0 then
-        candidates[baseNum] = true
-    end
-
-    for candidateSpellID in pairs(candidates) do
-        if type(IsSpellKnownOrOverridesKnown) == "function" then
-            local ok, known = pcall(IsSpellKnownOrOverridesKnown, candidateSpellID)
-            if ok and known then
-                return true
-            end
-        end
-
-        if type(IsPlayerSpell) == "function" then
-            local ok, known = pcall(IsPlayerSpell, candidateSpellID)
-            if ok and known then
-                return true
-            end
-        end
-
-        if type(IsSpellKnown) == "function" then
-            local ok, known = pcall(IsSpellKnown, candidateSpellID)
-            if ok and known then
-                return true
-            end
-        end
-    end
-
-    return false
+    return IsSpellKnown(spellID, SPELLBOOK_PLAYER_BANK)
+        or (baseSpellID ~= spellID and IsSpellKnown(baseSpellID, SPELLBOOK_PLAYER_BANK))
 end
 
 local function AddSpecLabel(labelSetBySpell, spellID, label)
@@ -261,23 +212,6 @@ local function BuildEntryOrder(entries)
 end
 
 ----------------------------------------------------------------------------------------
--- Spec
-----------------------------------------------------------------------------------------
-function ClickCasting:GetActiveSpecKey()
-    local specIndex = GetSpecialization and GetSpecialization()
-    if not specIndex then
-        return "nospec"
-    end
-
-    local specID = GetSpecializationInfo and select(1, GetSpecializationInfo(specIndex))
-    if not specID then
-        return "nospec"
-    end
-
-    return tostring(specID)
-end
-
-----------------------------------------------------------------------------------------
 -- Slot/Key Index
 ----------------------------------------------------------------------------------------
 function ClickCasting:BuildActionSlotCommandIndex()
@@ -332,7 +266,10 @@ local function CollectKeysForCommandSet(commandSet)
     return keySet
 end
 
-local function CollectKeysForSlots(slots, slotCommandIndex)
+-- Built once per rebuild, only when an entry has slots.
+local function CollectKeysForSlots(slots, context)
+    context.slotCommandIndex = context.slotCommandIndex or ClickCasting:BuildActionSlotCommandIndex()
+    local slotCommandIndex = context.slotCommandIndex
     local keySet = {}
     for i = 1, #slots do
         local slot = slots[i]
@@ -359,7 +296,47 @@ local function IsCharacterMacroIndex(index)
     return index > MAX_ACCOUNT_MACROS
 end
 
-function ClickCasting:ResolveTrackedMacroIndex(entry)
+-- Snapshot of every existing macro, keyed by macro index. Built once per rebuild.
+local function BuildMacroRecords()
+    local records = {}
+    local _, numCharacter = GetNumMacros()
+    local maxIndex = MAX_ACCOUNT_MACROS + (tonumber(numCharacter) or 0)
+    for index = 1, maxIndex do
+        local name, icon = GetMacroNameAndIcon(index)
+        if name then
+            records[index] = {
+                index = index,
+                name = name,
+                icon = icon,
+                isCharacterMacro = IsCharacterMacroIndex(index),
+            }
+        end
+    end
+    return records
+end
+
+-- Action slots holding macros. Built once per rebuild.
+local function BuildMacroActionSlots()
+    local macroSlots = {}
+    for slot = 1, ACTION_SLOT_MAX do
+        local actionType, actionID, subType = GetActionInfo(slot)
+        if actionType == "macro" then
+            macroSlots[#macroSlots + 1] = {
+                slot = slot,
+                actionID = actionID,
+                subType = subType,
+            }
+        end
+    end
+    return macroSlots
+end
+
+local function GetMacroRecords(context)
+    context.macroRecords = context.macroRecords or BuildMacroRecords()
+    return context.macroRecords
+end
+
+function ClickCasting:ResolveTrackedMacroIndex(entry, macroRecords)
     local rawIndex = tonumber(entry and entry.macroIndex)
     local targetName = entry and entry.macroName
     local targetIcon = tonumber(entry and entry.iconFileID)
@@ -372,25 +349,9 @@ function ClickCasting:ResolveTrackedMacroIndex(entry)
         end
     end
 
-    local function GetMacroRecord(index)
-        local name, icon = GetMacroNameAndIcon(index)
-        if not name then
-            return nil
-        end
-        return {
-            index = index,
-            name = name,
-            icon = icon,
-            isCharacterMacro = IsCharacterMacroIndex(index),
-        }
-    end
-
     local function IsExpectedScope(record)
         return record and record.isCharacterMacro == targetCharState
     end
-
-    local _, numCharacter = GetNumMacros()
-    local maxIndex = (MAX_ACCOUNT_MACROS or 120) + (tonumber(numCharacter) or 0)
 
     local function CollectNameCandidates(requireExpectedScope)
         local candidates = {}
@@ -398,9 +359,8 @@ function ClickCasting:ResolveTrackedMacroIndex(entry)
             return candidates
         end
 
-        for index = 1, maxIndex do
-            local record = GetMacroRecord(index)
-            if record and record.name == targetName then
+        for _, record in pairs(macroRecords) do
+            if record.name == targetName then
                 if not requireExpectedScope or IsExpectedScope(record) then
                     candidates[#candidates + 1] = record
                 end
@@ -421,7 +381,7 @@ function ClickCasting:ResolveTrackedMacroIndex(entry)
     end
 
     if rawIndex and rawIndex > 0 then
-        local indexRecord = GetMacroRecord(rawIndex)
+        local indexRecord = macroRecords[rawIndex]
         if indexRecord then
             if not targetName or targetName == "" or indexRecord.name == targetName then
                 return rawIndex, indexRecord.name, indexRecord.isCharacterMacro, indexRecord.icon, "index"
@@ -469,7 +429,7 @@ function ClickCasting:ResolveTrackedMacroIndex(entry)
     return nil, nil, nil, nil, "missing"
 end
 
-local function BuildMacroCandidateIndexSet(macroIndex, macroName, isCharacterMacro)
+local function BuildMacroCandidateIndexSet(macroIndex, macroName, isCharacterMacro, macroRecords)
     local candidateSet = {}
     local indexNum = tonumber(macroIndex)
     if indexNum and indexNum > 0 then
@@ -477,19 +437,14 @@ local function BuildMacroCandidateIndexSet(macroIndex, macroName, isCharacterMac
     end
 
     if type(macroName) == "string" and macroName ~= "" then
-        if type(GetMacroIndexByName) == "function" then
-            local byNameIndex = tonumber(GetMacroIndexByName(macroName))
-            if byNameIndex and byNameIndex > 0 then
-                candidateSet[byNameIndex] = true
-            end
+        local byNameIndex = tonumber(GetMacroIndexByName(macroName))
+        if byNameIndex and byNameIndex > 0 then
+            candidateSet[byNameIndex] = true
         end
 
-        local _, numCharacter = GetNumMacros()
-        local maxIndex = (MAX_ACCOUNT_MACROS or 120) + (tonumber(numCharacter) or 0)
-        for index = 1, maxIndex do
-            local name = GetMacroNameAndIcon(index)
-            if name and name == macroName then
-                if isCharacterMacro == nil or IsCharacterMacroIndex(index) == (isCharacterMacro == true) then
+        for index, record in pairs(macroRecords) do
+            if record.name == macroName then
+                if isCharacterMacro == nil or record.isCharacterMacro == (isCharacterMacro == true) then
                     candidateSet[index] = true
                 end
             end
@@ -499,8 +454,9 @@ local function BuildMacroCandidateIndexSet(macroIndex, macroName, isCharacterMac
     return candidateSet
 end
 
-local function ResolveMacroSlots(macroIndex, macroName, isCharacterMacro)
-    local candidateIndexSet = BuildMacroCandidateIndexSet(macroIndex, macroName, isCharacterMacro)
+local function ResolveMacroSlots(macroIndex, macroName, isCharacterMacro, context)
+    local candidateIndexSet = BuildMacroCandidateIndexSet(macroIndex, macroName, isCharacterMacro, GetMacroRecords(context))
+    context.macroActionSlots = context.macroActionSlots or BuildMacroActionSlots()
 
     local function GetSlotMacroName(slot, actionID)
         if C_ActionBar and type(C_ActionBar.GetActionText) == "function" then
@@ -530,27 +486,27 @@ local function ResolveMacroSlots(macroIndex, macroName, isCharacterMacro)
     end
 
     local slots = {}
-    for slot = 1, ACTION_SLOT_MAX do
-        local actionType, actionID, subType = GetActionInfo(slot)
-        if actionType == "macro" then
-            local matched = false
-            local actionIndex = tonumber(actionID)
-            -- For macros with subType "spell", actionID is a spellID; never treat that
-            -- numeric ID as a macro index match.
-            if actionIndex and candidateIndexSet[actionIndex] and subType ~= "spell" then
+    local macroActionSlots = context.macroActionSlots
+    for i = 1, #macroActionSlots do
+        local macroSlot = macroActionSlots[i]
+        local slot, actionID = macroSlot.slot, macroSlot.actionID
+        local matched = false
+        local actionIndex = tonumber(actionID)
+        -- For macros with subType "spell", actionID is a spellID; never treat that
+        -- numeric ID as a macro index match.
+        if actionIndex and candidateIndexSet[actionIndex] and macroSlot.subType ~= "spell" then
+            matched = true
+        end
+
+        if not matched and type(macroName) == "string" and macroName ~= "" then
+            local slotMacroName = GetSlotMacroName(slot, actionID)
+            if slotMacroName and slotMacroName == macroName then
                 matched = true
             end
+        end
 
-            if not matched and type(macroName) == "string" and macroName ~= "" then
-                local slotMacroName = GetSlotMacroName(slot, actionID)
-                if slotMacroName and slotMacroName == macroName then
-                    matched = true
-                end
-            end
-
-            if matched then
-                slots[#slots + 1] = slot
-            end
+        if matched then
+            slots[#slots + 1] = slot
         end
     end
     return slots
@@ -615,7 +571,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Entry Resolution
 ----------------------------------------------------------------------------------------
-local function ResolveSpellEntry(entry, slotCommandIndex, specSpellIndex)
+local function ResolveSpellEntry(entry, context)
     local spellID = tonumber(entry.spellID)
     local baseSpellID = tonumber(entry.baseSpellID) or GetBaseSpellID(spellID)
     local spellInfo = nil
@@ -626,12 +582,10 @@ local function ResolveSpellEntry(entry, slotCommandIndex, specSpellIndex)
     local iconFileID = spellInfo and spellInfo.iconID or nil
 
     local cache = {
-        kind = "spell",
         actionType = "spell",
         actionID = spellID,
         displayName = displayName,
         iconFileID = iconFileID,
-        slots = {},
         keys = {},
         allKeys = {},
         state = "missing",
@@ -642,9 +596,18 @@ local function ResolveSpellEntry(entry, slotCommandIndex, specSpellIndex)
         return cache
     end
 
+    -- The stored base is captured in the spec the entry was added in (Holy's Holy Shock
+    -- overrides Crusader Strike). It stands in only while it still turns into the tracked
+    -- spell; Protection turns Crusader Strike into Blessed Hammer instead.
+    if baseSpellID ~= spellID and C_Spell.GetOverrideSpell(baseSpellID) ~= spellID then
+        baseSpellID = spellID
+    end
+
     if not IsSpellKnownForCurrentSpec(spellID, baseSpellID) then
-        local currentValidSet = type(specSpellIndex) == "table" and specSpellIndex.currentValidSpellSet or nil
-        local knownForCurrentSpec = type(currentValidSet) == "table" and (currentValidSet[spellID] or currentValidSet[baseSpellID])
+        context.specSpellIndex = context.specSpellIndex or BuildSpecSpellIndex()
+        local specSpellIndex = context.specSpellIndex
+        local currentValidSet = specSpellIndex.currentValidSpellSet
+        local knownForCurrentSpec = currentValidSet[spellID] or currentValidSet[baseSpellID]
         if knownForCurrentSpec then
             cache.state = "unknown"
             cache.reason = "spell_valid_current_spec_not_known"
@@ -664,15 +627,13 @@ local function ResolveSpellEntry(entry, slotCommandIndex, specSpellIndex)
 
     local slots = ResolveSpellSlots(spellID, baseSpellID)
 
-    cache.slots = slots
-    cache.baseSpellID = baseSpellID
     if #slots == 0 then
         cache.state = "missing"
         cache.reason = "spell_not_on_bar"
         return cache
     end
 
-    local keys = CollectKeysForSlots(slots, slotCommandIndex)
+    local keys = CollectKeysForSlots(slots, context)
     cache.allKeys = keys
     cache.keys = keys
     if #keys == 0 then
@@ -686,21 +647,19 @@ local function ResolveSpellEntry(entry, slotCommandIndex, specSpellIndex)
     return cache
 end
 
-local function ResolveMacroEntry(self, entry, slotCommandIndex)
+local function ResolveMacroEntry(self, entry, context)
     local cache = {
-        kind = "macro",
         actionType = "macro",
         actionID = nil,
         displayName = entry.macroName,
         iconFileID = entry.iconFileID,
-        slots = {},
         keys = {},
         allKeys = {},
         state = "missing",
         reason = "macro_missing",
     }
 
-    local resolvedIndex, macroName, isCharacterMacro, iconFileID, resolveReason = self:ResolveTrackedMacroIndex(entry)
+    local resolvedIndex, macroName, isCharacterMacro, iconFileID, resolveReason = self:ResolveTrackedMacroIndex(entry, GetMacroRecords(context))
     if not resolvedIndex then
         cache.reason = resolveReason or "macro_missing"
         return cache
@@ -709,21 +668,19 @@ local function ResolveMacroEntry(self, entry, slotCommandIndex)
     cache.actionID = resolvedIndex
     cache.displayName = macroName
     cache.iconFileID = iconFileID
-    cache.isCharacterMacro = isCharacterMacro == true
 
     if tonumber(entry.macroIndex) ~= resolvedIndex or entry.macroName ~= macroName or entry.iconFileID ~= iconFileID then
         self:UpdateTrackedMacroMetadata(entry.id, resolvedIndex, macroName, isCharacterMacro, iconFileID)
     end
 
-    local slots = ResolveMacroSlots(resolvedIndex, macroName, isCharacterMacro)
-    cache.slots = slots
+    local slots = ResolveMacroSlots(resolvedIndex, macroName, isCharacterMacro, context)
     if #slots == 0 then
         cache.state = "missing"
         cache.reason = "macro_not_on_bar"
         return cache
     end
 
-    local keys = CollectKeysForSlots(slots, slotCommandIndex)
+    local keys = CollectKeysForSlots(slots, context)
     cache.allKeys = keys
     cache.keys = keys
     if #keys == 0 then
@@ -737,40 +694,27 @@ local function ResolveMacroEntry(self, entry, slotCommandIndex)
     return cache
 end
 
-function ClickCasting:ResolveEntryForSpec(entry, slotCommandIndex, specSpellIndex)
+function ClickCasting:ResolveEntryForSpec(entry, context)
     if entry.kind == "spell" then
-        return ResolveSpellEntry(entry, slotCommandIndex, specSpellIndex)
+        return ResolveSpellEntry(entry, context)
     end
-    if entry.kind == "macro" then
-        return ResolveMacroEntry(self, entry, slotCommandIndex)
-    end
-
-    return {
-        kind = tostring(entry.kind),
-        state = "missing",
-        reason = "unsupported_kind",
-        keys = {},
-        allKeys = {},
-        slots = {},
-    }
+    return ResolveMacroEntry(self, entry, context)
 end
 
 ----------------------------------------------------------------------------------------
 -- Build Cache
 ----------------------------------------------------------------------------------------
 function ClickCasting:RebuildActiveSpecBindings()
-    local specKey = self:GetActiveSpecKey()
     local entries = self:GetTrackedEntries()
     local orderedEntries = BuildEntryOrder(entries)
-    local slotCommandIndex = self:BuildActionSlotCommandIndex()
-    local specSpellIndex = BuildSpecSpellIndex()
+    local context = {}
 
     local byEntryId = {}
     local byKey = {}
     local assignedKeysByEntry = {}
 
     for _, entry in ipairs(orderedEntries) do
-        local entryCache = self:ResolveEntryForSpec(entry, slotCommandIndex, specSpellIndex)
+        local entryCache = self:ResolveEntryForSpec(entry, context)
         byEntryId[entry.id] = entryCache
         assignedKeysByEntry[entry.id] = {}
 
@@ -805,11 +749,6 @@ function ClickCasting:RebuildActiveSpecBindings()
         end
     end
 
-    self:SetSpecBindings(specKey, {
-        byEntryId = byEntryId,
-        byKey = byKey,
-    })
-
     local activeKeyActions = {}
     for key, entryID in pairs(byKey) do
         local entryCache = byEntryId[entryID]
@@ -827,16 +766,10 @@ function ClickCasting:RebuildActiveSpecBindings()
         return a.key < b.key
     end)
 
-    self.runtimeActiveSpecKey = specKey
     self.runtimeActiveKeyActions = activeKeyActions
     self.runtimeActiveByEntry = byEntryId
 end
 
 function ClickCasting:GetRuntimeActiveKeyActions()
-    return self.runtimeActiveKeyActions or {}
-end
-
-function ClickCasting:GetCurrentSpecBindingCache()
-    local specKey = self:GetActiveSpecKey()
-    return self:GetSpecBindings(specKey)
+    return self.runtimeActiveKeyActions
 end

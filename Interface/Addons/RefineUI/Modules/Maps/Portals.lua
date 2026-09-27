@@ -31,14 +31,11 @@ local min = math.min
 local floor = math.floor
 local tinsert = table.insert
 local tsort = table.sort
-local pcall = pcall
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
 local UnitClass = UnitClass
 local UnitFactionGroup = UnitFactionGroup
 local PlayerHasToy = PlayerHasToy
-local IsUsableSpell = _G.IsUsableSpell
-local IsUsableItem = _G.IsUsableItem
 local canaccessvalue = _G.canaccessvalue
 local UIParent = _G.UIParent
 local Minimap = _G.Minimap
@@ -48,9 +45,7 @@ local C_SpellBook = C_SpellBook
 local C_Item = C_Item
 local C_ToyBox = C_ToyBox
 local C_Texture = C_Texture
-local GetSpellInfo = GetSpellInfo
-local GetSpellCooldown = GetSpellCooldown
-local GetItemCooldown = GetItemCooldown
+local C_Timer = C_Timer
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -330,14 +325,15 @@ local submenuEntriesByCategory = {}
 local activeSubmenuCategory
 local submenuScrollOffset = 0
 
-local pendingFullRefresh = false
-local portalsInitialized = false
+local portalsConfig
+local portalsDirty = true
 local portalsEventsRegistered = false
 local visibilityUpdateQueued = false
 
 local RowState = setmetatable({}, { __mode = "k" })
 
 local RequestFullRefresh
+local RebuildPortalEntries
 local ClosePortalsMenus
 local OpenSubmenu
 
@@ -358,16 +354,13 @@ local function ClampNumber(value, low, high, fallback)
     return number
 end
 
-local function GetPortalsConfig()
-    local dbPortals = Maps.db and Maps.db.Portals
-    local configPortals = Config and Config.Maps and Config.Maps.Portals
+-- Settings only change through saved variables, so this is read once in SetupPortals.
+local function ReadPortalsConfig()
+    local dbPortals = Maps.db.Portals
 
     local function ReadValue(key)
         if type(dbPortals) == "table" and dbPortals[key] ~= nil then
             return dbPortals[key]
-        end
-        if type(configPortals) == "table" and configPortals[key] ~= nil then
-            return configPortals[key]
         end
         return DEFAULT_PORTALS_CONFIG[key]
     end
@@ -472,17 +465,10 @@ local function IsDescendantOf(frame, ancestor)
         if current == ancestor then
             return true
         end
-
-        if type(current.GetParent) ~= "function" then
-            break
+        if current:IsForbidden() then
+            return false
         end
-
-        local ok, parent = pcall(current.GetParent, current)
-        if not ok then
-            break
-        end
-
-        current = parent
+        current = current:GetParent()
     end
 
     return false
@@ -673,13 +659,12 @@ local function BuildAvailableActionEntryMap(submenuMap)
     return availableByKey
 end
 
-local function BuildPinnedHearthstoneReplacementEntry(submenuMap)
+local function BuildPinnedHearthstoneReplacementEntry(availableByKey)
     local pinnedActions = GetPinnedActionsTable(false)
-    if type(submenuMap) ~= "table" or type(pinnedActions) ~= "table" then
+    if type(pinnedActions) ~= "table" then
         return nil, nil
     end
 
-    local availableByKey = BuildAvailableActionEntryMap(submenuMap)
     for i = 1, #HEARTHSTONE_TOY_IDS do
         local itemID = HEARTHSTONE_TOY_IDS[i]
         local key = ACTION_TYPE_TOY .. ":" .. tostring(itemID)
@@ -696,13 +681,11 @@ local function BuildPinnedHearthstoneReplacementEntry(submenuMap)
     return nil, nil
 end
 
-local function BuildPinnedRootEntries(submenuMap)
+local function BuildPinnedRootEntries(availableByKey)
     local pinnedActions = GetPinnedActionsTable(false)
-    if type(submenuMap) ~= "table" or type(pinnedActions) ~= "table" then
+    if type(pinnedActions) ~= "table" then
         return {}
     end
-
-    local availableByKey = BuildAvailableActionEntryMap(submenuMap)
 
     local pinnedEntries = {}
     for key, enabled in pairs(pinnedActions) do
@@ -728,187 +711,62 @@ local function IsSpellAllowedForFaction(spellID)
     return UnitFactionGroup("player") == requiredFaction
 end
 
+-- Legacy globals (GetSpellInfo, GetSpellCooldown, IsUsableSpell, IsPlayerSpell, ...) are
+-- removed or CVar-gated in 12.x, so only the C_ namespaces are used here.
 local function IsSpellKnownSafe(spellID)
-    if type(spellID) ~= "number" then
-        return false
-    end
-    if C_SpellBook and type(C_SpellBook.IsSpellKnown) == "function" and C_SpellBook.IsSpellKnown(spellID) then
-        return true
-    end
-    if C_SpellBook and type(C_SpellBook.IsSpellKnownOrInSpellBook) == "function" and C_SpellBook.IsSpellKnownOrInSpellBook(spellID) then
-        return true
-    end
-    if type(_G.IsPlayerSpell) == "function" and _G.IsPlayerSpell(spellID) then
-        return true
-    end
-    if type(_G.IsSpellKnown) == "function" and _G.IsSpellKnown(spellID) then
-        return true
-    end
-    return false
+    return C_SpellBook.IsSpellKnown(spellID) or C_SpellBook.IsSpellKnownOrInSpellBook(spellID)
 end
 
 local function GetSpellInfoSafe(spellID)
-    if type(spellID) ~= "number" then
-        return nil, nil
+    local info = C_Spell.GetSpellInfo(spellID)
+    if info then
+        return info.name, info.iconID
     end
-    if C_Spell and type(C_Spell.GetSpellInfo) == "function" then
-        local info = C_Spell.GetSpellInfo(spellID)
-        if type(info) == "table" then
-            return info.name, info.iconID or info.iconFileID
-        end
-    end
-    if type(GetSpellInfo) == "function" then
-        local name, _, icon = GetSpellInfo(spellID)
-        return name, icon
-    end
-    return nil, nil
 end
 
 local function GetSpellCooldownSafe(spellID)
-    if type(GetSpellCooldown) == "function" then
-        local startTime, duration = GetSpellCooldown(spellID)
-        if type(startTime) == "number" and type(duration) == "number" then
-            return startTime, duration
-        end
-    end
-
-    if C_Spell and type(C_Spell.GetSpellCooldown) == "function" then
-        local cooldownInfo = C_Spell.GetSpellCooldown(spellID)
-        if type(cooldownInfo) == "table" then
-            return cooldownInfo.startTime, cooldownInfo.duration
-        end
+    local cooldownInfo = C_Spell.GetSpellCooldown(spellID)
+    if cooldownInfo then
+        return cooldownInfo.startTime, cooldownInfo.duration
     end
     return 0, 0
 end
 
 local function GetItemCooldownSafe(itemID)
-    if type(GetItemCooldown) == "function" then
-        local startTime, duration = GetItemCooldown(itemID)
-        if type(startTime) == "number" and type(duration) == "number" then
-            return startTime, duration
-        end
-    end
-
-    if C_Item and type(C_Item.GetItemCooldown) == "function" then
-        local startTime, duration = C_Item.GetItemCooldown(itemID)
-        return startTime, duration
-    end
-    return 0, 0
-end
-
-local function GetItemCountSafe(itemID)
-    if C_Item and type(C_Item.GetItemCount) == "function" then
-        return C_Item.GetItemCount(itemID) or 0
-    end
-    return 0
+    local startTime, duration = C_Item.GetItemCooldown(itemID)
+    return startTime, duration
 end
 
 local function IsToyOwned(itemID)
-    return type(PlayerHasToy) == "function" and PlayerHasToy(itemID) == true
+    return PlayerHasToy(itemID) == true
 end
 
 local function IsSpellUsableSafe(spellID)
-    if type(spellID) ~= "number" then
-        return false
-    end
-
-    if type(IsUsableSpell) == "function" then
-        local isUsable = IsUsableSpell(spellID)
-        if isUsable == false then
-            return false
-        end
-    end
-
-    return true
+    return C_Spell.IsSpellUsable(spellID) == true
 end
 
 local function IsToyUsableSafe(itemID)
-    if type(itemID) ~= "number" then
-        return false
-    end
-
-    if C_ToyBox and type(C_ToyBox.IsToyUsable) == "function" then
-        return C_ToyBox.IsToyUsable(itemID) == true
-    end
-
-    return true
+    return C_ToyBox.IsToyUsable(itemID) == true
 end
 
 local function IsItemUsableSafe(itemID)
-    if type(itemID) ~= "number" then
-        return false
-    end
-
-    if type(IsUsableItem) == "function" then
-        local isUsable = IsUsableItem(itemID)
-        if isUsable == false then
-            return false
-        end
-    end
-
-    return true
+    return C_Item.IsUsableItem(itemID) == true
 end
 
 local function IsItemOwned(itemID)
-    return GetItemCountSafe(itemID) > 0
+    return C_Item.GetItemCount(itemID) > 0
 end
 
 local function GetItemIconSafe(itemID)
-    if C_Item and type(C_Item.GetItemIconByID) == "function" then
-        local iconID = C_Item.GetItemIconByID(itemID)
-        if type(iconID) == "number" then
-            return iconID
-        end
-    end
-    return nil
+    return C_Item.GetItemIconByID(itemID)
 end
 
 local function GetItemNameSafe(itemID)
-    if C_Item and type(C_Item.GetItemNameByID) == "function" then
-        local itemName = C_Item.GetItemNameByID(itemID)
-        if type(itemName) == "string" and itemName ~= "" then
-            return itemName
-        end
-    end
-
-    if C_Item and type(C_Item.GetItemInfo) == "function" then
-        local itemInfo = C_Item.GetItemInfo(itemID)
-        if type(itemInfo) == "table" then
-            return itemInfo.itemName or itemInfo.name
-        end
-        if type(itemInfo) == "string" and itemInfo ~= "" then
-            return itemInfo
-        end
-    end
-
-    return nil
+    return C_Item.GetItemNameByID(itemID)
 end
 
 local function GetToyInfoSafe(itemID)
-    if not C_ToyBox or type(C_ToyBox.GetToyInfo) ~= "function" then
-        return nil, nil
-    end
-
-    local toyInfoA, toyInfoB, toyInfoC = C_ToyBox.GetToyInfo(itemID)
-    if type(toyInfoA) == "table" then
-        return toyInfoA.toyName or toyInfoA.name, toyInfoA.icon
-    end
-
-    local toyName
-    local toyIcon
-
-    if type(toyInfoB) == "string" then
-        toyName = toyInfoB
-    elseif type(toyInfoA) == "string" then
-        toyName = toyInfoA
-    end
-
-    if type(toyInfoC) == "number" then
-        toyIcon = toyInfoC
-    elseif type(toyInfoB) == "number" then
-        toyIcon = toyInfoB
-    end
-
+    local _, toyName, toyIcon = C_ToyBox.GetToyInfo(itemID)
     return toyName, toyIcon
 end
 
@@ -1229,7 +1087,8 @@ local function BuildRootAndSubmenuEntries()
         newSubmenuEntriesByCategory[CATEGORY_KEY.MAGE_PORTALS] = magePortalEntries
     end
 
-    local pinnedHearthstoneReplacement = BuildPinnedHearthstoneReplacementEntry(newSubmenuEntriesByCategory)
+    local availableByKey = BuildAvailableActionEntryMap(newSubmenuEntriesByCategory)
+    local pinnedHearthstoneReplacement = BuildPinnedHearthstoneReplacementEntry(availableByKey)
     for i = 1, #HEARTHSTONE_TOP_LEVEL do
         if i == 1 and pinnedHearthstoneReplacement then
             tinsert(newRootEntries, pinnedHearthstoneReplacement)
@@ -1241,7 +1100,7 @@ local function BuildRootAndSubmenuEntries()
         end
     end
 
-    local pinnedEntries = BuildPinnedRootEntries(newSubmenuEntriesByCategory)
+    local pinnedEntries = BuildPinnedRootEntries(availableByKey)
 
     for i = 1, #pinnedEntries do
         tinsert(newRootEntries, pinnedEntries[i])
@@ -1351,7 +1210,7 @@ local function ConfigureRowAction(row, entry)
         return
     end
     if InCombatLockdown() then
-        pendingFullRefresh = true
+        portalsDirty = true
         return
     end
 
@@ -1592,11 +1451,7 @@ local function CreateMenuRow(parent, isSubmenuRow)
     row.cooldown:Hide()
 
     row.text = row:CreateFontString(nil, "OVERLAY")
-    if RefineUI.Font then
-        RefineUI.Font(row.text, 12, (Media and Media.Fonts and Media.Fonts.Default), "OUTLINE")
-    else
-        row.text:SetFont((Media and Media.Fonts and Media.Fonts.Default) or _G.STANDARD_TEXT_FONT, 12, "OUTLINE")
-    end
+    RefineUI.Font(row.text, 12, Media.Fonts.Default, "OUTLINE")
     row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
     row.text:SetPoint("RIGHT", row, "RIGHT", -18, 0)
     row.text:SetJustifyH("LEFT")
@@ -1719,6 +1574,11 @@ local function UpdatePortalsButtonVisibility(force)
     end
 end
 
+local function RunQueuedVisibilityUpdate()
+    visibilityUpdateQueued = false
+    UpdatePortalsButtonVisibility(false)
+end
+
 local function RequestPortalsButtonVisibilityUpdate(force)
     if not portalsButton then
         return
@@ -1733,17 +1593,7 @@ local function RequestPortalsButtonVisibilityUpdate(force)
         return
     end
     visibilityUpdateQueued = true
-
-    if _G.C_Timer and _G.C_Timer.After then
-        _G.C_Timer.After(0, function()
-            visibilityUpdateQueued = false
-            UpdatePortalsButtonVisibility(false)
-        end)
-        return
-    end
-
-    visibilityUpdateQueued = false
-    UpdatePortalsButtonVisibility(false)
+    C_Timer.After(0, RunQueuedVisibilityUpdate)
 end
 
 local function HookPortalsButtonVisibilityOwners()
@@ -1769,7 +1619,7 @@ local function UpdatePortalsButtonLayout()
         return
     end
 
-    local cfg = GetPortalsConfig()
+    local cfg = portalsConfig
 
     portalsButton:ClearAllPoints()
     RefineUI.Point(portalsButton, "BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", cfg.ButtonOffsetX, cfg.ButtonOffsetY)
@@ -1821,7 +1671,7 @@ local function RefreshSubmenuRows()
         return
     end
 
-    local cfg = GetPortalsConfig()
+    local cfg = portalsConfig
     local entries = submenuEntriesByCategory[activeSubmenuCategory]
     if type(entries) ~= "table" or #entries == 0 then
         portalsSubmenu:Hide()
@@ -1870,7 +1720,7 @@ local function RefreshRootRows()
         return
     end
 
-    local cfg = GetPortalsConfig()
+    local cfg = portalsConfig
     local rowCount = #rootEntries
 
     EnsureRootRows(rowCount)
@@ -1915,7 +1765,7 @@ local function PositionSubmenu(anchorRow)
         return
     end
 
-    local cfg = GetPortalsConfig()
+    local cfg = portalsConfig
     local screenWidth = UIParent:GetRight() or _G.GetScreenWidth()
     local menuRight = portalsMenu:GetRight() or 0
 
@@ -1981,8 +1831,8 @@ local function ToggleRootMenu()
         return
     end
 
-    if #rootEntries == 0 then
-        RequestFullRefresh(true)
+    if portalsDirty then
+        RebuildPortalEntries()
     end
     if #rootEntries == 0 then
         return
@@ -2003,7 +1853,7 @@ local function OnSubmenuMouseWheel(_, delta)
         return
     end
 
-    local cfg = GetPortalsConfig()
+    local cfg = portalsConfig
     local entries = submenuEntriesByCategory[activeSubmenuCategory]
     if type(entries) ~= "table" then
         return
@@ -2029,7 +1879,7 @@ local function CreatePortalsButton()
         return
     end
 
-    local cfg = GetPortalsConfig()
+    local cfg = portalsConfig
     portalsButton = CreateFrame("Button", PORTALS_BUTTON_NAME, Minimap)
     portalsButton:SetFrameStrata(Minimap:GetFrameStrata())
     portalsButton:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 30)
@@ -2078,7 +1928,7 @@ local function CreateMenus()
         return
     end
 
-    local cfg = GetPortalsConfig()
+    local cfg = portalsConfig
 
     clickCatcher = CreateFrame("Frame", PORTALS_CLICK_CATCHER_NAME, UIParent)
     clickCatcher:SetAllPoints(UIParent)
@@ -2086,20 +1936,19 @@ local function CreateMenus()
     clickCatcher:SetFrameLevel(5)
     clickCatcher:EnableMouse(true)
     clickCatcher:Hide()
+    local function IsMouseOverMenus()
+        return (portalsMenu:IsShown() and portalsMenu:IsMouseOver())
+            or (portalsSubmenu:IsShown() and portalsSubmenu:IsMouseOver())
+    end
+    local function CloseUnlessMouseOverMenus()
+        if not IsMouseOverMenus() then
+            ClosePortalsMenus()
+        end
+    end
     clickCatcher:SetScript("OnMouseUp", function()
-        if (portalsMenu and portalsMenu:IsShown() and portalsMenu:IsMouseOver()) or (portalsSubmenu and portalsSubmenu:IsShown() and portalsSubmenu:IsMouseOver()) then
-            return
+        if not IsMouseOverMenus() then
+            C_Timer.After(0, CloseUnlessMouseOverMenus)
         end
-        if _G.C_Timer and _G.C_Timer.After then
-            _G.C_Timer.After(0, function()
-                if (portalsMenu and portalsMenu:IsShown() and portalsMenu:IsMouseOver()) or (portalsSubmenu and portalsSubmenu:IsShown() and portalsSubmenu:IsMouseOver()) then
-                    return
-                end
-                ClosePortalsMenus()
-            end)
-            return
-        end
-        ClosePortalsMenus()
     end)
 
     portalsMenu = CreateFrame("Frame", PORTALS_MENU_NAME, UIParent, "BackdropTemplate")
@@ -2147,21 +1996,13 @@ local function CreateMenus()
     portalsSubmenu:SetScript("OnMouseWheel", OnSubmenuMouseWheel)
 
     submenuScrollUpIndicator = portalsSubmenu:CreateFontString(nil, "OVERLAY")
-    if RefineUI.Font then
-        RefineUI.Font(submenuScrollUpIndicator, 11, (Media and Media.Fonts and Media.Fonts.Default), "OUTLINE")
-    else
-        submenuScrollUpIndicator:SetFont((Media and Media.Fonts and Media.Fonts.Default) or _G.STANDARD_TEXT_FONT, 11, "OUTLINE")
-    end
+    RefineUI.Font(submenuScrollUpIndicator, 11, Media.Fonts.Default, "OUTLINE")
     submenuScrollUpIndicator:SetPoint("TOPRIGHT", portalsSubmenu, "TOPRIGHT", -8, -4)
     submenuScrollUpIndicator:SetText("▲")
     submenuScrollUpIndicator:Hide()
 
     submenuScrollDownIndicator = portalsSubmenu:CreateFontString(nil, "OVERLAY")
-    if RefineUI.Font then
-        RefineUI.Font(submenuScrollDownIndicator, 11, (Media and Media.Fonts and Media.Fonts.Default), "OUTLINE")
-    else
-        submenuScrollDownIndicator:SetFont((Media and Media.Fonts and Media.Fonts.Default) or _G.STANDARD_TEXT_FONT, 11, "OUTLINE")
-    end
+    RefineUI.Font(submenuScrollDownIndicator, 11, Media.Fonts.Default, "OUTLINE")
     submenuScrollDownIndicator:SetPoint("BOTTOMRIGHT", portalsSubmenu, "BOTTOMRIGHT", -8, 4)
     submenuScrollDownIndicator:SetText("▼")
     submenuScrollDownIndicator:Hide()
@@ -2173,14 +2014,17 @@ end
 ----------------------------------------------------------------------------------------
 -- Refresh Pipeline
 ----------------------------------------------------------------------------------------
-local function RebuildPortalEntries()
+local function IsPortalsMenuShown()
+    return portalsMenu and portalsMenu:IsShown()
+end
+
+RebuildPortalEntries = function()
     if InCombatLockdown() then
-        pendingFullRefresh = true
+        portalsDirty = true
         return
     end
 
-    pendingFullRefresh = false
-    UpdatePortalsButtonLayout()
+    portalsDirty = false
 
     local newRootEntries, newSubmenuEntriesByCategory = BuildRootAndSubmenuEntries()
     rootEntries = newRootEntries
@@ -2197,14 +2041,16 @@ local function RebuildPortalEntries()
         end
     end
 
-    if portalsMenu and portalsMenu:IsShown() and #rootEntries == 0 then
+    if IsPortalsMenuShown() and #rootEntries == 0 then
         ClosePortalsMenus()
     end
 end
 
+-- Entries are rebuilt only while the menu is open; otherwise they are marked
+-- dirty and rebuilt when the menu is next opened.
 RequestFullRefresh = function(immediate)
-    if InCombatLockdown() then
-        pendingFullRefresh = true
+    portalsDirty = true
+    if InCombatLockdown() or not IsPortalsMenuShown() then
         return
     end
 
@@ -2219,63 +2065,44 @@ end
 ----------------------------------------------------------------------------------------
 -- Events
 ----------------------------------------------------------------------------------------
+local function OnPortalsDataChanged()
+    RequestFullRefresh()
+end
+
 local function RegisterPortalsEvents()
     if portalsEventsRegistered then
         return
     end
 
-    RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
-        RequestFullRefresh()
-    end, EVENT_KEY.PLAYER_ENTERING_WORLD)
-
-    RefineUI:RegisterEventCallback("SPELLS_CHANGED", function()
-        RequestFullRefresh()
-    end, EVENT_KEY.SPELLS_CHANGED)
-
-    RefineUI:RegisterEventCallback("PLAYER_TALENT_UPDATE", function()
-        RequestFullRefresh()
-    end, EVENT_KEY.PLAYER_TALENT_UPDATE)
-
+    RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", OnPortalsDataChanged, EVENT_KEY.PLAYER_ENTERING_WORLD)
+    RefineUI:RegisterEventCallback("SPELLS_CHANGED", OnPortalsDataChanged, EVENT_KEY.SPELLS_CHANGED)
+    RefineUI:RegisterEventCallback("PLAYER_TALENT_UPDATE", OnPortalsDataChanged, EVENT_KEY.PLAYER_TALENT_UPDATE)
     RefineUI:RegisterEventCallback("PLAYER_SPECIALIZATION_CHANGED", function(_, unitTarget)
         if unitTarget == "player" then
             RequestFullRefresh()
         end
     end, EVENT_KEY.PLAYER_SPECIALIZATION_CHANGED)
-
-    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", function()
-        RequestFullRefresh()
-    end, EVENT_KEY.BAG_UPDATE_DELAYED)
-
-    RefineUI:RegisterEventCallback("NEW_TOY_ADDED", function()
-        RequestFullRefresh()
-    end, EVENT_KEY.NEW_TOY_ADDED)
-
-    RefineUI:RegisterEventCallback("TOYS_UPDATED", function()
-        RequestFullRefresh()
-    end, EVENT_KEY.TOYS_UPDATED)
-
-    RefineUI:RegisterEventCallback("SPELL_UPDATE_COOLDOWN", function()
-        RefreshVisibleCooldowns()
-    end, EVENT_KEY.SPELL_UPDATE_COOLDOWN)
-
-    RefineUI:RegisterEventCallback("BAG_UPDATE_COOLDOWN", function()
-        RefreshVisibleCooldowns()
-    end, EVENT_KEY.BAG_UPDATE_COOLDOWN)
+    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", OnPortalsDataChanged, EVENT_KEY.BAG_UPDATE_DELAYED)
+    RefineUI:RegisterEventCallback("NEW_TOY_ADDED", OnPortalsDataChanged, EVENT_KEY.NEW_TOY_ADDED)
+    RefineUI:RegisterEventCallback("TOYS_UPDATED", OnPortalsDataChanged, EVENT_KEY.TOYS_UPDATED)
+    RefineUI:RegisterEventCallback("SPELL_UPDATE_COOLDOWN", RefreshVisibleCooldowns, EVENT_KEY.SPELL_UPDATE_COOLDOWN)
+    RefineUI:RegisterEventCallback("BAG_UPDATE_COOLDOWN", RefreshVisibleCooldowns, EVENT_KEY.BAG_UPDATE_COOLDOWN)
 
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-        if pendingFullRefresh then
+        if portalsDirty then
             RequestFullRefresh(true)
         else
             RefreshVisibleCooldowns()
         end
     end, EVENT_KEY.PLAYER_REGEN_ENABLED)
 
-    RefineUI:RegisterUnitEventCallback("UNIT_SPELLCAST_START", "player", function()
-        local cfg = GetPortalsConfig()
-        if cfg.CloseOnCastStart then
-            ClosePortalsMenus()
-        end
-    end, EVENT_KEY.UNIT_SPELLCAST_START)
+    if portalsConfig.CloseOnCastStart then
+        RefineUI:RegisterUnitEventCallback("UNIT_SPELLCAST_START", "player", function()
+            if IsPortalsMenuShown() then
+                ClosePortalsMenus()
+            end
+        end, EVENT_KEY.UNIT_SPELLCAST_START)
+    end
 
     portalsEventsRegistered = true
 end
@@ -2286,20 +2113,12 @@ end
 function Maps:SetupPortals()
     MigratePortalsConfigDefaults()
 
-    local cfg = GetPortalsConfig()
-    if not cfg.Enable then
+    portalsConfig = ReadPortalsConfig()
+    if not portalsConfig.Enable then
         return
     end
 
     CreatePortalsButton()
     CreateMenus()
     RegisterPortalsEvents()
-
-    if portalsInitialized then
-        RequestFullRefresh()
-        return
-    end
-
-    portalsInitialized = true
-    RequestFullRefresh(true)
 end

@@ -62,6 +62,7 @@ local combatStartTime = 0
 local inCombat = false
 local afkStartTime = nil
 local clockTimer = nil
+local shownSeconds = nil
 
 ----------------------------------------------------------------------------------------
 -- Helpers
@@ -99,12 +100,6 @@ local function ResolveRelativeFrame(relativeTo)
         return _G[relativeTo] or UIParent
     end
     return relativeTo or UIParent
-end
-
-local function FormatElapsedTime(seconds)
-    local minutes = floor(seconds / 60)
-    local remainingSeconds = floor(seconds % 60)
-    return format("%02d:%02d", minutes, remainingSeconds)
 end
 
 local function FormatClockTime(hour, minute, useAmPm)
@@ -232,29 +227,30 @@ function GameTime:UpdateClockDisplay()
     self.Text:SetTextColor(1, 1, 1)
 end
 
-function GameTime:UpdateCombatTimerDisplay()
-    if not (self.Text and self:IsShowingElapsedTimer()) then
-        return
+-- Update job tick: the mm:ss text only changes once per second.
+local function UpdateElapsedText()
+    local seconds = floor(GetTime() - (afkStartTime or combatStartTime))
+    if seconds ~= shownSeconds then
+        shownSeconds = seconds
+        GameTime.Text:SetFormattedText("%02d:%02d", floor(seconds / 60), seconds % 60)
     end
+end
 
+function GameTime:UpdateCombatTimerDisplay()
     if afkStartTime then
-        self.Text:SetText(FormatElapsedTime(GetTime() - afkStartTime))
         self.Text:SetTextColor(1, 0.82, 0)
     else
-        self.Text:SetText(FormatElapsedTime(GetTime() - combatStartTime))
         self.Text:SetTextColor(1, 0.2, 0.2)
     end
+
+    shownSeconds = nil
+    UpdateElapsedText()
 end
 
 function GameTime:ScheduleNextClockUpdate()
     CancelClockTimer()
 
     if self:IsShowingElapsedTimer() or not self.Text then
-        return
-    end
-
-    if not C_Timer or not C_Timer.NewTimer then
-        self:UpdateClockDisplay()
         return
     end
 
@@ -266,17 +262,10 @@ function GameTime:ScheduleNextClockUpdate()
 end
 
 function GameTime:SetElapsedUpdateEnabled(enabled)
-    if not (RefineUI.IsUpdateJobRegistered and RefineUI:IsUpdateJobRegistered(DISPLAY_JOB_KEY)) then
-        return
-    end
-
-    if enabled and RefineUI.SetUpdateJobInterval then
+    if enabled then
         RefineUI:SetUpdateJobInterval(DISPLAY_JOB_KEY, afkStartTime and 1 or self:GetCombatTimerInterval())
     end
-
-    if RefineUI.SetUpdateJobEnabled then
-        RefineUI:SetUpdateJobEnabled(DISPLAY_JOB_KEY, enabled, true)
-    end
+    RefineUI:SetUpdateJobEnabled(DISPLAY_JOB_KEY, enabled, true)
 end
 
 function GameTime:RefreshDisplay()
@@ -434,16 +423,10 @@ function GameTime:OnEnable()
     self.db = cfg
     self.db.DisplayStyle = NormalizeDisplayStyle(self.db.DisplayStyle)
     self.db.Scale = ClampScale(self.db.Scale)
-    if self.db.CombatTimerEnable == nil then
-        self.db.CombatTimerEnable = true
-    end
 
-    local frame = self.Frame or _G[FRAME_NAME]
-    if not frame then
-        frame = CreateFrame("Button", FRAME_NAME, UIParent)
-        frame:SetClampedToScreen(true)
-        frame:RegisterForClicks("LeftButtonUp")
-    end
+    local frame = CreateFrame("Button", FRAME_NAME, UIParent)
+    frame:SetClampedToScreen(true)
+    frame:RegisterForClicks("LeftButtonUp")
     frame.editModeName = EDIT_MODE_LABEL
     frame:SetScript("OnClick", function(_, button)
         if button == "LeftButton" and not inCombat and type(_G.ToggleCalendar) == "function" then
@@ -451,12 +434,9 @@ function GameTime:OnEnable()
         end
     end)
 
-    local text = self.Text
-    if not text then
-        text = frame:CreateFontString(nil, "OVERLAY")
-        RefineUI.Point(text, "CENTER", frame, "CENTER", 0, 0)
-        text:SetAlpha(0.5)
-    end
+    local text = frame:CreateFontString(nil, "OVERLAY")
+    RefineUI.Point(text, "CENTER", frame, "CENTER", 0, 0)
+    text:SetAlpha(0.5)
 
     self.Frame = frame
     self.Text = text
@@ -465,16 +445,10 @@ function GameTime:OnEnable()
     self:ApplyFramePosition()
     self:ApplyScale()
 
-    if RefineUI.RegisterUpdateJob and not (RefineUI.IsUpdateJobRegistered and RefineUI:IsUpdateJobRegistered(DISPLAY_JOB_KEY)) then
-        RefineUI:RegisterUpdateJob(DISPLAY_JOB_KEY, self:GetCombatTimerInterval(), function()
-            GameTime:UpdateCombatTimerDisplay()
-        end, {
-            enabled = false,
-            predicate = function()
-                return GameTime:IsShowingElapsedTimer() and GameTime.Text ~= nil
-            end,
-        })
-    end
+    -- Enabled only while an elapsed timer is showing (see RefreshDisplay).
+    RefineUI:RegisterUpdateJob(DISPLAY_JOB_KEY, self:GetCombatTimerInterval(), UpdateElapsedText, {
+        enabled = false,
+    })
 
     self:RegisterEditModeSettings()
     self:RegisterEditModeFrame()

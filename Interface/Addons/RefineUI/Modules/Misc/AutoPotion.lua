@@ -4,14 +4,13 @@ local AutoPotion = RefineUI:RegisterModule("AutoPotion")
 ----------------------------------------------------------------------------------------
 -- Lib Globals
 ----------------------------------------------------------------------------------------
-local GetItemCount = C_Item and C_Item.GetItemCount or GetItemCount
-local GetSpellName = C_Spell and C_Spell.GetSpellName or GetSpellInfo
+local GetItemCount = C_Item.GetItemCount
+local GetSpellName = C_Spell.GetSpellName
+local IsSpellKnown = C_SpellBook.IsSpellKnown
 local CreateMacro, EditMacro, GetMacroInfo = CreateMacro, EditMacro, GetMacroInfo
 local InCombatLockdown = InCombatLockdown
-local IsSpellKnown = IsSpellKnown
 local table_insert = table.insert
 local table_concat = table.concat
-local pairs, ipairs = pairs, ipairs
 
 ----------------------------------------------------------------------------------------
 -- Constants & Item Lists (Retail/Midnight Focus)
@@ -80,7 +79,7 @@ local function UpdateMacro()
     local bestHS = GetBestItem(ITEMS.HEALTHSTONES)
     local bestPot = GetBestItem(ITEMS.POTIONS)
     local recuperateName = GetSpellName(RECUPERATE_ID)
-    local hasRecuperate = recuperateName and (IsSpellKnown(RECUPERATE_ID) or IsSpellKnown(RECUPERATE_ID, true))
+    local hasRecuperate = recuperateName and IsSpellKnown(RECUPERATE_ID)
 
     local sequence = {}
     if bestHS then table_insert(sequence, "item:" .. bestHS) end
@@ -134,22 +133,20 @@ end
 ----------------------------------------------------------------------------------------
 
 function AutoPotion:OnEnable()
-    -- Register for bag updates (Debounced)
-    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", function()
+    local function QueueUpdate()
         RefineUI:Debounce("AutoPotionUpdate", 0.5, UpdateMacro)
-    end)
+    end
+
+    -- Bag contents and known spells (login spellbook load, spec/talent changes)
+    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", QueueUpdate, "AutoPotion:Bags")
+    RefineUI:RegisterEventCallback("SPELLS_CHANGED", QueueUpdate, "AutoPotion:Spells")
 
     -- Handle combat exit
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
         if needsUpdate then
             UpdateMacro()
         end
-    end)
-
-    -- Handle talent changes
-    RefineUI:RegisterEventCallback("TRAIT_CONFIG_UPDATED", function()
-        UpdateMacro()
-    end)
+    end, "AutoPotion:CombatEnd")
 
     -- Initial load
     UpdateMacro()

@@ -68,7 +68,46 @@ function Collections:IsCollected(kind, id)
     end
 end
 
+-- Best-effort identity from the data available now; never requests item loads.
+-- itemInfo is the full link (or an item ID when no link exists) for transmog.
+-- exactSource judges transmog by this item's own source instead of by whether
+-- any source already unlocked the same appearance.
+-- Returns kind, collection ID, owned (true/false/nil).
+function Collections:ClassifyItem(itemID, itemInfo, exactSource)
+    if ValidID(itemID) then
+        local mountID = C_MountJournal.GetMountFromItem(itemID)
+        if ValidID(mountID) then
+            return "mounts", mountID, select(11, C_MountJournal.GetMountInfoByID(mountID))
+        end
+        local petName, _, _, _, _, _, _, _, _, _, _, _, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
+        if petName then
+            local owned
+            if ValidID(speciesID) then
+                local count = C_PetJournal.GetNumCollectedInfo(speciesID)
+                if type(count) == "number" then owned = count > 0 end
+            end
+            return "pets", ValidID(speciesID) and speciesID or itemID, owned
+        end
+        -- GetToyLink also identifies toys whose item data is not loaded yet.
+        local toyID = C_ToyBox.GetToyInfo(itemID)
+        if not ValidID(toyID) and C_ToyBox.GetToyLink(itemID) then toyID = itemID end
+        if ValidID(toyID) then
+            return "toys", toyID, PlayerHasToy(toyID)
+        end
+    end
+    if not itemInfo then return end
+    local appearanceID, sourceID = C_TransmogCollection.GetItemInfo(itemInfo)
+    if ValidID(appearanceID) and ValidID(sourceID) then
+        if exactSource then
+            local info = C_TransmogCollection.GetSourceInfo(sourceID)
+            return "appearances", appearanceID, info and info.isCollected
+        end
+        return "appearances", appearanceID, self:IsAppearanceCollected(appearanceID, sourceID)
+    end
+end
+
 -- Identity is independent of ownership. Preserve the full difficulty-specific link.
+-- Waits for item data so durable manifests never record a false "not collectible".
 -- Returns kind, collection ID, owned (true/false/nil), pending item data.
 function Collections:ResolveItem(item)
     local itemID, link = item.itemID, item.link
@@ -86,31 +125,7 @@ function Collections:ResolveItem(item)
         and C_TransmogCollection and C_TransmogCollection.GetItemInfo) then
         return nil, nil, nil, true
     end
-    local mountID = C_MountJournal.GetMountFromItem(itemID)
-    if ValidID(mountID) then
-        local owned
-        if C_MountJournal.GetMountInfoByID then owned = select(11, C_MountJournal.GetMountInfoByID(mountID)) end
-        return "mounts", mountID, owned
-    end
-    local petName, _, _, _, _, _, _, _, _, _, _, _, speciesID = C_PetJournal.GetPetInfoByItemID(itemID)
-    if petName then
-        local owned
-        if ValidID(speciesID) and C_PetJournal.GetNumCollectedInfo then
-            local count = C_PetJournal.GetNumCollectedInfo(speciesID)
-            if type(count) == "number" then owned = count > 0 end
-        end
-        return "pets", ValidID(speciesID) and speciesID or itemID, owned
-    end
-    local toyID = C_ToyBox.GetToyInfo(itemID)
-    if ValidID(toyID) then
-        local owned
-        if PlayerHasToy then owned = PlayerHasToy(toyID) end
-        return "toys", toyID, owned
-    end
-    local appearanceID, sourceID = C_TransmogCollection.GetItemInfo(link)
-    if ValidID(appearanceID) and ValidID(sourceID) then
-        return "appearances", appearanceID, self:IsAppearanceCollected(appearanceID, sourceID)
-    end
+    return self:ClassifyItem(itemID, link)
 end
 
 -- Tokens contribute their resulting visuals, not a second synthetic collectible.

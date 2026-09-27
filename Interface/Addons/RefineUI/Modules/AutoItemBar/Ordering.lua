@@ -248,16 +248,13 @@ function AutoItemBar:MoveEnabledTokenToIndex(token, targetIndex)
     tremove(source, currentIndex)
     tinsert(source, targetIndex, token)
     self:RebuildEnabledOrder()
-    self:RebuildTrackedLookup()
-
-    if InCombatLockdown() then
-        self._pendingCombatRefresh = true
-    end
-    if self.RefreshCategoryManagerWindow then
-        self:RefreshCategoryManagerWindow()
-    end
-    self:RequestUpdate()
+    self:OnEntriesChanged()
     return true
+end
+
+function AutoItemBar:OnEntriesChanged()
+    self:RefreshCategoryManagerWindow()
+    self:RequestUpdate()
 end
 
 function AutoItemBar:NormalizeCategoryOrder()
@@ -325,46 +322,7 @@ function AutoItemBar:SetTrackingCategoryEnabled(categoryKey, enabled)
     cfg.CategoryEnabled[categoryKey] = enabled and true or false
     self:NormalizeCategoryOrder()
     self:RebuildEnabledOrder()
-
-    if self.RefreshCategoryManagerWindow then
-        self:RefreshCategoryManagerWindow()
-    end
-    self:RequestUpdate()
-end
-
-function AutoItemBar:MoveCategoryBefore(dragKey, targetKey)
-    if not dragKey or not targetKey or dragKey == targetKey then return false end
-
-    local cfg = self:GetConfig()
-    if cfg.CategoryEnabled[dragKey] == false or cfg.CategoryEnabled[targetKey] == false then
-        return false
-    end
-
-    local dragIndex, targetIndex
-    for i, key in ipairs(cfg.CategoryOrder) do
-        if key == dragKey then
-            dragIndex = i
-        elseif key == targetKey then
-            targetIndex = i
-        end
-    end
-
-    if not dragIndex or not targetIndex then
-        return false
-    end
-
-    tremove(cfg.CategoryOrder, dragIndex)
-    if dragIndex < targetIndex then
-        targetIndex = targetIndex - 1
-    end
-    tinsert(cfg.CategoryOrder, targetIndex, dragKey)
-
-    self:NormalizeCategoryOrder()
-    if self.RefreshCategoryManagerWindow then
-        self:RefreshCategoryManagerWindow()
-    end
-    self:RequestUpdate()
-    return true
+    self:OnEntriesChanged()
 end
 
 function AutoItemBar:MoveCategoryToEnabledIndex(dragKey, enabledIndex)

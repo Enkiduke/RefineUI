@@ -55,19 +55,6 @@ local function IsValidInstanceID(instanceID)
     return type(instanceID) == "number" and instanceID > 0
 end
 
-local function NormalizeTextToken(text)
-    if type(text) ~= "string" then
-        return ""
-    end
-
-    local token = text:lower()
-    token = token:gsub("|c%x%x%x%x%x%x%x%x", "")
-    token = token:gsub("|r", "")
-    token = token:gsub("[%s]+", "")
-    token = token:gsub("[%p%c]+", "")
-    return token
-end
-
 ----------------------------------------------------------------------------------------
 -- UI Creation
 ----------------------------------------------------------------------------------------
@@ -119,8 +106,8 @@ function AdventureGuideInstances:CreateCustomPanel(infoFrame)
     local panelAnchorFrame = infoFrame.model or infoFrame.detailsScroll
     panel:SetPoint("TOPLEFT", panelAnchorFrame, "TOPLEFT", 0, 0)
     panel:SetPoint("BOTTOMRIGHT", panelAnchorFrame, "BOTTOMRIGHT", 0, 0)
-    panel:SetFrameStrata("DIALOG")
-    panel:SetFrameLevel((infoFrame:GetFrameLevel() or 1) + 40)
+    -- Stay in the journal's strata so other windows can still cover the panel.
+    panel:SetFrameLevel(infoFrame:GetFrameLevel() + 40)
     panel:Hide()
 
     panel.Bg = panel:CreateTexture(nil, "BACKGROUND")
@@ -233,15 +220,7 @@ function AdventureGuideInstances:GetCurrentJournalEncounterID()
 end
 
 function AdventureGuideInstances:GetBossFilterAllLabel()
-    local allLabel = _G.ALL or "All"
-    local bossLabel = _G.BOSSES or "Bosses"
-    if type(allLabel) ~= "string" or allLabel == "" then
-        allLabel = "All"
-    end
-    if type(bossLabel) ~= "string" or bossLabel == "" then
-        bossLabel = "Bosses"
-    end
-    return format("%s %s", allLabel, bossLabel)
+    return format("%s %s", _G.ALL, _G.BOSSES)
 end
 
 function AdventureGuideInstances:BuildBossFilterOptions()
@@ -274,7 +253,7 @@ function AdventureGuideInstances:BuildBossFilterOptions()
         options[#options + 1] = {
             encounterID = encounterID,
             label = label,
-            token = NormalizeTextToken(label),
+            token = self:NormalizeCompletionToken(label),
         }
         optionMap[encounterID] = true
 
@@ -357,17 +336,12 @@ function AdventureGuideInstances:SetupBossFilterDropdown()
     end)
 end
 
+-- The label follows the selected radio. SetDefaultText only applies when nothing is
+-- selected, so a programmatic selection change (for example opening a boss) needs Update.
 function AdventureGuideInstances:UpdateBossFilterDropdownText()
-    local panel = self.customPanel
-    local dropdown = panel and panel.BossDropdown
-    if not dropdown then
-        return
-    end
-
-    local selectedOption = self:GetSelectedBossFilterOption()
-    local label = selectedOption and selectedOption.label or self:GetBossFilterAllLabel()
-    if dropdown.SetDefaultText then
-        dropdown:SetDefaultText(label)
+    local dropdown = self.customPanel and self.customPanel.BossDropdown
+    if dropdown and dropdown:GetMenuDescription() then
+        dropdown:Update()
     end
 end
 
@@ -419,28 +393,29 @@ end
 ----------------------------------------------------------------------------------------
 -- Panel State
 ----------------------------------------------------------------------------------------
-function AdventureGuideInstances:SetCustomTabSelected(selected)
-    local tab = self.customTabButton
-    if not tab then
-        return
-    end
-
+local function SetTabSelected(tab, selected)
+    tab.selected:SetShown(selected)
+    tab.unselected:SetShown(not selected)
     if selected then
-        if tab.selected then
-            tab.selected:Show()
-        end
-        if tab.unselected then
-            tab.unselected:Hide()
-        end
         tab:LockHighlight()
     else
-        if tab.selected then
-            tab.selected:Hide()
-        end
-        if tab.unselected then
-            tab.unselected:Show()
-        end
         tab:UnlockHighlight()
+    end
+end
+
+-- Accepts nil entries so optional native frames can be listed inline.
+local function SetFramesShown(shown, ...)
+    for index = 1, select("#", ...) do
+        local frame = select(index, ...)
+        if frame then
+            frame:SetShown(shown)
+        end
+    end
+end
+
+function AdventureGuideInstances:SetCustomTabSelected(selected)
+    if self.customTabButton then
+        SetTabSelected(self.customTabButton, selected)
     end
 end
 
@@ -453,13 +428,7 @@ function AdventureGuideInstances:ClearNativeTabSelection()
     for _, tabKey in ipairs(NATIVE_TAB_KEYS) do
         local tab = infoFrame[tabKey]
         if tab then
-            if tab.selected then
-                tab.selected:Hide()
-            end
-            if tab.unselected then
-                tab.unselected:Show()
-            end
-            tab:UnlockHighlight()
+            SetTabSelected(tab, false)
         end
     end
 end
@@ -470,63 +439,26 @@ function AdventureGuideInstances:HideNativeEncounterContent()
         return
     end
 
-    if infoFrame.BG then
-        infoFrame.BG:Hide()
-    end
-    if infoFrame.leftShadow then
-        infoFrame.leftShadow:Hide()
-    end
-    if infoFrame.model and infoFrame.model.dungeonBG then
-        infoFrame.model.dungeonBG:Hide()
-    end
-
-    if infoFrame.overviewScroll then
-        infoFrame.overviewScroll:Hide()
-    end
-    if infoFrame.LootContainer then
-        infoFrame.LootContainer:Hide()
-        if infoFrame.LootContainer.classClearFilter then
-            infoFrame.LootContainer.classClearFilter:Hide()
-        end
-    end
-    if infoFrame.detailsScroll then
-        infoFrame.detailsScroll:Hide()
-    end
-    if infoFrame.model then
-        infoFrame.model:Hide()
-    end
-    if infoFrame.overviewScroll and infoFrame.overviewScroll.child then
-        infoFrame.overviewScroll.child:Hide()
-    end
-    if infoFrame.detailsScroll and infoFrame.detailsScroll.child then
-        infoFrame.detailsScroll.child:Hide()
-    end
-    if encounterFrame and encounterFrame.overviewFrame then
-        encounterFrame.overviewFrame:Hide()
-    end
-    if encounterFrame and encounterFrame.infoFrame then
-        encounterFrame.infoFrame:Hide()
-    end
-
-    if type(_G.EncounterJournal_HideCreatures) == "function" then
-        _G.EncounterJournal_HideCreatures()
-    end
-
-    if infoFrame.encounterTitle then
-        infoFrame.encounterTitle:Hide()
-    end
-    if infoFrame.difficulty then
-        infoFrame.difficulty:Hide()
-    end
-    if infoFrame.rightShadow then
-        infoFrame.rightShadow:Hide()
-    end
+    local model, overview, details, loot = infoFrame.model, infoFrame.overviewScroll, infoFrame.detailsScroll, infoFrame.LootContainer
+    SetFramesShown(false,
+        infoFrame.BG, infoFrame.leftShadow, infoFrame.rightShadow, infoFrame.encounterTitle, infoFrame.difficulty,
+        model, model and model.dungeonBG, overview, overview and overview.child, details, details and details.child,
+        loot, loot and loot.classClearFilter, encounterFrame.overviewFrame, encounterFrame.infoFrame,
+        -- Instance lore sits on Blizzard's HIGH strata, above this panel, so it must be hidden.
+        encounterFrame.instance)
+    _G.EncounterJournal_HideCreatures()
 end
 
 function AdventureGuideInstances:ShowNativeEncounterContent()
     local journal, encounterFrame, infoFrame = GetEncounterFrames()
-    if not journal or not encounterFrame or not infoFrame then
+    if not infoFrame then
         return
+    end
+
+    -- Blizzard shows the lore on instance pages (DisplayInstance) and hides it on boss
+    -- pages (ClearDetails). Restore that even while hidden, so reopening is correct.
+    if encounterFrame.instance then
+        encounterFrame.instance:SetShown(journal.encounterID == nil)
     end
 
     if not journal:IsShown() or not encounterFrame:IsShown() then
@@ -535,45 +467,16 @@ function AdventureGuideInstances:ShowNativeEncounterContent()
 
     self:ShowNativeDifficultyByCurrentTab()
 
-    if infoFrame.BG then
-        infoFrame.BG:Show()
-    end
-    if infoFrame.leftShadow then
-        infoFrame.leftShadow:Show()
-    end
-    if infoFrame.model and infoFrame.model.dungeonBG then
-        infoFrame.model.dungeonBG:Show()
-    end
+    local model, overview, details = infoFrame.model, infoFrame.overviewScroll, infoFrame.detailsScroll
+    SetFramesShown(true,
+        infoFrame.BG, infoFrame.leftShadow, model and model.dungeonBG, overview and overview.child,
+        details and details.child, encounterFrame.overviewFrame, encounterFrame.infoFrame)
 
-    if infoFrame.overviewScroll and infoFrame.overviewScroll.child then
-        infoFrame.overviewScroll.child:Show()
-    end
-    if infoFrame.detailsScroll and infoFrame.detailsScroll.child then
-        infoFrame.detailsScroll.child:Show()
-    end
-    if encounterFrame and encounterFrame.overviewFrame then
-        encounterFrame.overviewFrame:Show()
-    end
-    if encounterFrame and encounterFrame.infoFrame then
-        encounterFrame.infoFrame:Show()
-    end
-
-    local hasVisibleNativeFrame = (infoFrame.overviewScroll and infoFrame.overviewScroll:IsShown())
-        or (infoFrame.detailsScroll and infoFrame.detailsScroll:IsShown())
-        or (infoFrame.LootContainer and infoFrame.LootContainer:IsShown())
-        or (infoFrame.model and infoFrame.model:IsShown())
-    if hasVisibleNativeFrame then
-        return
-    end
-
-    if type(_G.EncounterJournal_SetTab) == "function" then
-        local selectedNativeTab = type(infoFrame.tab) == "number" and infoFrame.tab
-        if not selectedNativeTab and infoFrame.overviewTab then
-            selectedNativeTab = infoFrame.overviewTab:GetID()
-        end
-        if type(selectedNativeTab) == "number" then
-            _G.EncounterJournal_SetTab(selectedNativeTab)
-        end
+    -- Blizzard's SetTab restores the selected tab's own frames, title and shadows.
+    local hasVisibleNativeFrame = (overview and overview:IsShown()) or (details and details:IsShown())
+        or (infoFrame.LootContainer and infoFrame.LootContainer:IsShown()) or (model and model:IsShown())
+    if not hasVisibleNativeFrame then
+        _G.EncounterJournal_SetTab(infoFrame.tab or infoFrame.overviewTab:GetID())
     end
 end
 
@@ -588,7 +491,8 @@ function AdventureGuideInstances:SetPanelHeader(instanceName, achievementCount, 
         displayName = _G.ACHIEVEMENTS or "Achievements"
     end
 
-    panel.HeaderText:SetText(format("%s (%d)", displayName, achievementCount or 0))
+    -- No count while rows are loading, so the header never reports a false zero.
+    panel.HeaderText:SetText(achievementCount and format("%s (%d)", displayName, achievementCount) or displayName)
 
     local metaParts = {}
     if categoryID then
@@ -677,20 +581,14 @@ function AdventureGuideInstances:PopulateAchievementRows(rows, instanceID)
         return
     end
 
-    if type(_G.CreateDataProvider) ~= "function" then
-        self:SetPanelEmptyState(EMPTY_STATE_NO_SCROLL, true)
+    -- Navigation hooks refresh several times per click. When the same rows are
+    -- already listed, only re-read the visible rows' completion state.
+    if panel.displayedRows == rows then
+        panel.ScrollBox:ReinitializeFrames()
         return
     end
-
-    -- Keep a fresh provider for ScrollBox refresh semantics, but reuse immutable
-    -- element data instead of allocating a wrapper for every row on each refresh.
-    local dataProvider = _G.CreateDataProvider()
-    for index = 1, #rows do
-        local row = rows[index]
-        dataProvider:Insert(row)
-    end
-
-    panel.ScrollBox:SetDataProvider(dataProvider)
+    panel.displayedRows = rows
+    panel.ScrollBox:SetDataProvider(_G.CreateDataProvider(rows))
 
     if panel.lastInstanceID ~= instanceID and panel.ScrollBox.ScrollToBegin then
         panel.ScrollBox:ScrollToBegin()
@@ -784,7 +682,7 @@ function AdventureGuideInstances:DeactivateCustomTab()
         self.customPanel:Hide()
     end
 
-    if self.CancelPendingInstanceRowBuilds and not self:IsCompletionVisible() then
+    if not self:IsCompletionVisible() then
         self:CancelPendingInstanceRowBuilds()
     end
 
@@ -807,7 +705,7 @@ function AdventureGuideInstances:RefreshCustomTabContent()
 
     local instanceID = self.currentInstanceID or self:GetCurrentJournalInstanceID()
     if not IsValidInstanceID(instanceID) then
-        self:SetPanelHeader(nil, 0, nil)
+        self:SetPanelHeader()
         self:SetPanelEmptyState(EMPTY_STATE_NO_INSTANCE, true)
         return
     end
@@ -815,12 +713,11 @@ function AdventureGuideInstances:RefreshCustomTabContent()
 
     local instanceName, _, _, _, _, _, _, _, _, _, _, isRaid = EJ_GetInstanceInfo(instanceID)
     local rows, categoryID, isPending = self:GetCachedInstanceAchievementRows(instanceID)
+    self:EnsureBossFilterState(instanceID)
+    self:SetupBossFilterDropdown()
+    self:UpdateBossFilterDropdownText()
 
     if type(rows) ~= "table" then
-        self:EnsureBossFilterState(instanceID)
-        self:SetupBossFilterDropdown()
-        self:UpdateBossFilterDropdownText()
-
         if not isPending or self.pendingRowRefreshInstanceID ~= instanceID then
             self.pendingRowRefreshInstanceID = instanceID
             self:RequestInstanceAchievementRows(instanceID, isRaid == true, function(doneInstanceID)
@@ -837,17 +734,13 @@ function AdventureGuideInstances:RefreshCustomTabContent()
             end
         end
 
-        self:SetPanelHeader(instanceName, 0, nil)
+        self:SetPanelHeader(instanceName)
         self:SetPanelEmptyState(EMPTY_STATE_LOADING, true)
         return
     end
 
     self.pendingRowRefreshInstanceID = nil
-    self:EnsureBossFilterState(instanceID)
-    self:SetupBossFilterDropdown()
-    self:UpdateBossFilterDropdownText()
-
-    local totalCount = (type(rows) == "table") and #rows or 0
+    local totalCount = #rows
     local filteredRows = self:FilterRowsByBoss(rows)
     local filteredCount = #filteredRows
 
@@ -863,13 +756,9 @@ function AdventureGuideInstances:RefreshCustomTabContent()
         return
     end
 
-    local listViewReady = self:EnsureAchievementListView()
-    if not listViewReady then
+    if not self:EnsureAchievementListView() then
         if not self:IsAchievementUIReady() then
-            if not self.pendingAchievementUILoadFromTab
-                and self.EnsureAchievementUILoaded
-                and type(_G.C_Timer) == "table"
-                and type(_G.C_Timer.After) == "function" then
+            if not self.pendingAchievementUILoadFromTab then
                 self.pendingAchievementUILoadFromTab = true
                 _G.C_Timer.After(0, function()
                     self.pendingAchievementUILoadFromTab = false
@@ -891,10 +780,8 @@ function AdventureGuideInstances:RefreshCustomTabContent()
             return
         end
 
-        if not self:EnsureAchievementListView() then
-            self:SetPanelEmptyState(EMPTY_STATE_NO_SCROLL, true)
-            return
-        end
+        self:SetPanelEmptyState(EMPTY_STATE_NO_SCROLL, true)
+        return
     end
 
     self:SetPanelEmptyState(nil, false)

@@ -1,14 +1,7 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
     <Script file="Planner.lua"/>
-    <Script file="PlannerEvidence.lua"/>
-    <Script file="PlannerDefinitions.lua"/>
-    <Script file="PlannerGoals.lua"/>
-    <Script file="PlannerOpportunities.lua"/>
-    <Script file="PlannerModel.lua"/>
-    <Script file="PlannerRegistry.lua"/>
-    <Script file="PlannerRuntime.lua"/>
+    <Script file="PlannerData.lua"/>
     <Script file="PlannerProviders.lua"/>
-    <Script file="PlannerContext.lua"/>
+    <Script file="PlannerModel.lua"/>
     <Script file="PlannerUI.lua"/>
-    <Script file="WeeklyHub.lua"/>
 </Ui>

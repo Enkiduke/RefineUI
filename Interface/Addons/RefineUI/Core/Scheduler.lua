@@ -264,3 +264,4 @@ RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
 end, "Core:Scheduler:RegenEnabled")
 
 RefineUI.SchedulerFrame = schedulerFrame
+RefineUI.SchedulerJobs = jobs

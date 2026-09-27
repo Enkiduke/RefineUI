@@ -11,7 +11,7 @@ local floor = math.floor
 local min = math.min
 local max = math.max
 local tinsert = table.insert
-local type = type
+local ipairs = ipairs
 local GetCursorPosition = GetCursorPosition
 local IsMouseButtonDown = IsMouseButtonDown
 local GetItemInfo = C_Item.GetItemInfo
@@ -27,6 +27,7 @@ local BORDER_TEMPLATE = "DialogBorderTranslucentTemplate"
 
 local CATEGORY_ROW_HEIGHT = 24
 local CATEGORY_ROW_SPACING = 2
+local CONTENT_WIDTH_PADDING = 2
 
 local ENABLED_BG = { 0.09, 0.19, 0.13, 0.78 }
 local DISABLED_BG = { 0.22, 0.1, 0.11, 0.7 }
@@ -38,27 +39,16 @@ local HIGHLIGHT_BORDER = { 1, 0.82, 0.2, 0.95 }
 local CUSTOM_BG = { 0.09, 0.13, 0.21, 0.8 }
 local CUSTOM_TEXT = { 0.68, 0.83, 1.0 }
 local CUSTOM_BORDER = { 0.3, 0.45, 0.7, 0.7 }
-local CUSTOM_HIDDEN_BG = { 0.22, 0.1, 0.11, 0.72 }
-local CUSTOM_HIDDEN_TEXT = { 0.95, 0.6, 0.6 }
-local CUSTOM_HIDDEN_BORDER = { 0.6, 0.34, 0.34, 0.55 }
 local DRAG_TEXTURE = "Interface\\AddOns\\RefineUI\\Media\\Textures\\drag.blp"
+local ROW_BACKDROP = {
+    bgFile = [[Interface\Tooltips\UI-Tooltip-Background]],
+    edgeFile = [[Interface\Tooltips\UI-Tooltip-Border]],
+    edgeSize = 10,
+    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+}
 
 local function GetItemDisplayName(itemID)
-    if not itemID then
-        return "Unknown Item"
-    end
-
-    local info = GetItemInfo and GetItemInfo(itemID)
-    if type(info) == "table" then
-        local name = info.name or info.itemName
-        if type(name) == "string" and name ~= "" then
-            return name
-        end
-    elseif type(info) == "string" and info ~= "" then
-        return info
-    end
-
-    return "Item #" .. itemID
+    return GetItemInfo(itemID) or ("Item #" .. itemID)
 end
 
 function AutoItemBar:IsSettingsDialogForAutoItemBar(selection)
@@ -68,63 +58,109 @@ function AutoItemBar:IsSettingsDialogForAutoItemBar(selection)
     return activeSelection and self.Mover and activeSelection.parent == self.Mover
 end
 
-function AutoItemBar:UpdateCategoryRowVisual(row, enabled, isDropTarget)
-    if not row or not row.bg or not row.text then return end
-    local bg = enabled and ENABLED_BG or DISABLED_BG
-    local text = enabled and ENABLED_TEXT or DISABLED_TEXT
-    local border = enabled and ENABLED_BORDER or DISABLED_BORDER
-
-    if isDropTarget then
-        row.bg:SetColorTexture(0.95, 0.8, 0.15, 0.78)
-        row.text:SetTextColor(1, 0.95, 0.75)
-        if row.order then
-            row.order:SetTextColor(1, 0.95, 0.75)
-        end
-        if row.dragHandle and row.dragHandle.icon then
-            row.dragHandle.icon:SetVertexColor(1, 0.95, 0.75, 0.95)
-        end
-        if row.border then
-            row.border:SetBackdropBorderColor(HIGHLIGHT_BORDER[1], HIGHLIGHT_BORDER[2], HIGHLIGHT_BORDER[3], HIGHLIGHT_BORDER[4])
-        end
-    else
-        row.bg:SetColorTexture(bg[1], bg[2], bg[3], bg[4])
-        row.text:SetTextColor(text[1], text[2], text[3])
-        if row.order then
-            row.order:SetTextColor(text[1], text[2], text[3], 0.9)
-        end
-        if row.dragHandle and row.dragHandle.icon then
-            row.dragHandle.icon:SetVertexColor(text[1], text[2], text[3], 0.95)
-        end
-        if row.border then
-            row.border:SetBackdropBorderColor(border[1], border[2], border[3], border[4])
-        end
-    end
-end
-
-function AutoItemBar:UpdateCustomRowVisual(row, isHidden)
-    if not row or not row.bg or not row.text then return end
-
-    local bg = isHidden and CUSTOM_HIDDEN_BG or CUSTOM_BG
-    local text = isHidden and CUSTOM_HIDDEN_TEXT or CUSTOM_TEXT
-    local border = isHidden and CUSTOM_HIDDEN_BORDER or CUSTOM_BORDER
-
+local function ApplyRowColors(row, bg, text, border)
     row.bg:SetColorTexture(bg[1], bg[2], bg[3], bg[4])
     row.text:SetTextColor(text[1], text[2], text[3])
-    if row.order then
-        row.order:SetTextColor(text[1], text[2], text[3], 0.9)
-    end
-    if row.dragHandle and row.dragHandle.icon then
-        row.dragHandle.icon:SetVertexColor(text[1], text[2], text[3], 0.95)
-    end
-    if row.border then
-        row.border:SetBackdropBorderColor(border[1], border[2], border[3], border[4])
+    row.order:SetTextColor(text[1], text[2], text[3], 0.9)
+    row.dragHandle.icon:SetVertexColor(text[1], text[2], text[3], 0.95)
+    row.border:SetBackdropBorderColor(border[1], border[2], border[3], border[4])
+end
+
+function AutoItemBar:UpdateCategoryRowVisual(row, enabled)
+    if enabled then
+        ApplyRowColors(row, ENABLED_BG, ENABLED_TEXT, ENABLED_BORDER)
+    else
+        ApplyRowColors(row, DISABLED_BG, DISABLED_TEXT, DISABLED_BORDER)
     end
 end
 
-local function EnsureRowDragHandle(row)
-    if not row or row.dragHandle or not row.check then
+function AutoItemBar:UpdateCustomRowVisual(row)
+    ApplyRowColors(row, CUSTOM_BG, CUSTOM_TEXT, CUSTOM_BORDER)
+end
+
+function AutoItemBar:HandleCategoryMouseWheel(delta)
+    local window = self.CategoryManagerWindow
+    if not window then
         return
     end
+
+    local scroll = window.Scroll
+    local step = (CATEGORY_ROW_HEIGHT + CATEGORY_ROW_SPACING) * 2
+    local nextOffset = (scroll:GetDerivedScrollOffset() or 0) - (delta * step)
+    if nextOffset < 0 then
+        nextOffset = 0
+    end
+    scroll:ScrollToOffset(nextOffset)
+    scroll:FullUpdate(ScrollBoxConstants.UpdateImmediately)
+end
+
+----------------------------------------------------------------------------------------
+--	View Hierarchy
+----------------------------------------------------------------------------------------
+
+local function OnRowMouseDown(row, button)
+    if button ~= "LeftButton" or row.check:IsMouseOver() then
+        return
+    end
+    if row._entryType == "item" then
+        AutoItemBar:StartCustomItemDrag(row.itemID)
+    else
+        AutoItemBar:StartCategoryDrag(row.categoryKey, row.enabled)
+    end
+end
+
+local function OnRowMouseUp(row, button)
+    if button ~= "LeftButton" then
+        return
+    end
+    if row._entryType == "item" and AutoItemBar._customDragItemID then
+        AutoItemBar:FinishCustomItemDrag()
+    elseif row._entryType == "category" and AutoItemBar._categoryDragKey then
+        AutoItemBar:FinishCategoryDrag()
+    end
+end
+
+local function OnRowCheckClick(check)
+    local row = check:GetParent()
+    if row._entryType == "item" then
+        if not check:GetChecked() then
+            AutoItemBar:RemoveTrackedItem(row.itemID)
+        else
+            check:SetChecked(true)
+        end
+    else
+        AutoItemBar:SetTrackingCategoryEnabled(row.categoryKey, check:GetChecked() and true or false)
+    end
+end
+
+local function CreateRow(parent)
+    local row = CreateFrame("Button", nil, parent)
+    row:SetHeight(CATEGORY_ROW_HEIGHT)
+    row:EnableMouse(true)
+    row:RegisterForClicks("LeftButtonUp")
+
+    row.bg = row:CreateTexture(nil, "BACKGROUND")
+    row.bg:SetAllPoints()
+
+    row.border = CreateFrame("Frame", nil, row, "BackdropTemplate")
+    row.border:SetAllPoints()
+    row.border:SetBackdrop(ROW_BACKDROP)
+    row.border:SetBackdropColor(0, 0, 0, 0)
+
+    row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
+    row.highlight:SetAllPoints()
+    row.highlight:SetAtlas("Options_List_Hover")
+    row.highlight:SetAlpha(0.35)
+
+    row.separator = row:CreateTexture(nil, "BORDER")
+    row.separator:SetPoint("BOTTOMLEFT", 8, 0)
+    row.separator:SetPoint("BOTTOMRIGHT", -8, 0)
+    row.separator:SetHeight(1)
+    row.separator:SetColorTexture(1, 1, 1, 0.07)
+
+    row.check = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+    row.check:SetPoint("RIGHT", -8, 0)
+    row.check:SetScript("OnClick", OnRowCheckClick)
 
     row.dragHandle = CreateFrame("Frame", nil, row)
     row.dragHandle:SetSize(12, 12)
@@ -135,48 +171,29 @@ local function EnsureRowDragHandle(row)
     row.dragHandle.icon = row.dragHandle:CreateTexture(nil, "ARTWORK")
     row.dragHandle.icon:SetAllPoints()
     row.dragHandle.icon:SetTexture(DRAG_TEXTURE)
-    row.dragHandle.icon:SetVertexColor(0.78, 0.78, 0.78, 0.95)
+
+    row.order = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row.order:SetPoint("LEFT", row.dragHandle, "RIGHT", 6, 0)
+    row.order:SetJustifyH("LEFT")
+
+    row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    row.text:SetPoint("LEFT", row.order, "RIGHT", 6, 0)
+    row.text:SetPoint("RIGHT", row.check, "LEFT", -18, 0)
+    row.text:SetJustifyH("LEFT")
+
+    row:SetScript("OnMouseDown", OnRowMouseDown)
+    row:SetScript("OnMouseUp", OnRowMouseUp)
+
+    return row
 end
 
-function AutoItemBar:HandleCategoryMouseWheel(delta)
-    local window = self.CategoryManagerWindow
-    if not window or not window.Scroll then
-        return
-    end
-
-    local step = (CATEGORY_ROW_HEIGHT + CATEGORY_ROW_SPACING) * 2
-    local scroll = window.Scroll
-
-    if scroll.ScrollToOffset and scroll.GetDerivedScrollOffset then
-        local current = scroll:GetDerivedScrollOffset() or 0
-        local nextOffset = current - (delta * step)
-        if nextOffset < 0 then
-            nextOffset = 0
-        end
-        scroll:ScrollToOffset(nextOffset)
-        if scroll.FullUpdate then
-            local updateNow = ScrollBoxConstants and ScrollBoxConstants.UpdateImmediately or true
-            scroll:FullUpdate(updateNow)
-        end
-        return
-    end
-
-    if scroll.GetVerticalScroll and scroll.GetVerticalScrollRange and scroll.SetVerticalScroll then
-        local current = scroll:GetVerticalScroll() or 0
-        local maxOffset = scroll:GetVerticalScrollRange() or 0
-        local nextOffset = current - (delta * step)
-        if nextOffset < 0 then
-            nextOffset = 0
-        elseif nextOffset > maxOffset then
-            nextOffset = maxOffset
-        end
-        scroll:SetVerticalScroll(nextOffset)
-    end
+local function PlaceRow(row, visualIndex)
+    local offset = -((visualIndex - 1) * (CATEGORY_ROW_HEIGHT + CATEGORY_ROW_SPACING))
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", 0, offset)
+    row:SetPoint("TOPRIGHT", -2, offset)
+    row.order:SetText(("%d."):format(visualIndex))
 end
-
-----------------------------------------------------------------------------------------
---	View Hierarchy
-----------------------------------------------------------------------------------------
 
 function AutoItemBar:EnsureCategoryManagerWindow()
     if self.CategoryManagerWindow then
@@ -228,62 +245,34 @@ function AutoItemBar:EnsureCategoryManagerWindow()
     listContainer:SetPoint("BOTTOMRIGHT", window, "BOTTOMRIGHT", -12, 44)
     window.ListContainer = listContainer
 
-    local hasModernScroll = (type(ScrollUtil) == "table")
-        and (type(ScrollUtil.InitScrollBoxWithScrollBar) == "function")
-        and (type(CreateScrollBoxLinearView) == "function")
+    local scroll = CreateFrame("Frame", nil, listContainer, "WowScrollBox")
+    scroll:SetPoint("TOPLEFT", listContainer, "TOPLEFT", 4, -6)
+    scroll:SetPoint("BOTTOMRIGHT", listContainer, "BOTTOMRIGHT", -18, 6)
+    scroll:SetInterpolateScroll(true)
+    scroll:EnableMouseWheel(true)
 
-    local scroll
-    local content
-    local scrollBar
-    local scrollView
-    local contentWidthPadding = 2
-    if hasModernScroll then
-        scroll = CreateFrame("Frame", nil, listContainer, "WowScrollBox")
-        scroll:SetPoint("TOPLEFT", listContainer, "TOPLEFT", 4, -6)
-        scroll:SetPoint("BOTTOMRIGHT", listContainer, "BOTTOMRIGHT", -18, 6)
-        scroll:SetInterpolateScroll(true)
-        scroll:EnableMouseWheel(true)
+    local scrollBar = CreateFrame("EventFrame", nil, listContainer, "MinimalScrollBar")
+    scrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", 4, -2)
+    scrollBar:SetPoint("BOTTOMLEFT", scroll, "BOTTOMRIGHT", 2, 0)
+    scrollBar:SetHideIfUnscrollable(true)
+    scrollBar:SetInterpolateScroll(true)
 
-        scrollBar = CreateFrame("EventFrame", nil, listContainer, "MinimalScrollBar")
-        scrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", 4, -2)
-        scrollBar:SetPoint("BOTTOMLEFT", scroll, "BOTTOMRIGHT", 2, 0)
-        scrollBar:SetHideIfUnscrollable(true)
-        scrollBar:SetInterpolateScroll(true)
+    local scrollView = CreateScrollBoxLinearView()
+    scrollView:SetPanExtent(14)
 
-        scrollView = CreateScrollBoxLinearView()
-        scrollView:SetPanExtent(14)
-    else
-        scroll = CreateFrame("ScrollFrame", nil, listContainer, "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", listContainer, "TOPLEFT", 5, -5)
-        scroll:SetPoint("BOTTOMRIGHT", listContainer, "BOTTOMRIGHT", -27, 5)
-        scroll:EnableMouseWheel(true)
-        contentWidthPadding = 6
-    end
-    window.Scroll = scroll
-
-    content = CreateFrame("Frame", nil, scroll)
+    local content = CreateFrame("Frame", nil, scroll)
     content:SetSize(1, 1)
-    if hasModernScroll then
-        content.scrollable = true
-        content:SetPoint("TOPLEFT", scroll, "TOPLEFT", 0, 0)
-        content:SetPoint("TOPRIGHT", scroll, "TOPRIGHT", 0, 0)
-        ScrollUtil.InitScrollBoxWithScrollBar(scroll, scrollBar, scrollView)
-        if scroll.SetScrollTarget then
-            scroll:SetScrollTarget(content)
-        end
-        window.ScrollBar = scrollBar
-        window.ScrollView = scrollView
-    else
-        scroll:SetScrollChild(content)
-    end
+    content.scrollable = true
+    content:SetPoint("TOPLEFT", scroll, "TOPLEFT", 0, 0)
+    content:SetPoint("TOPRIGHT", scroll, "TOPRIGHT", 0, 0)
+    ScrollUtil.InitScrollBoxWithScrollBar(scroll, scrollBar, scrollView)
+    scroll:SetScrollTarget(content)
+
+    window.Scroll = scroll
+    window.ScrollBar = scrollBar
+    window.ScrollView = scrollView
     window.Content = content
     window.Rows = {}
-    window.CustomRows = {}
-    window._contentWidthPadding = contentWidthPadding
-
-    local customHeader = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    customHeader:Hide()
-    window.CustomHeader = customHeader
 
     local insertLine = content:CreateTexture(nil, "OVERLAY")
     insertLine:SetHeight(2)
@@ -321,25 +310,15 @@ function AutoItemBar:EnsureCategoryManagerWindow()
     window.ResetButton = resetButton
 
     scroll:SetScript("OnSizeChanged", function(scrollSelf, width)
-        local contentWidth = (width or scrollSelf:GetWidth() or 1) - (window._contentWidthPadding or 6)
-        if contentWidth < 1 then
-            contentWidth = 1
-        end
-        content:SetWidth(contentWidth)
+        content:SetWidth(max((width or scrollSelf:GetWidth() or 1) - CONTENT_WIDTH_PADDING, 1))
     end)
-    listContainer:EnableMouseWheel(true)
-    listContainer:SetScript("OnMouseWheel", function(_, delta)
+    local function OnMouseWheel(_, delta)
         AutoItemBar:HandleCategoryMouseWheel(delta)
-    end)
-    content:EnableMouseWheel(true)
-    content:SetScript("OnMouseWheel", function(_, delta)
-        AutoItemBar:HandleCategoryMouseWheel(delta)
-    end)
-    if not hasModernScroll then
-        scroll:SetScript("OnMouseWheel", function(_, delta)
-            AutoItemBar:HandleCategoryMouseWheel(delta)
-        end)
     end
+    listContainer:EnableMouseWheel(true)
+    listContainer:SetScript("OnMouseWheel", OnMouseWheel)
+    content:EnableMouseWheel(true)
+    content:SetScript("OnMouseWheel", OnMouseWheel)
 
     window:SetScript("OnMouseUp", function(_, mouseButton)
         if mouseButton == "LeftButton" then
@@ -350,9 +329,6 @@ function AutoItemBar:EnsureCategoryManagerWindow()
             end
         end
     end)
-    window:SetScript("OnUpdate", function()
-        AutoItemBar:UpdateCategoryDrag()
-    end)
 
     self.CategoryManagerWindow = window
     return window
@@ -362,75 +338,49 @@ end
 --	Drag and Drop
 ----------------------------------------------------------------------------------------
 
+local function OnDragUpdate()
+    AutoItemBar:UpdateCategoryDrag()
+end
+
+local function FindEnabledIndex(token)
+    for index, entry in ipairs(AutoItemBar:GetConfig().EnabledOrder) do
+        if entry == token then
+            return index
+        end
+    end
+end
+
+function AutoItemBar:BeginDrag(label)
+    local window = self:EnsureCategoryManagerWindow()
+    local ghost = window.DragGhost
+    ghost.text:SetText(label or "")
+    ghost:SetFrameStrata(window:GetFrameStrata())
+    ghost:SetFrameLevel(window:GetFrameLevel() + 40)
+    ghost:Show()
+    window:SetScript("OnUpdate", OnDragUpdate)
+    self:RefreshCategoryManagerWindow()
+end
+
+function AutoItemBar:EndDrag()
+    local window = self.CategoryManagerWindow
+    if window then
+        window:SetScript("OnUpdate", nil)
+        window.InsertLine:Hide()
+        window.DragGhost:Hide()
+    end
+end
+
 function AutoItemBar:StartCategoryDrag(categoryKey, enabled)
     if not enabled then return end
     if self._customDragItemID then
         self:FinishCustomItemDrag()
     end
-    local window = self:EnsureCategoryManagerWindow()
-    local enabledEntries = self:GetEnabledEntries()
-    local targetToken = self:GetCategoryToken(categoryKey)
-    local startIndex = 1
-    local dragLabel
-    for i, entry in ipairs(enabledEntries) do
-        if entry.token == targetToken then
-            startIndex = i
-            dragLabel = entry.label
-            break
-        end
-    end
 
+    local definition = self:GetCategoryByKey(categoryKey)
     self._categoryDragKey = categoryKey
-    self._categoryInsertIndex = startIndex
-    self._categoryDragLabel = dragLabel
+    self._categoryInsertIndex = FindEnabledIndex(self:GetCategoryToken(categoryKey)) or 1
     self._categoryDragWasMoved = false
-
-    if window.DragGhost then
-        window.DragGhost.text:SetText(dragLabel or "")
-        window.DragGhost:Show()
-    end
-
-    self:RefreshCategoryManagerWindow()
-end
-
-function AutoItemBar:GetCategoryInsertIndexFromCursor()
-    return self:GetEnabledInsertIndexFromCursor(self:GetCategoryToken(self._categoryDragKey))
-end
-
-function AutoItemBar:GetEnabledInsertIndexFromCursor(dragToken)
-    local window = self.CategoryManagerWindow
-    if not window or not window.Content then
-        return 1
-    end
-
-    local cursorX, cursorY = GetCursorPosition()
-    local scale = window.Content:GetEffectiveScale()
-    if not scale or scale <= 0 then
-        scale = UIParent:GetEffectiveScale()
-    end
-    local cursorYScaled = cursorY / scale
-
-    local top = window.Content:GetTop() or window:GetTop()
-    local offset = top and (top - cursorYScaled) or 0
-    local step = CATEGORY_ROW_HEIGHT + CATEGORY_ROW_SPACING
-    local rawIndex = floor((offset + (step * 0.5)) / step) + 1
-
-    local enabledEntries = self:GetEnabledEntries()
-    local maxInsertIndex = #enabledEntries + 1
-    if dragToken then
-        for _, entry in ipairs(enabledEntries) do
-            if entry.token == dragToken then
-                maxInsertIndex = maxInsertIndex - 1
-                break
-            end
-        end
-    end
-
-    return min(max(rawIndex, 1), maxInsertIndex)
-end
-
-function AutoItemBar:GetCustomInsertIndexFromCursor()
-    return self:GetEnabledInsertIndexFromCursor(self:GetItemToken(self._customDragItemID))
+    self:BeginDrag(definition and definition.label)
 end
 
 function AutoItemBar:StartCustomItemDrag(itemID)
@@ -440,37 +390,32 @@ function AutoItemBar:StartCustomItemDrag(itemID)
         self:FinishCategoryDrag()
     end
 
-    local enabledEntries = self:GetEnabledEntries()
-    local targetToken = self:GetItemToken(itemID)
-    local startIndex
-    for index, entry in ipairs(enabledEntries) do
-        if entry.token == targetToken then
-            startIndex = index
-            break
-        end
-    end
+    local startIndex = FindEnabledIndex(self:GetItemToken(itemID))
     if not startIndex then
         return
     end
 
-    local window = self:EnsureCategoryManagerWindow()
     self._customDragItemID = itemID
     self._customInsertIndex = startIndex
     self._customDragWasMoved = false
+    self:BeginDrag(GetItemDisplayName(itemID))
+end
 
-    if window.DragGhost then
-        window.DragGhost.text:SetText(GetItemDisplayName(itemID))
-        window.DragGhost:Show()
-    end
+-- EnabledOrder holds exactly the enabled entries, and the dragged entry is one of
+-- them, so the last valid insert position is its length.
+function AutoItemBar:GetEnabledInsertIndexFromCursor()
+    local content = self.CategoryManagerWindow.Content
+    local _, cursorY = GetCursorPosition()
+    local offset = content:GetTop() - (cursorY / content:GetEffectiveScale())
+    local step = CATEGORY_ROW_HEIGHT + CATEGORY_ROW_SPACING
+    local rawIndex = floor((offset + (step * 0.5)) / step) + 1
 
-    self:RefreshCategoryManagerWindow()
+    return min(max(rawIndex, 1), #self:GetConfig().EnabledOrder)
 end
 
 function AutoItemBar:UpdateCategoryDrag()
-    if not self._categoryDragKey and not self._customDragItemID then return end
-
     local window = self.CategoryManagerWindow
-    if not window or not window:IsShown() then
+    if not window:IsShown() or not IsMouseButtonDown("LeftButton") then
         if self._categoryDragKey then
             self:FinishCategoryDrag()
         elseif self._customDragItemID then
@@ -479,40 +424,26 @@ function AutoItemBar:UpdateCategoryDrag()
         return
     end
 
-    if not IsMouseButtonDown("LeftButton") then
-        if self._categoryDragKey then
-            self:FinishCategoryDrag()
-        elseif self._customDragItemID then
-            self:FinishCustomItemDrag()
-        end
-        return
-    end
-
+    local insertIndex = self:GetEnabledInsertIndexFromCursor()
     if self._categoryDragKey then
-        local insertIndex = self:GetCategoryInsertIndexFromCursor()
         if insertIndex ~= self._categoryInsertIndex then
             self._categoryInsertIndex = insertIndex
             self._categoryDragWasMoved = true
             self:RefreshCategoryManagerWindow()
         end
     elseif self._customDragItemID then
-        local customInsertIndex = self:GetCustomInsertIndexFromCursor()
-        if customInsertIndex ~= self._customInsertIndex then
-            self._customInsertIndex = customInsertIndex
+        if insertIndex ~= self._customInsertIndex then
+            self._customInsertIndex = insertIndex
             self._customDragWasMoved = true
             self:RefreshCategoryManagerWindow()
         end
     end
 
+    local cursorX, cursorY = GetCursorPosition()
+    local scale = UIParent:GetEffectiveScale()
     local ghost = window.DragGhost
-    if ghost and ghost:IsShown() then
-        local cursorX, cursorY = GetCursorPosition()
-        local scale = UIParent:GetEffectiveScale()
-        ghost:SetFrameStrata(window:GetFrameStrata() or "DIALOG")
-        ghost:SetFrameLevel((window:GetFrameLevel() or 220) + 40)
-        ghost:ClearAllPoints()
-        ghost:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cursorX / scale, cursorY / scale)
-    end
+    ghost:ClearAllPoints()
+    ghost:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cursorX / scale, cursorY / scale)
 end
 
 function AutoItemBar:FinishCategoryDrag()
@@ -524,18 +455,8 @@ function AutoItemBar:FinishCategoryDrag()
 
     self._categoryDragKey = nil
     self._categoryInsertIndex = nil
-    self._categoryDragLabel = nil
     self._categoryDragWasMoved = nil
-
-    local window = self.CategoryManagerWindow
-    if window then
-        if window.InsertLine then
-            window.InsertLine:Hide()
-        end
-        if window.DragGhost then
-            window.DragGhost:Hide()
-        end
-    end
+    self:EndDrag()
 
     if wasMoved then
         self:MoveCategoryToEnabledIndex(dragKey, insertIndex)
@@ -554,16 +475,7 @@ function AutoItemBar:FinishCustomItemDrag()
     self._customDragItemID = nil
     self._customInsertIndex = nil
     self._customDragWasMoved = nil
-
-    local window = self.CategoryManagerWindow
-    if window then
-        if window.InsertLine then
-            window.InsertLine:Hide()
-        end
-        if window.DragGhost then
-            window.DragGhost:Hide()
-        end
-    end
+    self:EndDrag()
 
     if wasMoved then
         self:MoveTrackedItemToIndex(dragItemID, insertIndex)
@@ -572,188 +484,80 @@ function AutoItemBar:FinishCustomItemDrag()
     end
 end
 
+----------------------------------------------------------------------------------------
+--	Rendering
+----------------------------------------------------------------------------------------
+
 function AutoItemBar:RefreshCategoryManagerWindow()
-    local window = self:EnsureCategoryManagerWindow()
+    local window = self.CategoryManagerWindow
+    if not window or not window:IsShown() then
+        return
+    end
+
     local rows = window.Rows
     local enabledEntries = self:GetEnabledEntries()
-    local categories = self:GetOrderedCategories(true)
     local disabledCategories = {}
-    for _, category in ipairs(categories) do
+    for _, category in ipairs(self:GetOrderedCategories(true)) do
         if not category.enabled then
             tinsert(disabledCategories, category)
         end
     end
-    local rowHeight = CATEGORY_ROW_HEIGHT
-    local spacing = CATEGORY_ROW_SPACING
-    local contentWidth = (window.Scroll:GetWidth() or 1) - (window._contentWidthPadding or 6)
-    local dragKey = self._categoryDragKey
-    local customDragItemID = self._customDragItemID
+
+    local contentWidth = max((window.Scroll:GetWidth() or 1) - CONTENT_WIDTH_PADDING, 1)
+    window.Content:SetWidth(contentWidth)
+    window.DragGhost:SetWidth(contentWidth)
+
     local activeDragToken
     local placeholderIndex
-
-    if dragKey then
-        activeDragToken = self:GetCategoryToken(dragKey)
+    if self._categoryDragKey then
+        activeDragToken = self:GetCategoryToken(self._categoryDragKey)
         placeholderIndex = self._categoryInsertIndex
-    elseif customDragItemID then
-        activeDragToken = self:GetItemToken(customDragItemID)
+    elseif self._customDragItemID then
+        activeDragToken = self:GetItemToken(self._customDragItemID)
         placeholderIndex = self._customInsertIndex
-    end
-
-    if contentWidth < 1 then
-        contentWidth = 1
-    end
-    window.Content:SetWidth(contentWidth)
-    if window.DragGhost then
-        window.DragGhost:SetWidth(contentWidth)
     end
 
     local enabledCountExcludingDrag = #enabledEntries
     if activeDragToken then
-        for _, entry in ipairs(enabledEntries) do
-            if entry.token == activeDragToken then
-                enabledCountExcludingDrag = enabledCountExcludingDrag - 1
-                break
-            end
-        end
-    end
-
-    if activeDragToken then
-        local maxInsert = enabledCountExcludingDrag + 1
-        placeholderIndex = min(max(placeholderIndex or 1, 1), maxInsert)
+        enabledCountExcludingDrag = enabledCountExcludingDrag - 1
+        placeholderIndex = min(max(placeholderIndex or 1, 1), enabledCountExcludingDrag + 1)
     end
 
     local renderedCount = 0
     local enabledOrdinal = 0
 
     for _, entry in ipairs(enabledEntries) do
-        local row = rows[renderedCount + 1]
-        if not row then
-            row = CreateFrame("Button", nil, window.Content)
-            row:SetHeight(rowHeight)
-            row:EnableMouse(true)
-            row:RegisterForClicks("LeftButtonUp")
+        if not (activeDragToken and entry.token == activeDragToken) then
+            renderedCount = renderedCount + 1
+            local row = rows[renderedCount]
+            if not row then
+                row = CreateRow(window.Content)
+                rows[renderedCount] = row
+            end
 
-            row.bg = row:CreateTexture(nil, "BACKGROUND")
-            row.bg:SetAllPoints()
-
-            row.border = CreateFrame("Frame", nil, row, "BackdropTemplate")
-            row.border:SetAllPoints()
-            row.border:SetBackdrop({
-                bgFile = [[Interface\Tooltips\UI-Tooltip-Background]],
-                edgeFile = [[Interface\Tooltips\UI-Tooltip-Border]],
-                edgeSize = 10,
-                insets = { left = 2, right = 2, top = 2, bottom = 2 },
-            })
-            row.border:SetBackdropColor(0, 0, 0, 0)
-
-            row.order = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.order:SetPoint("LEFT", 10, 0)
-            row.order:SetJustifyH("LEFT")
-
-            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            row.text:SetPoint("LEFT", row.order, "RIGHT", 6, 0)
-            row.text:SetJustifyH("LEFT")
-
-            row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
-            row.highlight:SetAllPoints()
-            row.highlight:SetAtlas("Options_List_Hover")
-            row.highlight:SetAlpha(0.35)
-
-            row.separator = row:CreateTexture(nil, "BORDER")
-            row.separator:SetPoint("BOTTOMLEFT", 8, 0)
-            row.separator:SetPoint("BOTTOMRIGHT", -8, 0)
-            row.separator:SetHeight(1)
-            row.separator:SetColorTexture(1, 1, 1, 0.07)
-
-            row.check = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-            row.check:SetPoint("RIGHT", -8, 0)
-            EnsureRowDragHandle(row)
-            row.order:ClearAllPoints()
-            row.order:SetPoint("LEFT", row.dragHandle, "RIGHT", 6, 0)
-            row.text:ClearAllPoints()
-            row.text:SetPoint("LEFT", row.order, "RIGHT", 6, 0)
-            row.text:SetPoint("RIGHT", row.check, "LEFT", -18, 0)
-
-            row:SetScript("OnMouseDown", function(rowSelf, button)
-                if button == "LeftButton" then
-                    if rowSelf.check and rowSelf.check:IsMouseOver() then
-                        return
-                    end
-                    if rowSelf._entryType == "item" then
-                        AutoItemBar:StartCustomItemDrag(rowSelf.itemID)
-                    else
-                        AutoItemBar:StartCategoryDrag(rowSelf.categoryKey, rowSelf.enabled)
-                    end
-                end
-            end)
-            row:SetScript("OnMouseUp", function(rowSelf, button)
-                if button == "LeftButton" then
-                    if rowSelf._entryType == "item" and AutoItemBar._customDragItemID then
-                        AutoItemBar:FinishCustomItemDrag()
-                    elseif rowSelf._entryType == "category" and AutoItemBar._categoryDragKey then
-                        AutoItemBar:FinishCategoryDrag()
-                    end
-                end
-            end)
-            row.check:SetScript("OnClick", function(checkSelf)
-                local parent = checkSelf:GetParent()
-                if parent._entryType == "item" then
-                    if not checkSelf:GetChecked() then
-                        AutoItemBar:RemoveTrackedItem(parent.itemID)
-                    else
-                        checkSelf:SetChecked(true)
-                    end
-                else
-                    AutoItemBar:SetTrackingCategoryEnabled(parent.categoryKey, checkSelf:GetChecked() and true or false)
-                end
-            end)
-
-            rows[renderedCount + 1] = row
-        end
-
-        local isDraggedRow = activeDragToken and entry.token == activeDragToken
-        if isDraggedRow then
-            row._entryType = entry.type
-            row.categoryKey = entry.key
-            row.itemID = entry.itemID
-            row:Hide()
-        else
             enabledOrdinal = enabledOrdinal + 1
             local visualIndex = enabledOrdinal
             if placeholderIndex and visualIndex >= placeholderIndex then
                 visualIndex = visualIndex + 1
             end
 
-            row:ClearAllPoints()
-            row:SetPoint("TOPLEFT", 0, -((visualIndex - 1) * (rowHeight + spacing)))
-            row:SetPoint("TOPRIGHT", -2, -((visualIndex - 1) * (rowHeight + spacing)))
-            row.order:SetText(("%d."):format(visualIndex))
+            PlaceRow(row, visualIndex)
             row._entryType = entry.type
             row.categoryKey = entry.key
             row.itemID = entry.itemID
-            EnsureRowDragHandle(row)
-            if row.dragHandle then
-                row.dragHandle:Show()
-            end
+            row.enabled = true
+            row.dragHandle:Show()
+            row.check:SetChecked(true)
+            row.check:Enable()
             if entry.type == "item" then
                 row.text:SetText(GetItemDisplayName(entry.itemID))
-                row.check:SetChecked(true)
-                row.enabled = true
-                self:UpdateCustomRowVisual(row, false)
+                self:UpdateCustomRowVisual(row)
             else
                 row.text:SetText(entry.label)
-                row.check:SetChecked(true)
-                row.enabled = true
-                self:UpdateCategoryRowVisual(row, true, false)
+                self:UpdateCategoryRowVisual(row, true)
             end
-            row.check:Enable()
             row:Show()
-            renderedCount = renderedCount + 1
         end
-    end
-
-    if window.CustomHeader then
-        window.CustomHeader:Hide()
     end
 
     local disabledStartIndex = enabledCountExcludingDrag
@@ -761,93 +565,24 @@ function AutoItemBar:RefreshCategoryManagerWindow()
         disabledStartIndex = disabledStartIndex + 1
     end
 
-    local disabledOrdinal = 0
-    for _, category in ipairs(disabledCategories) do
-        local row = rows[renderedCount + 1]
-        if not row then
-            row = CreateFrame("Button", nil, window.Content)
-            row:SetHeight(rowHeight)
-            row:EnableMouse(true)
-            row:RegisterForClicks("LeftButtonUp")
-
-            row.bg = row:CreateTexture(nil, "BACKGROUND")
-            row.bg:SetAllPoints()
-
-            row.border = CreateFrame("Frame", nil, row, "BackdropTemplate")
-            row.border:SetAllPoints()
-            row.border:SetBackdrop({
-                bgFile = [[Interface\Tooltips\UI-Tooltip-Background]],
-                edgeFile = [[Interface\Tooltips\UI-Tooltip-Border]],
-                edgeSize = 10,
-                insets = { left = 2, right = 2, top = 2, bottom = 2 },
-            })
-            row.border:SetBackdropColor(0, 0, 0, 0)
-
-            row.order = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.order:SetPoint("LEFT", 10, 0)
-            row.order:SetJustifyH("LEFT")
-
-            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            row.text:SetPoint("LEFT", row.order, "RIGHT", 6, 0)
-            row.text:SetJustifyH("LEFT")
-
-            row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
-            row.highlight:SetAllPoints()
-            row.highlight:SetAtlas("Options_List_Hover")
-            row.highlight:SetAlpha(0.35)
-
-            row.separator = row:CreateTexture(nil, "BORDER")
-            row.separator:SetPoint("BOTTOMLEFT", 8, 0)
-            row.separator:SetPoint("BOTTOMRIGHT", -8, 0)
-            row.separator:SetHeight(1)
-            row.separator:SetColorTexture(1, 1, 1, 0.07)
-
-            row.check = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-            row.check:SetPoint("RIGHT", -8, 0)
-            EnsureRowDragHandle(row)
-            row.order:ClearAllPoints()
-            row.order:SetPoint("LEFT", row.dragHandle, "RIGHT", 6, 0)
-            row.text:ClearAllPoints()
-            row.text:SetPoint("LEFT", row.order, "RIGHT", 6, 0)
-            row.text:SetPoint("RIGHT", row.check, "LEFT", -18, 0)
-            row:SetScript("OnMouseDown", function(rowSelf, button)
-                if button == "LeftButton" then
-                    if rowSelf.check and rowSelf.check:IsMouseOver() then
-                        return
-                    end
-                    AutoItemBar:StartCategoryDrag(rowSelf.categoryKey, rowSelf.enabled)
-                end
-            end)
-            row:SetScript("OnMouseUp", function(rowSelf, button)
-                if button == "LeftButton" and rowSelf._entryType == "category" and AutoItemBar._categoryDragKey then
-                    AutoItemBar:FinishCategoryDrag()
-                end
-            end)
-            row.check:SetScript("OnClick", function(checkSelf)
-                local parent = checkSelf:GetParent()
-                AutoItemBar:SetTrackingCategoryEnabled(parent.categoryKey, checkSelf:GetChecked() and true or false)
-            end)
-
-            rows[renderedCount + 1] = row
-        end
+    for disabledOrdinal, category in ipairs(disabledCategories) do
         renderedCount = renderedCount + 1
-        disabledOrdinal = disabledOrdinal + 1
-        local visualIndex = disabledStartIndex + disabledOrdinal
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", 0, -((visualIndex - 1) * (rowHeight + spacing)))
-        row:SetPoint("TOPRIGHT", -2, -((visualIndex - 1) * (rowHeight + spacing)))
-        row.order:SetText(("%d."):format(visualIndex))
+        local row = rows[renderedCount]
+        if not row then
+            row = CreateRow(window.Content)
+            rows[renderedCount] = row
+        end
+
+        PlaceRow(row, disabledStartIndex + disabledOrdinal)
+        row._entryType = "category"
+        row.categoryKey = category.key
+        row.itemID = nil
+        row.enabled = false
+        row.dragHandle:Hide()
         row.text:SetText(category.label)
         row.check:SetChecked(false)
         row.check:Enable()
-        row._entryType = "category"
-        row.categoryKey = category.key
-        row.enabled = false
-        row.itemID = nil
-        if row.dragHandle then
-            row.dragHandle:Hide()
-        end
-        self:UpdateCategoryRowVisual(row, false, false)
+        self:UpdateCategoryRowVisual(row, false)
         row:Show()
     end
 
@@ -855,50 +590,32 @@ function AutoItemBar:RefreshCategoryManagerWindow()
         rows[index]:Hide()
     end
 
-    if window.CustomRows then
-        for index = 1, #window.CustomRows do
-            window.CustomRows[index]:Hide()
-        end
-    end
-
-    if window.InsertLine then
-        if activeDragToken then
-            local lineOffset = ((placeholderIndex or 1) - 1) * (rowHeight + spacing)
-            window.InsertLine:ClearAllPoints()
-            window.InsertLine:SetPoint("TOPLEFT", window.Content, "TOPLEFT", 0, -lineOffset)
-            window.InsertLine:SetPoint("TOPRIGHT", window.Content, "TOPRIGHT", -2, -lineOffset)
-            window.InsertLine:Show()
-        else
-            window.InsertLine:Hide()
-        end
+    local step = CATEGORY_ROW_HEIGHT + CATEGORY_ROW_SPACING
+    if activeDragToken then
+        local lineOffset = (placeholderIndex - 1) * step
+        window.InsertLine:ClearAllPoints()
+        window.InsertLine:SetPoint("TOPLEFT", window.Content, "TOPLEFT", 0, -lineOffset)
+        window.InsertLine:SetPoint("TOPRIGHT", window.Content, "TOPRIGHT", -2, -lineOffset)
+        window.InsertLine:Show()
+    else
+        window.InsertLine:Hide()
     end
 
     local totalRows = #enabledEntries + #disabledCategories
     if activeDragToken then
         totalRows = totalRows + 1
     end
-    local height = totalRows * (rowHeight + spacing)
-    if height < 1 then height = 1 end
-    window.Content:SetHeight(height)
-    if window.Scroll and window.Scroll.FullUpdate then
-        local updateNow = ScrollBoxConstants and ScrollBoxConstants.UpdateImmediately or true
-        window.Scroll:FullUpdate(updateNow)
-    end
+    window.Content:SetHeight(max(totalRows * step, 1))
+    window.Scroll:FullUpdate(ScrollBoxConstants.UpdateImmediately)
 end
 
 function AutoItemBar:HideCategoryManagerWindow()
+    self:EndDrag()
     if self.CategoryManagerWindow then
-        if self.CategoryManagerWindow.InsertLine then
-            self.CategoryManagerWindow.InsertLine:Hide()
-        end
-        if self.CategoryManagerWindow.DragGhost then
-            self.CategoryManagerWindow.DragGhost:Hide()
-        end
         self.CategoryManagerWindow:Hide()
     end
     self._categoryDragKey = nil
     self._categoryInsertIndex = nil
-    self._categoryDragLabel = nil
     self._categoryDragWasMoved = nil
     self._customDragItemID = nil
     self._customInsertIndex = nil
@@ -909,19 +626,11 @@ function AutoItemBar:RefreshCategoryManagerVisibility(selection)
     local lib = RefineUI.LibEditMode
     local dialog = lib and lib.internal and lib.internal.dialog
 
-    if not self._editModeActive then
+    if not self._editModeActive
+        or not dialog or not dialog:IsShown()
+        or not self:IsSettingsDialogForAutoItemBar(selection) then
         self:HideCategoryManagerWindow()
-        if self.HideEditModeTutorial then
-            self:HideEditModeTutorial(false)
-        end
-        return
-    end
-
-    if not dialog or not dialog:IsShown() or not self:IsSettingsDialogForAutoItemBar(selection) then
-        self:HideCategoryManagerWindow()
-        if self.HideEditModeTutorial then
-            self:HideEditModeTutorial(false)
-        end
+        self:HideEditModeTutorial(false)
         return
     end
 
@@ -932,11 +641,9 @@ function AutoItemBar:RefreshCategoryManagerVisibility(selection)
     window:SetWidth(dialog:GetWidth() or 300)
     window:SetPoint("TOPRIGHT", dialog, "TOPLEFT", -8, 0)
     window:SetHeight(dialog:GetHeight())
-    self:RefreshCategoryManagerWindow()
     window:Show()
-    if self.TryShowEditModeTutorial then
-        self:TryShowEditModeTutorial()
-    end
+    self:RefreshCategoryManagerWindow()
+    self:TryShowEditModeTutorial()
 end
 
 function AutoItemBar:HookCategoryManagerToDialog()
@@ -946,7 +653,7 @@ function AutoItemBar:HookCategoryManagerToDialog()
     local dialog = lib and lib.internal and lib.internal.dialog
     if not dialog then return end
 
-    hooksecurefunc(dialog, "Update", function(dialogSelf, selection)
+    hooksecurefunc(dialog, "Update", function(_, selection)
         AutoItemBar:RefreshCategoryManagerVisibility(selection)
     end)
     dialog:HookScript("OnShow", function()
@@ -958,4 +665,3 @@ function AutoItemBar:HookCategoryManagerToDialog()
 
     self._categoryDialogHooked = true
 end
-

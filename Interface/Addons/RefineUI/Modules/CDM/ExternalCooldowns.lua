@@ -249,10 +249,37 @@ local function ScanRacials()
     end
 end
 
+-- Item class and use spell never change, so each item ID is classified once:
+-- false = not a combat consumable, table = { spellID, icon }.
+local consumableClassByItemID = {}
+
+local function GetConsumableClass(itemID)
+    local cached = consumableClassByItemID[itemID]
+    if cached ~= nil then
+        return cached
+    end
+
+    local _, _, _, _, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+    if classID ~= CONSUMABLE_CLASS_ID or not COMBAT_CONSUMABLE_SUBCLASSES[subClassID] then
+        consumableClassByItemID[itemID] = false
+        return false
+    end
+
+    -- Not cached when the use spell is missing: item data may not be loaded yet.
+    local spellID = GetItemSpellID(itemID)
+    if not spellID then
+        return false
+    end
+
+    cached = { spellID = spellID, icon = icon }
+    consumableClassByItemID[itemID] = cached
+    return cached
+end
+
 local function ScanConsumables()
     if not C_Container or not C_Item
         or type(C_Container.GetContainerNumSlots) ~= "function"
-        or type(C_Container.GetContainerItemInfo) ~= "function"
+        or type(C_Container.GetContainerItemID) ~= "function"
         or type(C_Item.GetItemInfoInstant) ~= "function"
     then
         return
@@ -262,19 +289,17 @@ local function ScanConsumables()
     for bag = 0, MAX_BAG_INDEX do
         local slotCount = C_Container.GetContainerNumSlots(bag) or 0
         for slot = 1, slotCount do
-            local containerInfo = C_Container.GetContainerItemInfo(bag, slot)
-            local itemID = containerInfo and containerInfo.itemID
+            local itemID = C_Container.GetContainerItemID(bag, slot)
             if type(itemID) == "number" and itemID > 0 and not seen[itemID] then
                 seen[itemID] = true
-                local _, _, _, _, icon, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
-                local spellID = GetItemSpellID(itemID)
-                if classID == CONSUMABLE_CLASS_ID and COMBAT_CONSUMABLE_SUBCLASSES[subClassID] and spellID then
+                local consumable = GetConsumableClass(itemID)
+                if consumable then
                     AddExternalInfo(CDM.EXTERNAL_CATEGORY_KEYS.CONSUMABLES, CONSUMABLE_ID_OFFSET + itemID, {
                         externalType = "consumable",
                         itemID = itemID,
-                        spellID = spellID,
+                        spellID = consumable.spellID,
                         name = GetItemName(itemID),
-                        icon = icon or GetItemIcon(itemID),
+                        icon = consumable.icon or GetItemIcon(itemID),
                     })
                 end
             end

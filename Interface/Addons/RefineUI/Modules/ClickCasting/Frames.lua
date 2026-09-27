@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------------------------
 -- RefineUI ClickCasting Frames
--- Description: Discovers and registers supported Blizzard unit frames.
+-- Description: Registers supported Blizzard unit frames.
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
@@ -13,184 +13,76 @@ end
 -- WoW Globals
 ----------------------------------------------------------------------------------------
 local _G = _G
-local InCombatLockdown = InCombatLockdown
-local type = type
-local tostring = tostring
+local hooksecurefunc = hooksecurefunc
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local STATIC_FRAME_UNITS = {
-    TargetFrame = "target",
-    FocusFrame = "focus",
-    Boss1TargetFrame = "boss1",
-    Boss2TargetFrame = "boss2",
-    Boss3TargetFrame = "boss3",
-    Boss4TargetFrame = "boss4",
-    Boss5TargetFrame = "boss5",
+local SUPPORTED_FRAME_NAMES = {
+    "TargetFrame",
+    "FocusFrame",
+    "Boss1TargetFrame",
+    "Boss2TargetFrame",
+    "Boss3TargetFrame",
+    "Boss4TargetFrame",
+    "Boss5TargetFrame",
 }
 
-local COMPACT_SETUP_HOOK_KEY = "ClickCasting:CompactUnitFrame:SetUp"
+-- Compact party/raid frames that exist before the SetUnit hook is installed.
+local COMPACT_FRAME_NAME_FORMATS = {
+    "CompactPartyFrameMember%d",
+    "CompactPartyFramePet%d",
+    "CompactRaidFrame%d",
+}
+local MAX_COMPACT_FRAME_INDEX = 40
+
+-- Last unit seen per compact frame; SetUnit resets clicks only when it changes.
+local compactFrameUnits = {}
 
 ----------------------------------------------------------------------------------------
--- Helpers
+-- Compact Frames
 ----------------------------------------------------------------------------------------
-local function NormalizeUnitToken(rawUnit)
-    if type(rawUnit) ~= "string" then
-        return nil
-    end
-    return rawUnit:lower()
-end
-
-function ClickCasting:IsSupportedUnitToken(unit)
-    local token = NormalizeUnitToken(unit)
-    if not token then
-        return false
-    end
-
-    if token == "target" or token == "focus" then
-        return true
-    end
-
-    if token:match("^party%d+$") or token:match("^raid%d+$") then
-        return true
-    end
-
-    if token:match("^boss%d+$") then
-        return true
-    end
-
-    return false
-end
-
-local function ResolveFrameUnit(frame, fallbackUnit)
-    if not frame then
-        return nil
-    end
-
-    local unit = frame.unit
-    if type(unit) == "string" and unit ~= "" then
-        return unit
-    end
-
-    if frame.GetAttribute then
-        local ok, attrUnit = pcall(frame.GetAttribute, frame, "unit")
-        if ok and type(attrUnit) == "string" and attrUnit ~= "" then
-            return attrUnit
-        end
-    end
-
-    return fallbackUnit
-end
-
-local function IsFrameNameplate(frame)
-    local frameName = frame and frame.GetName and frame:GetName()
-    if type(frameName) ~= "string" then
-        return false
-    end
-    return frameName:match("^NamePlate") ~= nil
-end
-
+-- Blizzard names every party/raid member frame (CompactPartyFrameMember1,
+-- CompactRaidFrame1, CompactRaidGroup1Member1); other compact frames are skipped.
 local function IsCompactGroupFrame(frame)
-    if not frame then
+    if frame:IsForbidden() then
         return false
     end
+    local name = frame:GetName()
+    return name ~= nil and name:find("^Compact") ~= nil
+end
 
-    local frameName = frame.GetName and frame:GetName()
-    if type(frameName) ~= "string" then
-        return false
+local function OnCompactUnitFrameSetUnit(frame, unit)
+    if compactFrameUnits[frame] == unit or not IsCompactGroupFrame(frame) then
+        return
     end
-
-    if frameName:match("^CompactPartyFrameMember%d+$") then
-        return true
-    end
-
-    if frameName:match("^CompactPartyFramePet%d+$") then
-        return true
-    end
-
-    if frameName:match("^CompactRaidFrame%d+$") then
-        return true
-    end
-
-    return false
+    compactFrameUnits[frame] = unit
+    ClickCasting:RegisterSecureFrame(frame)
 end
 
 ----------------------------------------------------------------------------------------
 -- Registration
 ----------------------------------------------------------------------------------------
-function ClickCasting:TryRegisterSupportedFrame(frame, fallbackUnit)
-    if not frame then
-        return false
-    end
-    if frame.IsForbidden and frame:IsForbidden() then
-        return false
-    end
-    if IsFrameNameplate(frame) then
-        return false
-    end
-    if IsCompactGroupFrame(frame) then
-        return false
-    end
-
-    local unit = ResolveFrameUnit(frame, fallbackUnit)
-    if not self:IsSupportedUnitToken(unit) then
-        return false
-    end
-
-    if InCombatLockdown() then
-        self.frameRegistrationQueue[frame] = true
-        self.pendingFrameRegistration = true
-        return false
-    end
-
-    return self:RegisterSecureFrame(frame)
-end
-
-function ClickCasting:DiscoverStaticFrames()
-    for frameName, unit in pairs(STATIC_FRAME_UNITS) do
-        local frame = _G[frameName]
-        if frame then
-            self:TryRegisterSupportedFrame(frame, unit)
-        end
-    end
-end
-
-function ClickCasting:DiscoverCompactFrames()
-    for index = 1, 5 do
-        local partyFrame = _G["CompactPartyFrameMember" .. tostring(index)]
-        if partyFrame then
-            self:TryRegisterSupportedFrame(partyFrame, "party" .. tostring(index))
-        end
-    end
-
-    for index = 1, 40 do
-        local raidFrame = _G["CompactRaidFrame" .. tostring(index)]
-        if raidFrame then
-            self:TryRegisterSupportedFrame(raidFrame, "raid" .. tostring(index))
-        end
-    end
-end
-
 function ClickCasting:DiscoverSupportedFrames()
-    self:DiscoverStaticFrames()
-    self:FlushPendingFrameRegistrations()
-end
-
-----------------------------------------------------------------------------------------
--- Hooks
-----------------------------------------------------------------------------------------
-function ClickCasting:InitializeFrameDiscovery()
-    -- Compact party/raid unit buttons are excluded from RefineUI click-casting to
-    -- avoid tainting Blizzard's secure compact frame update path.
-end
-
-function ClickCasting:HandleAddonLoaded(addonName)
-    if addonName == "Blizzard_CompactRaidFrames" or addonName == "Blizzard_UnitFrame" then
-        self:DiscoverSupportedFrames()
+    for index = 1, #SUPPORTED_FRAME_NAMES do
+        local frame = _G[SUPPORTED_FRAME_NAMES[index]]
+        if frame and not self.registeredFrames[frame] then
+            self:RegisterSecureFrame(frame)
+        end
     end
 
-    if self.HandleSpellbookAddonLoaded then
-        self:HandleSpellbookAddonLoaded(addonName)
+    for formatIndex = 1, #COMPACT_FRAME_NAME_FORMATS do
+        local nameFormat = COMPACT_FRAME_NAME_FORMATS[formatIndex]
+        for index = 1, MAX_COMPACT_FRAME_INDEX do
+            local frame = _G[nameFormat:format(index)]
+            if not frame then
+                break
+            end
+            OnCompactUnitFrameSetUnit(frame, frame:GetAttribute("unit"))
+        end
     end
+
+    -- Party and raid frames are created and reassigned units on roster changes;
+    -- each unit change re-runs SecureUnitButton_OnLoad, which resets clicks.
+    hooksecurefunc("CompactUnitFrame_SetUnit", OnCompactUnitFrameSetUnit)
 end

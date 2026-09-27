@@ -27,7 +27,6 @@ local ipairs = ipairs
 local pairs = pairs
 local type = type
 local tostring = tostring
-local floor = math.floor
 local abs = math.abs
 local issecretvalue = _G.issecretvalue
 local canaccessvalue = _G.canaccessvalue
@@ -37,7 +36,6 @@ local wipe = wipe
 -- Constants
 ----------------------------------------------------------------------------------------
 local PARTY_FRAME_STATE_REGISTRY = "UnitFramesPartyState"
-local PARTY_AURA_STATE_REGISTRY  = "UnitFramesPartyAuraState"
 
 local GAP     = 18
 local PET_GAP = 8
@@ -60,7 +58,6 @@ end
 -- External State (Secure-safe)
 ----------------------------------------------------------------------------------------
 local PartyFrameData = RefineUI:CreateDataRegistry(PARTY_FRAME_STATE_REGISTRY, "k")
-local PartyAuraData  = RefineUI:CreateDataRegistry(PARTY_AURA_STATE_REGISTRY, "k")
 
 local function GetPartyData(frame)
     if not frame then return {} end
@@ -68,16 +65,6 @@ local function GetPartyData(frame)
     if not data then
         data = {}
         PartyFrameData[frame] = data
-    end
-    return data
-end
-
-local function GetPartyAuraData(auraFrame)
-    if not auraFrame then return {} end
-    local data = PartyAuraData[auraFrame]
-    if not data then
-        data = {}
-        PartyAuraData[auraFrame] = data
     end
     return data
 end
@@ -91,10 +78,6 @@ end
 ----------------------------------------------------------------------------------------
 local function IsUnreadableNumber(value)
     return type(value) == "number" and issecretvalue and issecretvalue(value)
-end
-
-local function IsSecretValue(value)
-    return issecretvalue and issecretvalue(value) or false
 end
 
 ----------------------------------------------------------------------------------------
@@ -134,83 +117,6 @@ local function IsFrameShownSafe(frame)
     end
     local ok, shown = pcall(isShown, frame)
     return ok and shown == true
-end
-
-----------------------------------------------------------------------------------------
--- Safe Frame Level / Strata
-----------------------------------------------------------------------------------------
-local function GetSafeFrameLevel(frame, fallback)
-    local fallbackValue = type(fallback) == "number" and fallback or 0
-    if not frame or IsForbiddenObject(frame) or type(frame.GetFrameLevel) ~= "function" then
-        return fallbackValue
-    end
-
-    local ok, level = pcall(frame.GetFrameLevel, frame)
-    if not ok or IsUnreadableNumber(level) then
-        return fallbackValue
-    end
-
-    if type(level) ~= "number" then
-        return fallbackValue
-    end
-
-    return floor(level + 0.5)
-end
-
-local function GetSafeFrameStrata(frame, fallback)
-    local fallbackValue = type(fallback) == "string" and fallback or "MEDIUM"
-    if not frame or IsForbiddenObject(frame) or type(frame.GetFrameStrata) ~= "function" then
-        return fallbackValue
-    end
-
-    local ok, strata = pcall(frame.GetFrameStrata, frame)
-    if not ok or IsSecretValue(strata) or type(strata) ~= "string" or strata == "" then
-        return fallbackValue
-    end
-
-    return strata
-end
-
-local function TrySetFrameLevel(frame, level)
-    if not frame or IsForbiddenObject(frame) or type(frame.SetFrameLevel) ~= "function" then
-        return
-    end
-    if type(level) ~= "number" or IsUnreadableNumber(level) then
-        return
-    end
-
-    pcall(frame.SetFrameLevel, frame, floor(level + 0.5))
-end
-
-local function TrySetFrameStrata(frame, strata)
-    if not frame or IsForbiddenObject(frame) or type(frame.SetFrameStrata) ~= "function" then
-        return
-    end
-    if IsSecretValue(strata) or type(strata) ~= "string" or strata == "" then
-        return
-    end
-
-    pcall(frame.SetFrameStrata, frame, strata)
-end
-
-----------------------------------------------------------------------------------------
--- Dispel Type Validation
-----------------------------------------------------------------------------------------
-local function GetSafeDispelTypeKey(dispelType)
-    if type(dispelType) ~= "string" or IsSecretValue(dispelType) then
-        return nil
-    end
-
-    if dispelType == "Magic"
-        or dispelType == "Curse"
-        or dispelType == "Disease"
-        or dispelType == "Poison"
-        or dispelType == "Bleed"
-        or dispelType == "None" then
-        return dispelType
-    end
-
-    return nil
 end
 
 ----------------------------------------------------------------------------------------
@@ -407,18 +313,11 @@ Private.Party = Private.Party or {}
 local P = Private.Party
 
 P.GetData               = GetPartyData
-P.GetAuraData            = GetPartyAuraData
 P.BuildHookKey           = BuildPartyHookKey
 
 P.IsUnreadableNumber     = IsUnreadableNumber
-P.IsSecretValue          = IsSecretValue
 P.IsForbiddenObject      = IsForbiddenObject
 P.IsFrameShown           = IsFrameShownSafe
-P.GetSafeFrameLevel      = GetSafeFrameLevel
-P.GetSafeFrameStrata     = GetSafeFrameStrata
-P.TrySetFrameLevel       = TrySetFrameLevel
-P.TrySetFrameStrata      = TrySetFrameStrata
-P.GetSafeDispelTypeKey   = GetSafeDispelTypeKey
 
 P.IsEditModeActive       = IsEditModeActiveNow
 P.IsCompactFrame         = IsPartyRaidCompactFrame

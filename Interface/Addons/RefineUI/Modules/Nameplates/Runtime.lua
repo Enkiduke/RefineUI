@@ -30,27 +30,34 @@ local tinsert = table.insert
 local C_NamePlate = C_NamePlate
 local C_NamePlateManager = C_NamePlateManager
 local C_CVar = C_CVar
+local C_CurveUtil = C_CurveUtil
 local Enum = Enum
-local SetCVar = SetCVar
 local GetCVar = GetCVar
 local IsInInstance = IsInInstance
 local UnitInBattleground = UnitInBattleground
 local UnitAffectingCombat = UnitAffectingCombat
-local UnitIsPlayer = UnitIsPlayer
 local CreateColor = CreateColor
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
+local Private = Nameplates:GetPrivate()
+local Util = Private.Util
+local Runtime = Private.Runtime
+local Constants = Private.Constants
+local ActiveNameplates = Private.ActiveNameplates
+local NameplateData = RefineUI.NameplateData
+local IsNameOnly = Util.IsNameOnly
+local HEALTH_BAR_TEXTURE = Private.Textures.HEALTH_BAR
+
 local HOOK_KEY = {
     UPDATE_NAME = "Nameplates:CompactUnitFrame_UpdateName",
     UPDATE_HEALTH = "Nameplates:CompactUnitFrame_UpdateHealth",
     UPDATE_HEALTH_COLOR = "Nameplates:CompactUnitFrame_UpdateHealthColor",
-    UPDATE_RAID_TARGET_ICON = "Nameplates:CompactUnitFrame_UpdateRaidTargetIcon",
     MIXIN_ON_UNIT_CLEARED = "Nameplates:NamePlateUnitFrameMixin:OnUnitCleared",
     MIXIN_UPDATE_IS_TARGET = "Nameplates:NamePlateUnitFrameMixin:UpdateIsTarget",
     MIXIN_UPDATE_RAID_TARGET_ANCHOR = "Nameplates:NamePlateUnitFrameMixin:UpdateRaidTarget:Anchor",
-    MIXIN_UPDATE_ANCHORS_RAID_ANCHOR = "Nameplates:NamePlateUnitFrameMixin:UpdateAnchors:RaidAnchor",
+    MIXIN_UPDATE_ANCHORS = "Nameplates:NamePlateUnitFrameMixin:UpdateAnchors",
     AURA_ITEM_SET_AURA = "Nameplates:NamePlateAuraItemMixin:SetAura",
     AURAS_REFRESH = "Nameplates:NamePlateAurasMixin:RefreshAuras",
     AURAS_REFRESH_LIST = "Nameplates:NamePlateAurasMixin:RefreshList",
@@ -62,7 +69,7 @@ local EVENT_KEY = {
     UNIT_STATE = "Nameplates:UnitState",
     THREAT_ROLE = "Nameplates:ThreatRole",
     CVAR_STATE = "Nameplates:CVarState",
-    NAME_RULE_CVAR = "Nameplates:NameRuleCVar",
+    CVAR_UPDATE = "Nameplates:NameRuleCVar",
 }
 
 local EVENT_LIST = {
@@ -92,78 +99,70 @@ local EMPTY_TEXT_OPTS = {
     emptyText = "",
 }
 
+local AURA_DEBUFF_BORDER_COLOR = CreateColor(0.8, 0.1, 0.1, 1)
+local auraBuffBorderColor
+
 ----------------------------------------------------------------------------------------
 -- Shared Runtime Helpers
 ----------------------------------------------------------------------------------------
-local GetAuraItemUnitFrame
-local GetEnemyAuraLayoutConfig
-local IsFriendlyAuraLayoutUnitFrame
-local GetScaledAuraLayoutOffset
-
-local function GetUtil()
-    local private = Nameplates:GetPrivate()
-    return (private and private.Util) or RefineUI.NameplatesUtil
-end
-
-local function IsRuntimeSuppressedNameplate(unitFrame, data)
-    if not unitFrame then
-        return false
-    end
-
-    if RefineUI.IsRuntimeSuppressedNameplate then
-        return RefineUI:IsRuntimeSuppressedNameplate(unitFrame, data)
-    end
-
-    if not data then
-        data = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame] or nil
-    end
-
-    return data and data.RefineHidden == true or false
-end
-
 local function UpdateTargetUnitFrame(unitFrame)
-    if not unitFrame or not RefineUI.UpdateTarget then
-        return
-    end
     RefineUI:UpdateTarget(unitFrame)
 end
 
-local function QueueEnemyAuraLayoutRefresh(unitFrame)
-    if not unitFrame or not RefineUI.After then
-        return
+local function GetAuraItemUnitFrame(auraFrame)
+    local listFrame = auraFrame:GetParent()
+    local aurasMixin = listFrame and listFrame:GetParent()
+    local unitFrame = aurasMixin and aurasMixin:GetParent()
+    if unitFrame and not unitFrame.unit then
+        unitFrame = unitFrame:GetParent()
     end
 
-    local timerKey = TIMER_KEY.DEFERRED_AURA_LAYOUT .. tostring(unitFrame)
-    RefineUI:After(timerKey, 0, function()
-        if not unitFrame or (unitFrame.IsForbidden and unitFrame:IsForbidden()) then
-            return
-        end
+    return unitFrame
+end
 
-        Nameplates:RefreshEnemyAuraLayout(unitFrame)
-    end)
+local function GetScaledAuraLayoutOffset(value, defaultValue)
+    return RefineUI:Scale(tonumber(value) or defaultValue)
+end
+
+local function GetAccessiblePositiveNumber(value)
+    if not Util.IsAccessibleValue(value) or type(value) ~= "number" or value <= 0 then
+        return nil
+    end
+    return value
+end
+
+-- Aura and name hooks fire several times per Blizzard refresh; collect targets and
+-- flush once on the next frame through a single keyed timer. The flag records
+-- whether the CC display should also be reconciled (aura-driven refreshes only).
+local pendingAuraLayoutFrames = {}
+local pendingAuraVisuals = {}
+
+local function FlushEnemyAuraLayoutRefresh()
+    for unitFrame, refreshCrowdControl in pairs(pendingAuraLayoutFrames) do
+        pendingAuraLayoutFrames[unitFrame] = nil
+        if not unitFrame:IsForbidden() then
+            Nameplates:RefreshEnemyAuraLayout(unitFrame)
+            if refreshCrowdControl then
+                -- Reconcile the CC holder on aura updates, even when no cast event fires.
+                RefineUI:UpdateNameplateCrowdControl(unitFrame, unitFrame.unit)
+            end
+        end
+    end
+end
+
+local function QueueEnemyAuraLayoutRefresh(unitFrame, refreshCrowdControl)
+    pendingAuraLayoutFrames[unitFrame] = refreshCrowdControl or pendingAuraLayoutFrames[unitFrame] or false
+    RefineUI:After(TIMER_KEY.DEFERRED_AURA_LAYOUT, 0, FlushEnemyAuraLayoutRefresh)
 end
 
 local function GetAuraVisualInset(auraItemFrame, unitFrame)
-    if not auraItemFrame or not unitFrame then
+    local aurasFrame = unitFrame and unitFrame.AurasFrame
+    if not aurasFrame or unitFrame:IsFriend() then
         return 0
     end
 
-    local util = GetUtil()
-    if not util or IsFriendlyAuraLayoutUnitFrame(unitFrame, util) ~= false then
-        return 0
-    end
-
-    local aurasFrame = unitFrame.AurasFrame
-    if not aurasFrame then
-        return 0
-    end
-
-    local auraConfig = GetEnemyAuraLayoutConfig()
-    if not auraConfig then
-        return 0
-    end
-
-    local parent = auraItemFrame.GetParent and auraItemFrame:GetParent() or nil
+    local auraConfig = Config.Nameplates.EnemyAuras
+    local parent = auraItemFrame:GetParent()
     if parent == aurasFrame.DebuffListFrame then
         return max(0, GetScaledAuraLayoutOffset(auraConfig.DebuffSpacing, 2) * 0.5)
     end
@@ -175,35 +174,32 @@ local function GetAuraVisualInset(auraItemFrame, unitFrame)
     return 0
 end
 
+local function SetDefaultAuraBorderColor(border)
+    local borderColor = Config.General.BorderColor
+    border:SetBackdropBorderColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
+end
+
 local function ApplyAuraVisualState(auraItemFrame, aura)
-    if not auraItemFrame then
-        return
-    end
-
-    local util = GetUtil()
-    if not util then
-        return
-    end
-
     local unitFrame = GetAuraItemUnitFrame(auraItemFrame)
-    if IsRuntimeSuppressedNameplate(unitFrame) then
+    if IsNameOnly(unitFrame) then
         return
     end
 
     Nameplates:SkinNamePlateAura(auraItemFrame, GetAuraVisualInset(auraItemFrame, unitFrame))
 
-    if not auraItemFrame.border then
+    local border = auraItemFrame.border
+    if not border then
         return
     end
 
     local isHelpful
-    if util.IsAccessibleValue(aura) then
-        isHelpful = util.SafeTableIndex(aura, "isHelpful")
+    if Util.IsAccessibleValue(aura) then
+        isHelpful = Util.SafeTableIndex(aura, "isHelpful")
     end
 
     if isHelpful == nil then
-        local listFrame = auraItemFrame.GetParent and auraItemFrame:GetParent() or nil
-        local aurasMixin = listFrame and listFrame.GetParent and listFrame:GetParent() or nil
+        local listFrame = auraItemFrame:GetParent()
+        local aurasMixin = listFrame and listFrame:GetParent()
         if aurasMixin and listFrame == aurasMixin.BuffListFrame then
             isHelpful = true
         elseif aurasMixin and (listFrame == aurasMixin.DebuffListFrame or listFrame == aurasMixin.CrowdControlListFrame) then
@@ -211,86 +207,71 @@ local function ApplyAuraVisualState(auraItemFrame, aura)
         end
     end
 
-    if util.IsSecret(isHelpful) then
-        local borderColor = Config.General.BorderColor
-        local buffColor = CreateColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
-        local debuffColor = CreateColor(0.8, 0.1, 0.1, 1)
-        local curveUtil = _G.C_CurveUtil
-        if curveUtil and type(curveUtil.EvaluateColorFromBoolean) == "function" then
-            local finalColor = curveUtil.EvaluateColorFromBoolean(isHelpful, buffColor, debuffColor)
-            auraItemFrame.border:SetBackdropBorderColor(finalColor:GetRGBA())
+    if Util.IsSecret(isHelpful) then
+        if C_CurveUtil and C_CurveUtil.EvaluateColorFromBoolean then
+            if not auraBuffBorderColor then
+                local borderColor = Config.General.BorderColor
+                auraBuffBorderColor = CreateColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
+            end
+            local finalColor = C_CurveUtil.EvaluateColorFromBoolean(isHelpful, auraBuffBorderColor, AURA_DEBUFF_BORDER_COLOR)
+            border:SetBackdropBorderColor(finalColor:GetRGBA())
         else
-            auraItemFrame.border:SetBackdropBorderColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
+            SetDefaultAuraBorderColor(border)
         end
-        return
-    end
-
-    if isHelpful == true then
-        local borderColor = Config.General.BorderColor
-        auraItemFrame.border:SetBackdropBorderColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
         return
     end
 
     if isHelpful == false then
         local r, g, b = 0.8, 0.1, 0.1
         local dispelName
-        if util.IsAccessibleValue(aura) then
-            dispelName = util.SafeTableIndex(aura, "dispelName")
+        if Util.IsAccessibleValue(aura) then
+            dispelName = Util.SafeTableIndex(aura, "dispelName")
         end
-        if dispelName and not util.IsSecret(dispelName) and _G.DebuffTypeColor then
+        if dispelName and not Util.IsSecret(dispelName) and _G.DebuffTypeColor then
             local color = _G.DebuffTypeColor[dispelName]
             if color then
                 r, g, b = color.r, color.g, color.b
             end
         end
 
-        auraItemFrame.border:SetBackdropBorderColor(r, g, b)
+        border:SetBackdropBorderColor(r, g, b)
         return
     end
 
-    local borderColor = Config.General.BorderColor
-    auraItemFrame.border:SetBackdropBorderColor(borderColor[1], borderColor[2], borderColor[3], borderColor[4] or 1)
+    SetDefaultAuraBorderColor(border)
+end
+
+local function FlushAuraVisualRefresh()
+    for auraItemFrame, aura in pairs(pendingAuraVisuals) do
+        pendingAuraVisuals[auraItemFrame] = nil
+
+        if not auraItemFrame:IsForbidden() then
+            -- Pooled aura items can be reassigned before the flush; skip stale auras.
+            local auraInstanceID = Util.IsAccessibleValue(aura) and Util.SafeTableIndex(aura, "auraInstanceID") or nil
+            local currentInstanceID = Util.SafeTableIndex(auraItemFrame, "auraInstanceID")
+            local isStale = auraInstanceID ~= nil and currentInstanceID ~= nil
+                and not Util.IsSecret(auraInstanceID)
+                and not Util.IsSecret(currentInstanceID)
+                and currentInstanceID ~= auraInstanceID
+
+            if not isStale then
+                ApplyAuraVisualState(auraItemFrame, aura)
+            end
+        end
+    end
 end
 
 local function QueueAuraVisualRefresh(auraItemFrame, aura)
-    if not auraItemFrame or not RefineUI.After then
+    if aura == nil then
         return
     end
 
-    local util = GetUtil()
-    local auraInstanceID
-    if util and util.IsAccessibleValue(aura) then
-        auraInstanceID = util.SafeTableIndex(aura, "auraInstanceID")
-        if util.IsSecret(auraInstanceID) then
-            auraInstanceID = nil
-        end
-    end
-
-    local timerKey = TIMER_KEY.DEFERRED_AURA_VISUALS .. tostring(auraItemFrame)
-    RefineUI:After(timerKey, 0, function()
-        if not auraItemFrame or (auraItemFrame.IsForbidden and auraItemFrame:IsForbidden()) then
-            return
-        end
-
-        if auraInstanceID ~= nil then
-            local currentInstanceID = util and util.SafeTableIndex(auraItemFrame, "auraInstanceID")
-            if currentInstanceID ~= nil and not (util and util.IsSecret(currentInstanceID)) then
-                if currentInstanceID ~= auraInstanceID then
-                    return
-                end
-            end
-        end
-
-        ApplyAuraVisualState(auraItemFrame, aura)
-    end)
+    pendingAuraVisuals[auraItemFrame] = aura
+    RefineUI:After(TIMER_KEY.DEFERRED_AURA_VISUALS, 0, FlushAuraVisualRefresh)
 end
 
 local function ResetPooledNameplateFrameState(unitFrame)
-    if not unitFrame then
-        return
-    end
-
-    local data = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
+    local data = NameplateData[unitFrame]
     if not data then
         return
     end
@@ -299,7 +280,7 @@ local function ResetPooledNameplateFrameState(unitFrame)
         data.EventFrame:UnregisterAllEvents()
     end
 
-    if data.RefineName and data.RefineName.SetText then
+    if data.RefineName then
         data.RefineName:SetText("")
         data.RefineName:Hide()
     end
@@ -315,10 +296,14 @@ local function ResetPooledNameplateFrameState(unitFrame)
 
     data.EventFrameUnit = nil
     data.NameSource = nil
+    data.NpcTitleNameShown = nil
     data.RefineHidden = nil
     data.RefineNpcTitleAnchor = nil
     data.RefineNpcTitleFormatted = nil
-    data.RefineNameText = nil
+    data.RefineNameRaw = nil
+    data.HealthTextureApplied = nil
+    data.AuraAnchorDebuffY = nil
+    data.AuraLayoutStale = nil
     data.RaidIconAnchorMode = nil
     data.RaidIconAnchorTarget = nil
     data.isTarget = nil
@@ -327,16 +312,9 @@ local function ResetPooledNameplateFrameState(unitFrame)
     data.inCombat = nil
     data.LastImportantCastSpellIdentifier = nil
     data.LastImportantCastIsImportant = nil
-    data.lastPortraitGUID = nil
+    data.PortraitRendered = nil
     data.lastPortraitMode = nil
-    data.PortraitVisualSignature = nil
-    data.BorderVisualSignature = nil
-    data.CrowdControlVisualSignature = nil
     data.wasCasting = nil
-    data.CrowdControlAuraDurationSeconds = nil
-    data.CrowdControlExpirationTime = nil
-    data._borderColorDirty = nil
-    data._borderColorForceCastCheck = nil
     data.SuppressPortraitBorderRefresh = nil
     data.lastTargetNameOnly = nil
     data.TargetArrowsShown = nil
@@ -346,128 +324,26 @@ local function ResetPooledNameplateFrameState(unitFrame)
     data.TargetArrowNameOnly = nil
 end
 
-GetAuraItemUnitFrame = function(auraFrame)
-    if not auraFrame or not auraFrame.GetParent then
-        return nil
-    end
-
-    local listFrame = auraFrame:GetParent()
-    local aurasMixin = listFrame and listFrame.GetParent and listFrame:GetParent() or nil
-    local unitFrame = aurasMixin and aurasMixin.GetParent and aurasMixin:GetParent() or nil
-    if unitFrame and not unitFrame.unit and unitFrame.GetParent then
-        unitFrame = unitFrame:GetParent()
-    end
-
-    return unitFrame
-end
-
-GetEnemyAuraLayoutConfig = function()
-    local nameplatesConfig = Config and Config.Nameplates
-    return nameplatesConfig and nameplatesConfig.EnemyAuras or nil
-end
-
-local function ReadAuraLayoutNumber(value, defaultValue)
-    local number = tonumber(value)
-    if number == nil then
-        number = defaultValue
-    end
-    return number
-end
-
-GetScaledAuraLayoutOffset = function(value, defaultValue)
-    return RefineUI:Scale(ReadAuraLayoutNumber(value, defaultValue))
-end
-
-local function GetAccessiblePositiveNumber(value)
-    local private = Nameplates:GetPrivate()
-    local util = private and private.Util
-    if not util or not util.IsAccessibleValue or not util.IsAccessibleValue(value) then
-        return nil
-    end
-
-    if type(value) ~= "number" or value <= 0 then
-        return nil
-    end
-
-    return value
-end
-
-IsFriendlyAuraLayoutUnitFrame = function(unitFrame, util)
-    if not unitFrame or not util then
-        return nil
-    end
-
-    local isFriend
-    if type(unitFrame.IsFriend) == "function" then
-        local ok, friend = pcall(unitFrame.IsFriend, unitFrame)
-        if ok then
-            isFriend = util.ReadSafeBoolean(friend)
-        end
-    end
-
-    if isFriend == nil then
-        isFriend = util.ReadSafeBoolean(unitFrame.isFriend)
-    end
-
-    return isFriend
-end
-
 local function GetRefineAuraBaseYOffset(data, auraConfig)
     local nameHeight = 0
-    local refineName = data and data.RefineName
-    if refineName and refineName.IsShown and refineName:IsShown() then
-        local resolvedHeight
-        if refineName.GetStringHeight then
-            resolvedHeight = refineName:GetStringHeight()
-        end
-        resolvedHeight = GetAccessiblePositiveNumber(resolvedHeight)
-        if not resolvedHeight then
-            resolvedHeight = refineName.GetHeight and refineName:GetHeight() or 0
-        end
-        resolvedHeight = GetAccessiblePositiveNumber(resolvedHeight)
-        if resolvedHeight then
-            nameHeight = resolvedHeight
-        end
+    local refineName = data.RefineName
+    if refineName and refineName:IsShown() then
+        nameHeight = GetAccessiblePositiveNumber(refineName:GetStringHeight())
+            or GetAccessiblePositiveNumber(refineName:GetHeight())
+            or 0
     end
 
-    return nameHeight + GetScaledAuraLayoutOffset(auraConfig and auraConfig.BaseOffsetY, 6)
+    return nameHeight + GetScaledAuraLayoutOffset(auraConfig.BaseOffsetY, 6)
 end
 
-local function ApplyAuraListAnchor(listFrame, anchorPoint, anchorTarget, relativePoint, xOffset, yOffset)
-    if not listFrame or not anchorTarget then
-        return
-    end
-
-    listFrame:ClearAllPoints()
-    listFrame:SetPoint(anchorPoint, anchorTarget, relativePoint, xOffset, yOffset)
-end
-
-local function ApplyAuraListSpacing(listFrame, spacing)
-    -- Blizzard's GridLayoutFrame reads childXPadding during secure aura layout.
-    -- Writing that Lua field from addon code taints later layout/measurement paths.
-    -- Enemy aura spacing is applied visually per aura item instead of mutating the
-    -- Blizzard-owned grid configuration.
-end
-
+-- Blizzard's GridLayoutFrame reads childXPadding during secure aura layout, so enemy
+-- aura spacing is applied visually per aura item instead of on the list frames.
+-- Anchors are cached per unit frame; Blizzard only re-anchors the lists in
+-- UpdateAnchors, whose hook clears the cache.
 function Nameplates:RefreshEnemyAuraLayout(unitFrame)
-    if not unitFrame then
-        return
-    end
-
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    local auraConfig = GetEnemyAuraLayoutConfig()
-    if not util or not auraConfig then
-        return
-    end
-
     local data = self:GetNameplateData(unitFrame)
-    if IsRuntimeSuppressedNameplate(unitFrame, data) then
-        return
-    end
-
-    local isFriend = IsFriendlyAuraLayoutUnitFrame(unitFrame, util)
-    if isFriend ~= false then
+    data.AuraLayoutStale = nil
+    if data.RefineHidden == true or unitFrame:IsFriend() then
         return
     end
 
@@ -477,41 +353,41 @@ function Nameplates:RefreshEnemyAuraLayout(unitFrame)
         return
     end
 
+    local auraConfig = Config.Nameplates.EnemyAuras
     local baseYOffset = GetRefineAuraBaseYOffset(data, auraConfig)
+    local debuffX = GetScaledAuraLayoutOffset(auraConfig.DebuffOffsetX, 0)
+    local debuffY = baseYOffset + GetScaledAuraLayoutOffset(auraConfig.DebuffOffsetY, 0)
+    local buffX = GetScaledAuraLayoutOffset(auraConfig.BuffOffsetX, 0)
+    local buffY = baseYOffset + GetScaledAuraLayoutOffset(auraConfig.BuffOffsetY, 0)
+
+    if data.AuraAnchorDebuffY == debuffY
+        and data.AuraAnchorDebuffX == debuffX
+        and data.AuraAnchorBuffX == buffX
+        and data.AuraAnchorBuffY == buffY then
+        return
+    end
 
     local debuffListFrame = aurasFrame.DebuffListFrame
     if debuffListFrame then
-        ApplyAuraListAnchor(
-            debuffListFrame,
-            "BOTTOMLEFT",
-            health,
-            "TOPLEFT",
-            GetScaledAuraLayoutOffset(auraConfig.DebuffOffsetX, 0),
-            baseYOffset + GetScaledAuraLayoutOffset(auraConfig.DebuffOffsetY, 0)
-        )
-        ApplyAuraListSpacing(debuffListFrame, GetScaledAuraLayoutOffset(auraConfig.DebuffSpacing, 2))
+        debuffListFrame:ClearAllPoints()
+        debuffListFrame:SetPoint("BOTTOMLEFT", health, "TOPLEFT", debuffX, debuffY)
     end
 
     local buffListFrame = aurasFrame.BuffListFrame
     if buffListFrame then
-        ApplyAuraListAnchor(
-            buffListFrame,
-            "BOTTOMRIGHT",
-            health,
-            "TOPRIGHT",
-            GetScaledAuraLayoutOffset(auraConfig.BuffOffsetX, 0),
-            baseYOffset + GetScaledAuraLayoutOffset(auraConfig.BuffOffsetY, 0)
-        )
-        ApplyAuraListSpacing(buffListFrame, GetScaledAuraLayoutOffset(auraConfig.BuffSpacing, 2))
+        buffListFrame:ClearAllPoints()
+        buffListFrame:SetPoint("BOTTOMRIGHT", health, "TOPRIGHT", buffX, buffY)
     end
+
+    data.AuraAnchorDebuffX = debuffX
+    data.AuraAnchorDebuffY = debuffY
+    data.AuraAnchorBuffX = buffX
+    data.AuraAnchorBuffY = buffY
 end
 
-function RefineUI:RefreshAllNameplateAuraAnchors(_reason)
-    local private = Nameplates:GetPrivate()
-    local activeNameplates = private and private.ActiveNameplates or {}
-
-    for nameplate in pairs(activeNameplates) do
-        local unitFrame = nameplate and nameplate.UnitFrame
+function RefineUI:RefreshAllNameplateAuraAnchors()
+    for nameplate in pairs(ActiveNameplates) do
+        local unitFrame = nameplate.UnitFrame
         if unitFrame then
             Nameplates:RefreshEnemyAuraLayout(unitFrame)
         end
@@ -523,23 +399,14 @@ end
 ----------------------------------------------------------------------------------------
 local function SetCVarIfChanged(cvar, value)
     local desired = tostring(value)
-    local current = GetCVar and GetCVar(cvar)
-    if current ~= desired then
-        if C_CVar and type(C_CVar.SetCVar) == "function" then
-            pcall(C_CVar.SetCVar, cvar, desired)
-        else
-            pcall(SetCVar, cvar, desired)
-        end
+    if GetCVar(cvar) ~= desired then
+        pcall(C_CVar.SetCVar, cvar, desired)
     end
 end
 
 function Nameplates:EnsureSimplifiedNameplatesDisabled()
-    if not C_NamePlateManager or not C_NamePlateManager.SetNamePlateSimplified then
-        return
-    end
-
-    local nameplateType = Enum and Enum.NamePlateType
-    if not nameplateType then
+    local nameplateType = Enum.NamePlateType
+    if not C_NamePlateManager or not C_NamePlateManager.SetNamePlateSimplified or not nameplateType then
         return
     end
 
@@ -548,42 +415,23 @@ function Nameplates:EnsureSimplifiedNameplatesDisabled()
 end
 
 function Nameplates:IsInGroupInstanceContent()
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    if not util then
-        return false
-    end
-
     local _, instanceType = IsInInstance()
     if instanceType == "party" or instanceType == "raid" or instanceType == "pvp" or instanceType == "arena" then
         return true
     end
 
-    local inBattleground = util.ReadSafeBoolean(UnitInBattleground("player"))
-    return inBattleground == true
+    return Util.ReadSafeBoolean(UnitInBattleground("player")) == true
 end
 
 function Nameplates:UpdateNameplateCVars(forceApply)
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    local runtime = private and private.Runtime
-    if not runtime or not util then
-        return
-    end
-
     self:EnsureSimplifiedNameplatesDisabled()
     self:ApplyThreatDisplayCVarFromConfig()
 
-    local inCombat = util.ReadSafeBoolean(UnitAffectingCombat("player"))
-    if inCombat == nil then
-        inCombat = false
-    end
-
+    local inCombat = Util.ReadSafeBoolean(UnitAffectingCombat("player")) == true
     local inGroupContent = self:IsInGroupInstanceContent()
-    local cfg = self:GetConfiguredNameplatesConfig()
-    local showPetNames = cfg and cfg.ShowPetNames == true
+    local showPetNames = self:GetConfiguredNameplatesConfig().ShowPetNames == true
 
-    local lastState = runtime.lastCVarState
+    local lastState = Runtime.lastCVarState
     if (not forceApply)
         and lastState.inCombat == inCombat
         and lastState.inGroupContent == inGroupContent
@@ -596,7 +444,6 @@ function Nameplates:UpdateNameplateCVars(forceApply)
     lastState.showPetNames = showPetNames
 
     local showFriends = (not inGroupContent and not inCombat) and 1 or 0
-    local showNPCs = (not inGroupContent and not inCombat) and 1 or 0
     local showFriendlyPlayerPets = (showFriends == 1 and showPetNames) and 1 or 0
     local showEnemyPlayerPets = showPetNames and 1 or 0
 
@@ -607,113 +454,64 @@ function Nameplates:UpdateNameplateCVars(forceApply)
     SetCVarIfChanged("nameplateShowFriendlyPlayerGuardians", showFriends)
     SetCVarIfChanged("nameplateShowFriendlyPlayerTotems", showFriends)
     SetCVarIfChanged("nameplateShowEnemyPets", showEnemyPlayerPets)
-    SetCVarIfChanged("nameplateShowFriendlyNpcs", showNPCs)
+    SetCVarIfChanged("nameplateShowFriendlyNpcs", showFriends)
 end
 
 ----------------------------------------------------------------------------------------
 -- Deferred Refresh Queue (Portrait)
 ----------------------------------------------------------------------------------------
+local function DrainDeferredPortraitRefreshQueue()
+    Nameplates:DrainDeferredPortraitRefreshQueue()
+end
+
 function Nameplates:SetPortraitRefreshJobEnabled(enabled)
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    local constants = private and private.Constants
-    if not runtime or not constants then
-        return
-    end
-
-    if not RefineUI.SetUpdateJobEnabled then
-        return
-    end
-
-    RefineUI:SetUpdateJobEnabled(constants.PORTRAIT_REFRESH_JOB_KEY, enabled == true, false)
+    RefineUI:SetUpdateJobEnabled(Constants.PORTRAIT_REFRESH_JOB_KEY, enabled == true, false)
 end
 
 function Nameplates:EnsurePortraitRefreshJob()
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    local constants = private and private.Constants
-    if not runtime or not constants then
-        return false
+    if RefineUI:IsUpdateJobRegistered(Constants.PORTRAIT_REFRESH_JOB_KEY) then
+        return
     end
 
-    if not RefineUI.RegisterUpdateJob then
-        return false
-    end
-
-    if RefineUI.IsUpdateJobRegistered and RefineUI:IsUpdateJobRegistered(constants.PORTRAIT_REFRESH_JOB_KEY) then
-        return true
-    end
-
-    local interval = constants.PORTRAIT_REFRESH_INTERVAL_SECONDS or 0.03
     RefineUI:RegisterUpdateJob(
-        constants.PORTRAIT_REFRESH_JOB_KEY,
-        interval,
-        function()
-            Nameplates:DrainDeferredPortraitRefreshQueue()
-        end,
+        Constants.PORTRAIT_REFRESH_JOB_KEY,
+        Constants.PORTRAIT_REFRESH_INTERVAL_SECONDS,
+        DrainDeferredPortraitRefreshQueue,
         {
             enabled = false,
             safe = true,
             disableOnError = true,
         }
     )
-
-    return true
 end
 
 function Nameplates:ClearDeferredPortraitRefreshQueue(unitFrame)
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    if not runtime then
-        return
-    end
-
     if unitFrame then
-        local queued = runtime.pendingPortraitRefreshByFrame[unitFrame]
+        local queued = Runtime.pendingPortraitRefreshByFrame[unitFrame]
         if queued then
             queued.cancelled = true
-            runtime.pendingPortraitRefreshByFrame[unitFrame] = nil
+            Runtime.pendingPortraitRefreshByFrame[unitFrame] = nil
         end
         return
     end
 
-    wipe(runtime.pendingPortraitRefreshQueue)
-    wipe(runtime.pendingPortraitRefreshByFrame)
-    runtime.pendingPortraitRefreshHead = 1
+    wipe(Runtime.pendingPortraitRefreshQueue)
+    wipe(Runtime.pendingPortraitRefreshByFrame)
+    Runtime.pendingPortraitRefreshHead = 1
     self:SetPortraitRefreshJobEnabled(false)
 end
 
 function Nameplates:QueuePortraitRefresh(unitFrame, unit, event)
-    if not unitFrame or not RefineUI.UpdateDynamicPortrait then
+    if IsNameOnly(unitFrame) then
         return
     end
 
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    local util = private and private.Util
-    if not runtime or not util then
-        return
-    end
-
-    local data = self:GetNameplateData(unitFrame)
-    if IsRuntimeSuppressedNameplate(unitFrame, data) then
-        return
-    end
-
-    local resolvedUnit = util.ResolveUnitToken(unit, unitFrame.unit)
+    local resolvedUnit = Util.ResolveUnitToken(unit, unitFrame.unit)
     if not resolvedUnit then
         return
     end
 
-    if not self:EnsurePortraitRefreshJob() then
-        local nameplate = unitFrame.GetParent and unitFrame:GetParent() or nil
-        if nameplate and nameplate.UnitFrame == unitFrame then
-            RefineUI:UpdateDynamicPortrait(nameplate, resolvedUnit, event)
-        end
-        return
-    end
-
-    local queued = runtime.pendingPortraitRefreshByFrame[unitFrame]
+    local queued = Runtime.pendingPortraitRefreshByFrame[unitFrame]
     if queued then
         queued.unit = resolvedUnit
         queued.event = event or queued.event
@@ -721,54 +519,42 @@ function Nameplates:QueuePortraitRefresh(unitFrame, unit, event)
         return
     end
 
+    self:EnsurePortraitRefreshJob()
+
     local entry = {
         unitFrame = unitFrame,
         unit = resolvedUnit,
         event = event,
         cancelled = false,
     }
-    runtime.pendingPortraitRefreshByFrame[unitFrame] = entry
-    tinsert(runtime.pendingPortraitRefreshQueue, entry)
+    Runtime.pendingPortraitRefreshByFrame[unitFrame] = entry
+    tinsert(Runtime.pendingPortraitRefreshQueue, entry)
     self:SetPortraitRefreshJobEnabled(true)
 end
 
 function Nameplates:DrainDeferredPortraitRefreshQueue()
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    local constants = private and private.Constants
-    local util = private and private.Util
-    if not runtime or not constants or not util then
-        return
-    end
-
-    local queue = runtime.pendingPortraitRefreshQueue
-    local head = runtime.pendingPortraitRefreshHead or 1
+    local queue = Runtime.pendingPortraitRefreshQueue
+    local head = Runtime.pendingPortraitRefreshHead
     local tail = #queue
-    if head > tail then
-        wipe(queue)
-        runtime.pendingPortraitRefreshHead = 1
-        self:SetPortraitRefreshJobEnabled(false)
-        return
-    end
-
-    local budget = constants.PORTRAIT_REFRESH_BUDGET_PER_TICK or 6
+    local budget = Constants.PORTRAIT_REFRESH_BUDGET_PER_TICK
     local processed = 0
+
     while processed < budget and head <= tail do
         local entry = queue[head]
         queue[head] = nil
         head = head + 1
 
-        if entry and entry.unitFrame then
-            runtime.pendingPortraitRefreshByFrame[entry.unitFrame] = nil
+        local unitFrame = entry.unitFrame
+        if Runtime.pendingPortraitRefreshByFrame[unitFrame] == entry then
+            Runtime.pendingPortraitRefreshByFrame[unitFrame] = nil
+        end
 
-            if not entry.cancelled then
-                local unitFrame = entry.unitFrame
-                local nameplate = unitFrame.GetParent and unitFrame:GetParent() or nil
-                if nameplate and nameplate.UnitFrame == unitFrame then
-                    local unit = util.ResolveUnitToken(entry.unit, unitFrame.unit)
-                    if unit then
-                        RefineUI:UpdateDynamicPortrait(nameplate, unit, entry.event)
-                    end
+        if not entry.cancelled then
+            local nameplate = unitFrame:GetParent()
+            if nameplate and nameplate.UnitFrame == unitFrame then
+                local unit = Util.ResolveUnitToken(entry.unit, unitFrame.unit)
+                if unit then
+                    RefineUI:UpdateDynamicPortrait(nameplate, unit, entry.event)
                 end
             end
         end
@@ -776,96 +562,63 @@ function Nameplates:DrainDeferredPortraitRefreshQueue()
         processed = processed + 1
     end
 
-    runtime.pendingPortraitRefreshHead = head
     if head > tail then
         wipe(queue)
-        runtime.pendingPortraitRefreshHead = 1
+        Runtime.pendingPortraitRefreshHead = 1
         self:SetPortraitRefreshJobEnabled(false)
     else
-        self:SetPortraitRefreshJobEnabled(true)
+        Runtime.pendingPortraitRefreshHead = head
     end
 end
 
 ----------------------------------------------------------------------------------------
 -- Event Handlers
 ----------------------------------------------------------------------------------------
-function Nameplates:OnNameplateAdded(event, unit)
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    local activeNameplates = private and private.ActiveNameplates
-    local runtime = private and private.Runtime
-    if not util or not activeNameplates then
-        return
-    end
+local function RefreshAddedNameplate(nameplate, unit, event)
+    ActiveNameplates[nameplate] = unit
 
-    local safeUnit = util.ResolveUnitToken(unit)
-    if not safeUnit then
-        return
-    end
-
-    self:EnsureConfiguredNameplateSizeHooks()
-
-    local nameplate = self:SafeGetNamePlateForUnit(safeUnit)
-    if not nameplate then
-        return
-    end
-
-    if nameplate.UnitFrame then
-        local data = self:GetNameplateData(nameplate.UnitFrame)
-        if util.IsUsableUnitToken(safeUnit) then
-            data.isPlayer = util.ReadSafeBoolean(UnitIsPlayer(safeUnit)) == true
-        end
-    end
-
-    activeNameplates[nameplate] = safeUnit
-
-    self:StyleNameplate(nameplate, safeUnit)
-    self:UpdateVisibility(nameplate, safeUnit)
-    self:ApplyNpcTitleVisual(nameplate, safeUnit, { allowResolve = true })
+    Nameplates:StyleNameplate(nameplate, unit)
+    Nameplates:UpdateVisibility(nameplate, unit)
+    Nameplates:ApplyNpcTitleVisual(nameplate, unit, "resolve")
 
     local unitFrame = nameplate.UnitFrame
-    local data = unitFrame and self:GetNameplateData(unitFrame) or nil
-    local isNameOnly = data and data.RefineHidden == true
-
-    if not isNameOnly and RefineUI.UpdateNameplateCrowdControl then
-        RefineUI:UpdateNameplateCrowdControl(unitFrame, safeUnit, event)
+    if not unitFrame then
+        return
     end
 
-    if data then
-        data.lastPortraitGUID = nil
-        data.lastPortraitMode = nil
-        data.PortraitVisualSignature = nil
-        data.BorderVisualSignature = nil
-        data.wasCasting = false
+    local data = Nameplates:GetNameplateData(unitFrame)
+    data.PortraitRendered = nil
+    data.lastPortraitMode = nil
+    data.wasCasting = false
+
+    if not IsNameOnly(unitFrame) then
+        RefineUI:UpdateDynamicPortrait(nameplate, unit)
+        -- After the portrait: the CC display anchors its icon to the portrait frame.
+        RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event)
+        QueueEnemyAuraLayoutRefresh(unitFrame)
     end
 
-    if (not isNameOnly) and RefineUI.UpdateDynamicPortrait then
-        RefineUI:UpdateDynamicPortrait(nameplate, safeUnit)
-    end
+    UpdateTargetUnitFrame(unitFrame)
+end
 
-    if unitFrame then
-        UpdateTargetUnitFrame(unitFrame)
+function Nameplates:OnNameplateAdded(event, unit)
+    local safeUnit = Util.ResolveUnitToken(unit)
+    local nameplate = safeUnit and self:SafeGetNamePlateForUnit(safeUnit)
+    if nameplate then
+        RefreshAddedNameplate(nameplate, safeUnit, event)
     end
 end
 
 function Nameplates:OnNameplateRemoved(_event, unit)
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    local activeNameplates = private and private.ActiveNameplates
-    local runtime = private and private.Runtime
-    if not util or not activeNameplates then
+    if not Util.IsUsableUnitToken(unit) then
         return
     end
 
-    if not util.IsUsableUnitToken(unit) then
-        return
-    end
-
-    local removedUnitFrame = nil
-    for nameplate, unitToken in pairs(activeNameplates) do
-        if util.IsUsableUnitToken(unitToken) and unitToken == unit then
-            activeNameplates[nameplate] = nil
-            removedUnitFrame = nameplate and nameplate.UnitFrame or nil
+    local removedUnitFrame
+    for nameplate, unitToken in pairs(ActiveNameplates) do
+        if unitToken == unit then
+            ActiveNameplates[nameplate] = nil
+            removedUnitFrame = nameplate.UnitFrame
             break
         end
     end
@@ -874,61 +627,41 @@ function Nameplates:OnNameplateRemoved(_event, unit)
         return
     end
 
-    if self.ClearDeferredPortraitRefreshQueue then
-        self:ClearDeferredPortraitRefreshQueue(removedUnitFrame)
-    end
-
-    if self.CancelNpcTitleResolve then
-        self:CancelNpcTitleResolve(removedUnitFrame)
-    end
-
+    self:ClearDeferredPortraitRefreshQueue(removedUnitFrame)
+    self:CancelNpcTitleResolve(removedUnitFrame)
     self:CancelNpcTitleRetry(removedUnitFrame)
+    pendingAuraLayoutFrames[removedUnitFrame] = nil
 
     ResetPooledNameplateFrameState(removedUnitFrame)
-
-    if RefineUI.ClearNameplateCrowdControl then
-        RefineUI:ClearNameplateCrowdControl(removedUnitFrame, true)
-    end
+    RefineUI:ClearNameplateCrowdControl(removedUnitFrame)
 end
 
 function Nameplates:HandleNameplateUnitStateEvent(event, unit)
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    if not util or util.IsDisallowedNameplateUnitToken(unit) then
+    if Util.IsDisallowedNameplateUnitToken(unit) then
         return
     end
 
     local nameplate = self:SafeGetNamePlateForUnit(unit)
-    if not nameplate then
+    local unitFrame = nameplate and nameplate.UnitFrame
+    if not unitFrame then
         return
     end
 
     self:UpdateVisibility(nameplate, unit)
 
-    local unitFrame = nameplate.UnitFrame
-    local data = unitFrame and self:GetNameplateData(unitFrame) or nil
-    local isNameOnly = IsRuntimeSuppressedNameplate(unitFrame, data)
-
+    local isNameOnly = IsNameOnly(unitFrame)
     if not isNameOnly then
         self:UpdateHealth(nameplate, unit)
     end
 
-    if unitFrame then
-        UpdateTargetUnitFrame(unitFrame)
-    end
+    UpdateTargetUnitFrame(unitFrame)
 
-    if (not isNameOnly) and RefineUI.UpdateNameplateCrowdControl then
+    if not isNameOnly then
         RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, event)
     end
 end
 
 function Nameplates:HandleNameplateCVarEvent(event)
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    if not runtime then
-        return
-    end
-
     self:UpdateNameplateCVars(event == "PLAYER_ENTERING_WORLD")
 
     if event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_REGEN_ENABLED" or self:IsNameplateSizeApplyPending() then
@@ -939,295 +672,208 @@ function Nameplates:HandleNameplateCVarEvent(event)
         return
     end
 
-    if C_NamePlate and type(C_NamePlate.GetNamePlates) == "function" then
-        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
-            local unitFrame = nameplate and nameplate.UnitFrame
-            if unitFrame then
-                self:CancelNpcTitleRetry(unitFrame)
-            end
+    for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+        local unitFrame = nameplate.UnitFrame
+        if unitFrame then
+            self:CancelNpcTitleRetry(unitFrame)
         end
     end
 
-    wipe(runtime.npcTitleCacheByGUID)
-    if self.ClearNpcTitleResolveQueue then
-        self:ClearNpcTitleResolveQueue()
-    end
-    if self.ClearDeferredPortraitRefreshQueue then
-        self:ClearDeferredPortraitRefreshQueue()
-    end
-    wipe(private.ActiveNameplates)
+    -- ActiveNameplates is maintained by the add/remove events. Wiping it here would
+    -- orphan plates added before this handler, skipping their removal cleanup.
+    wipe(Runtime.npcTitleCacheByGUID)
+    self:ClearNpcTitleResolveQueue()
+    self:ClearDeferredPortraitRefreshQueue()
 end
 
-function Nameplates:HandleNameRuleCVarUpdate(_event, cvarName)
-    if type(cvarName) ~= "string" or not NAME_RULE_CVAR[cvarName] then
+function Nameplates:HandleCVarUpdate(_event, cvarName)
+    if cvarName == Constants.NAMEPLATE_THREAT_DISPLAY_CVAR then
+        Runtime.threatHealthColorMirrored = nil
         return
     end
 
-    if type(RefineUI.RefreshAllNameplateNameRules) == "function" then
-        RefineUI:RefreshAllNameplateNameRules(cvarName)
+    if type(cvarName) == "string" and NAME_RULE_CVAR[cvarName] then
+        RefineUI:RefreshAllNameplateNameRules()
     end
 end
 
 ----------------------------------------------------------------------------------------
 -- Hook Wiring
 ----------------------------------------------------------------------------------------
+-- Blizzard's CompactUnitFrame functions also drive raid/party frames; only the unit
+-- frame owned by a nameplate passes this check.
+local function GetOwningNameplate(frame)
+    if frame:IsForbidden() then
+        return nil
+    end
+
+    local nameplate = frame:GetParent()
+    if nameplate and nameplate.UnitFrame == frame and Util.IsUsableUnitToken(frame.unit) then
+        return nameplate
+    end
+    return nil
+end
+
 function Nameplates:RegisterRuntimeHooks()
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    local runtime = private and private.Runtime
-    if not util or not runtime then
+    if Runtime.runtimeHooksRegistered == true then
         return
     end
 
-    if runtime.runtimeHooksRegistered == true then
-        return
-    end
-
-    local textures = private and private.Textures
-    local healthBarTexture = textures and textures.HEALTH_BAR
-
+    -- CompactUnitFrame_UpdateHealth calls UpdateName and UpdateHealthColor, so these
+    -- three hooks run on every health change of every plate. Keep them cheap.
     RefineUI:HookOnce(HOOK_KEY.UPDATE_NAME, "CompactUnitFrame_UpdateName", function(frame)
-        if frame:IsForbidden() then return end
-        if not util.IsUsableUnitToken(frame.unit) then return end
-        if not frame.unit:find("nameplate") then return end
+        local nameplate = GetOwningNameplate(frame)
+        if not nameplate then return end
 
-        local nameplate = frame:GetParent()
-        if nameplate and nameplate.UnitFrame == frame then
-            Nameplates:UpdateName(nameplate, frame.unit)
-            -- Avoid mutating aura anchors inline inside CompactUnitFrame's update path.
-            -- Deferring preserves the visual behavior while keeping Blizzard's
-            -- secret-sensitive setup and heal-prediction pass isolated.
+        Nameplates:UpdateName(nameplate, frame.unit)
+        -- Avoid mutating aura anchors inline inside CompactUnitFrame's update path.
+        -- Deferring preserves the visual behavior while keeping Blizzard's
+        -- secret-sensitive setup and heal-prediction pass isolated.
+        local data = NameplateData[frame]
+        if data and data.AuraLayoutStale then
             QueueEnemyAuraLayoutRefresh(frame)
         end
     end)
 
     RefineUI:HookOnce(HOOK_KEY.UPDATE_HEALTH, "CompactUnitFrame_UpdateHealth", function(frame)
-        if frame:IsForbidden() then return end
-        if not util.IsUsableUnitToken(frame.unit) then return end
-        if not frame.unit:find("nameplate") then return end
+        local nameplate = GetOwningNameplate(frame)
+        if not nameplate or IsNameOnly(frame) then return end
 
-        local nameplate = frame:GetParent()
-        if nameplate and nameplate.UnitFrame == frame then
-            local data = RefineUI.NameplateData and RefineUI.NameplateData[frame] or nil
-            if IsRuntimeSuppressedNameplate(frame, data) then
-                return
-            end
-            -- NAME_PLATE_UNIT_ADDED ordering relative to Blizzard's driver is not stable.
-            -- Mirror the text here so the first visible health text follows Blizzard's own
-            -- authoritative unit-frame health update instead of the event race.
-            Nameplates:UpdateHealth(nameplate, frame.unit)
-        end
+        -- NAME_PLATE_UNIT_ADDED ordering relative to Blizzard's driver is not stable.
+        -- Mirror the text here so the first visible health text follows Blizzard's own
+        -- authoritative unit-frame health update instead of the event race.
+        Nameplates:UpdateHealth(nameplate, frame.unit)
     end)
 
     RefineUI:HookOnce(HOOK_KEY.UPDATE_HEALTH_COLOR, "CompactUnitFrame_UpdateHealthColor", function(frame)
-        if frame:IsForbidden() then return end
-        if not util.IsUsableUnitToken(frame.unit) then return end
-        if not frame.unit:find("nameplate") then return end
+        local nameplate = GetOwningNameplate(frame)
+        if not nameplate then return end
 
-        local data = RefineUI.NameplateData and RefineUI.NameplateData[frame] or nil
-
-        local health = frame.healthBar or frame.HealthBar
-        if health and healthBarTexture and not IsRuntimeSuppressedNameplate(frame, data) then
-            health:SetStatusBarTexture(healthBarTexture)
-            health:SetStatusBarDesaturated(true)
+        -- UpdateAnchors swaps Blizzard's bar atlas back in and clears this flag.
+        local data = NameplateData[frame]
+        if not (data and (data.HealthTextureApplied or data.RefineHidden == true)) then
+            local health = frame.healthBar or frame.HealthBar
+            if health then
+                health:SetStatusBarTexture(HEALTH_BAR_TEXTURE)
+                health:SetStatusBarDesaturated(true)
+                if data then
+                    data.HealthTextureApplied = true
+                end
+            end
         end
 
-        local nameplate = frame:GetParent()
-        if nameplate and nameplate.UnitFrame == frame then
-            Nameplates:UpdateThreatColor(nameplate, frame.unit, false)
-        end
+        Nameplates:UpdateThreatColor(nameplate, frame.unit)
     end)
 
-    RefineUI:HookOnce(HOOK_KEY.UPDATE_RAID_TARGET_ICON, "CompactUnitFrame_UpdateRaidTargetIcon", function(frame)
-        if frame:IsForbidden() then return end
-
-        local nameplate = frame.GetParent and frame:GetParent() or nil
-        if not nameplate or nameplate.UnitFrame ~= frame then return end
-
-        local data = RefineUI.NameplateData[frame]
-        Nameplates:ApplyRaidIconAnchor(frame, data)
-
-        if RefineUI.RefreshNameplateVisualState then
-            RefineUI:RefreshNameplateVisualState(frame, frame.unit, "RAID_TARGET_UPDATE", {
-                refreshPortrait = true,
-            })
-        end
-
-        UpdateTargetUnitFrame(frame)
-    end)
-
-    if _G.NamePlateUnitFrameMixin then
-        RefineUI:HookOnce(HOOK_KEY.MIXIN_ON_UNIT_CLEARED, _G.NamePlateUnitFrameMixin, "OnUnitCleared", function(frame)
-            if not frame or (frame.IsForbidden and frame:IsForbidden()) then return end
+    local unitFrameMixin = _G.NamePlateUnitFrameMixin
+    if unitFrameMixin then
+        RefineUI:HookOnce(HOOK_KEY.MIXIN_ON_UNIT_CLEARED, unitFrameMixin, "OnUnitCleared", function(frame)
+            if frame:IsForbidden() then return end
             ResetPooledNameplateFrameState(frame)
         end)
 
-        RefineUI:HookOnce(HOOK_KEY.MIXIN_UPDATE_IS_TARGET, _G.NamePlateUnitFrameMixin, "UpdateIsTarget", function(frame)
-            if not frame or (frame.IsForbidden and frame:IsForbidden()) then return end
+        RefineUI:HookOnce(HOOK_KEY.MIXIN_UPDATE_IS_TARGET, unitFrameMixin, "UpdateIsTarget", function(frame)
+            if frame:IsForbidden() then return end
             UpdateTargetUnitFrame(frame)
         end)
 
-        RefineUI:HookOnce(HOOK_KEY.MIXIN_UPDATE_RAID_TARGET_ANCHOR, _G.NamePlateUnitFrameMixin, "UpdateRaidTarget", function(frame)
-            if not frame or (frame.IsForbidden and frame:IsForbidden()) then return end
+        RefineUI:HookOnce(HOOK_KEY.MIXIN_UPDATE_RAID_TARGET_ANCHOR, unitFrameMixin, "UpdateRaidTarget", function(frame)
+            if frame:IsForbidden() then return end
 
-            local data = RefineUI.NameplateData[frame]
-            Nameplates:ApplyRaidIconAnchor(frame, data)
+            Nameplates:ApplyRaidIconAnchor(frame, NameplateData[frame])
             UpdateTargetUnitFrame(frame)
         end)
 
-        RefineUI:HookOnce(HOOK_KEY.MIXIN_UPDATE_ANCHORS_RAID_ANCHOR, _G.NamePlateUnitFrameMixin, "UpdateAnchors", function(frame)
-            if not frame or (frame.IsForbidden and frame:IsForbidden()) then return end
+        -- UpdateAnchors re-anchors the aura lists, resets the health bar height and atlas,
+        -- and runs on every SetUnit and nameplate resize.
+        RefineUI:HookOnce(HOOK_KEY.MIXIN_UPDATE_ANCHORS, unitFrameMixin, "UpdateAnchors", function(frame)
+            if frame:IsForbidden() then return end
 
-            local data = RefineUI.NameplateData[frame]
+            Nameplates:ApplyConfiguredNameplateHeight(frame)
+
+            local data = NameplateData[frame]
+            if data then
+                -- Blizzard just re-anchored the raid icon; force ours back on.
+                data.RaidIconAnchorMode = nil
+            end
             Nameplates:ApplyRaidIconAnchor(frame, data)
+            if data then
+                data.HealthTextureApplied = nil
+                data.AuraAnchorDebuffY = nil
+            end
             -- Avoid aura container mutation inside Blizzard's UpdateAnchors setup path.
             -- NamePlateBaseMixin:ApplyFrameOptions calls UpdateAnchors before
             -- CompactUnitFrame_SetUnit finishes its heal-prediction pass, and touching
             -- aura anchors there can taint the native nameplate health-bar flow.
+            if frame.unit then
+                QueueEnemyAuraLayoutRefresh(frame)
+            end
             UpdateTargetUnitFrame(frame)
         end)
     end
 
-    if _G.NamePlateAurasMixin and _G.NamePlateAurasMixin.RefreshAuras then
-        RefineUI:HookOnce(HOOK_KEY.AURAS_REFRESH, _G.NamePlateAurasMixin, "RefreshAuras", function(aurasMixin)
-            if aurasMixin:IsForbidden() then return end
+    local aurasMixin = _G.NamePlateAurasMixin
+    if aurasMixin and aurasMixin.RefreshAuras then
+        RefineUI:HookOnce(HOOK_KEY.AURAS_REFRESH, aurasMixin, "RefreshAuras", function(auras)
+            if auras:IsForbidden() then return end
 
-            local unitFrame = aurasMixin:GetParent()
+            local unitFrame = auras:GetParent()
             if unitFrame and not unitFrame.unit then
                 unitFrame = unitFrame:GetParent()
             end
-            if not unitFrame or not util.IsUsableUnitToken(unitFrame.unit) then
+            if not unitFrame or not Util.IsUsableUnitToken(unitFrame.unit) or IsNameOnly(unitFrame) then
                 return
             end
 
-            local data = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
-            if IsRuntimeSuppressedNameplate(unitFrame, data) then
-                if RefineUI.ClearNameplateCrowdControl then
-                    RefineUI:ClearNameplateCrowdControl(unitFrame, true)
-                end
-                return
-            end
-
-            QueueEnemyAuraLayoutRefresh(unitFrame)
-
-            local hasCachedCrowdControl = data and (
-                data.CrowdControlActive == true
-                or data.CrowdControlAuraInstanceID ~= nil
-                or data.CrowdControlSuppressed == true
-            )
-            if not hasCachedCrowdControl then
-                local hasActiveCrowdControlAura = false
-                local okAuras, aurasFrame = pcall(function() return unitFrame.AurasFrame end)
-                if okAuras and aurasFrame and (not util or util.IsAccessibleValue(aurasFrame)) then
-                    local okList, crowdControlList = pcall(function() return aurasFrame.crowdControlList end)
-                    if okList and crowdControlList and (not util or util.IsAccessibleValue(crowdControlList)) then
-                        local okFn, getTop = pcall(function() return crowdControlList.GetTop end)
-                        if okFn and type(getTop) == "function" then
-                            local ok, aura = pcall(getTop, crowdControlList)
-                            hasActiveCrowdControlAura = ok and aura ~= nil and (not util or util.IsAccessibleValue(aura))
-                        end
-                    end
-                end
-
-                if not hasActiveCrowdControlAura then
-                    return
-                end
-            end
-
-            if RefineUI.UpdateNameplateCrowdControl then
-                RefineUI:UpdateNameplateCrowdControl(unitFrame, unitFrame.unit, "UNIT_AURA")
-            end
+            QueueEnemyAuraLayoutRefresh(unitFrame, true)
         end)
     end
 
-    if _G.NamePlateAuraItemMixin and _G.NamePlateAuraItemMixin.SetAura then
-        RefineUI:HookOnce(HOOK_KEY.AURA_ITEM_SET_AURA, _G.NamePlateAuraItemMixin, "SetAura", function(selfFrame, aura)
-            if not selfFrame or (selfFrame.IsForbidden and selfFrame:IsForbidden()) then return end
-
-            local unitFrame = GetAuraItemUnitFrame(selfFrame)
-            if IsRuntimeSuppressedNameplate(unitFrame) then
-                return
-            end
-
-            QueueAuraVisualRefresh(selfFrame, aura)
+    local auraItemMixin = _G.NamePlateAuraItemMixin
+    if auraItemMixin and auraItemMixin.SetAura then
+        RefineUI:HookOnce(HOOK_KEY.AURA_ITEM_SET_AURA, auraItemMixin, "SetAura", function(auraItem, aura)
+            if auraItem:IsForbidden() or IsNameOnly(GetAuraItemUnitFrame(auraItem)) then return end
+            QueueAuraVisualRefresh(auraItem, aura)
         end)
     end
 
-    if _G.NamePlateAurasMixin and _G.NamePlateAurasMixin.RefreshList then
-        RefineUI:HookOnce(HOOK_KEY.AURAS_REFRESH_LIST, _G.NamePlateAurasMixin, "RefreshList", function(aurasMixin, listFrame)
-            if not aurasMixin or (aurasMixin.IsForbidden and aurasMixin:IsForbidden()) then return end
+    if aurasMixin and aurasMixin.RefreshList then
+        RefineUI:HookOnce(HOOK_KEY.AURAS_REFRESH_LIST, aurasMixin, "RefreshList", function(auras, listFrame)
+            if auras:IsForbidden() then return end
 
-            local unitFrame = aurasMixin:GetParent()
+            local unitFrame = auras:GetParent()
             if unitFrame and not unitFrame.unit then
                 unitFrame = unitFrame:GetParent()
             end
-            if IsRuntimeSuppressedNameplate(unitFrame) then
+            if not unitFrame or IsNameOnly(unitFrame) or not (unitFrame.healthBar or unitFrame.HealthBar) then
                 return
             end
 
-            local health = unitFrame and (unitFrame.healthBar or unitFrame.HealthBar)
-            if not health then
-                return
-            end
-
-            if listFrame == aurasMixin.DebuffListFrame
-                or listFrame == aurasMixin.BuffListFrame
-                or listFrame == aurasMixin.CrowdControlListFrame then
-                QueueEnemyAuraLayoutRefresh(unitFrame)
+            if listFrame == auras.DebuffListFrame
+                or listFrame == auras.BuffListFrame
+                or listFrame == auras.CrowdControlListFrame then
+                QueueEnemyAuraLayoutRefresh(unitFrame, true)
             end
         end)
     end
 
-    runtime.runtimeHooksRegistered = true
+    Runtime.runtimeHooksRegistered = true
 end
 
 ----------------------------------------------------------------------------------------
 -- Startup Orchestration
 ----------------------------------------------------------------------------------------
 function Nameplates:StyleExistingNameplates()
-    if not C_NamePlate or type(C_NamePlate.GetNamePlates) ~= "function" then
-        return
-    end
-
-    local private = self:GetPrivate()
-    local activeNameplates = private and private.ActiveNameplates or {}
-    local runtime = private and private.Runtime
-    local util = private and private.Util
-
     for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
         local unit = nameplate.UnitFrame and nameplate.UnitFrame.unit
         if unit then
-            activeNameplates[nameplate] = unit
-
-            self:StyleNameplate(nameplate, unit)
-            self:UpdateVisibility(nameplate, unit)
-            self:ApplyNpcTitleVisual(nameplate, unit, { allowResolve = true })
-
-            local unitFrame = nameplate.UnitFrame
-            local data = unitFrame and self:GetNameplateData(unitFrame) or nil
-            local isNameOnly = data and data.RefineHidden == true
-
-            if (not isNameOnly) and RefineUI.UpdateNameplateCrowdControl then
-                RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, "OnEnable")
-            end
-            if (not isNameOnly) and RefineUI.UpdateDynamicPortrait then
-                RefineUI:UpdateDynamicPortrait(nameplate, unit)
-            end
-            if unitFrame then
-                UpdateTargetUnitFrame(unitFrame)
-            end
+            RefreshAddedNameplate(nameplate, unit, "OnEnable")
         end
     end
 end
 
 function Nameplates:RegisterRuntimeEvents()
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    if not runtime then
-        return
-    end
-
-    if runtime.runtimeEventsRegistered == true then
+    if Runtime.runtimeEventsRegistered == true then
         return
     end
 
@@ -1243,41 +889,29 @@ function Nameplates:RegisterRuntimeEvents()
         Nameplates:HandleNameplateUnitStateEvent(event, unit)
     end, EVENT_KEY.UNIT_STATE)
 
-    RefineUI:OnEvents(
-        EVENT_LIST.THREAT_ROLE,
-        function(event, unit)
-            Nameplates:HandleThreatRoleEvent(event, unit)
-        end,
-        EVENT_KEY.THREAT_ROLE
-    )
+    RefineUI:OnEvents(EVENT_LIST.THREAT_ROLE, function(event, unit)
+        Nameplates:HandleThreatRoleEvent(event, unit)
+    end, EVENT_KEY.THREAT_ROLE)
 
-    RefineUI:OnEvents(
-        EVENT_LIST.CVAR_STATE,
-        function(event)
-            Nameplates:HandleNameplateCVarEvent(event)
-        end,
-        EVENT_KEY.CVAR_STATE
-    )
+    RefineUI:OnEvents(EVENT_LIST.CVAR_STATE, function(event)
+        Nameplates:HandleNameplateCVarEvent(event)
+    end, EVENT_KEY.CVAR_STATE)
 
     RefineUI:RegisterEventCallback("CVAR_UPDATE", function(event, cvarName)
-        Nameplates:HandleNameRuleCVarUpdate(event, cvarName)
-    end, EVENT_KEY.NAME_RULE_CVAR)
+        Nameplates:HandleCVarUpdate(event, cvarName)
+    end, EVENT_KEY.CVAR_UPDATE)
 
-    runtime.runtimeEventsRegistered = true
+    Runtime.runtimeEventsRegistered = true
 end
 
 function Nameplates:EnableRuntime()
     self:EnsureSimplifiedNameplatesDisabled()
     self:RefreshPlayerThreatRole()
-    self:EnsureConfiguredNameplateSizeHooks()
     self:ApplyConfiguredBlizzardNameplateSize(true)
-
-    if type(RefineUI.RefreshNameplateCastColors) == "function" then
-        RefineUI:RefreshNameplateCastColors(false)
-    end
+    RefineUI:RefreshNameplateCastColors(false)
 
     local cfg = self:GetConfiguredNameplatesConfig()
-    if cfg and cfg.Alpha then
+    if cfg.Alpha then
         SetCVarIfChanged("nameplateMinAlpha", cfg.Alpha)
     end
     SetCVarIfChanged("nameplateMaxAlpha", 1.0)
@@ -1288,14 +922,10 @@ function Nameplates:EnableRuntime()
     self:StyleExistingNameplates()
     self:RegisterRuntimeHooks()
 
-    RefineUI:RefreshNameplateThreatColors(true)
+    RefineUI:RefreshNameplateThreatColors()
 
-    if self.RegisterEditModeFrame then
-        self:RegisterEditModeFrame()
-    end
-    if self.RegisterEditModeCallbacks then
-        self:RegisterEditModeCallbacks()
-    end
+    self:RegisterEditModeFrame()
+    self:RegisterEditModeCallbacks()
 end
 
 ----------------------------------------------------------------------------------------

@@ -15,10 +15,10 @@ end
 local ClearOverrideBindings = ClearOverrideBindings
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
-local tostring = tostring
+local format = string.format
 local type = type
 local tonumber = tonumber
-local sort = table.sort
+local concat = table.concat
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -26,12 +26,15 @@ local sort = table.sort
 local SECURE_HEADER_NAME = "RefineUI_ClickCastingSecureHeader"
 local FRAME_REF_KEY = "refine_clickcasting_setup_frame"
 local FRAME_STATE_REGISTRY = "ClickCastingFrameState"
-local RESERVED_UNIT_MENU_KEY = "BUTTON2"
-local RESERVED_UNIT_MENU_FALLBACK_KEYS = {
-    "ALT-BUTTON2",
-    "CTRL-BUTTON2",
-    "SHIFT-BUTTON2",
-}
+-- Keys click this button instead of the unit frame, keeping them out of
+-- SecureUnitButton_OnClick and its click-binding checks (Clique does the same).
+local KEY_BUTTON_NAME = "RefineUI_ClickCastingKeyButton"
+local KEY_BUTTON_REF = "refine_clickcasting_key_button"
+local SNIPPET_FRAME_LINE = format("local frame = self:GetFrameRef(%q)\nif not frame then return end", FRAME_REF_KEY)
+local ONENTER_HEADER_LINE = "local unit = self:GetAttribute(\"unit\")\nif not unit then return end\nkeyButton:SetAttribute(\"unit\", unit)"
+local ONLEAVE_SNIPPET = "self:ClearBindings()"
+-- Virtual button with no action; right-button presses are remapped to it.
+local RIGHT_BUTTON_DOWN_NOOP = "rfcc_rightdown"
 
 local function GetFrameState(frameStateRegistry, frame)
     local state = frameStateRegistry[frame]
@@ -42,89 +45,62 @@ local function GetFrameState(frameStateRegistry, frame)
     return state
 end
 
+-- Prefix is "", "*", or "alt-ctrl-" style, as in SecureButton_GetModifierPrefix.
 local function BuildAttributeName(prefix, attr, suffix)
-    local hasPrefix = type(prefix) == "string" and prefix ~= ""
-    local numericSuffix = tonumber(suffix) ~= nil
-    local suffixText = tostring(suffix)
-
-    if hasPrefix then
-        if numericSuffix then
-            return string.format("%s-%s%s", prefix, attr, suffixText)
-        end
-        return string.format("%s-%s-%s", prefix, attr, suffixText)
+    if tonumber(suffix) then
+        return prefix .. attr .. suffix
     end
+    return prefix .. attr .. "-" .. suffix
+end
 
-    if numericSuffix then
-        return string.format("%s%s", attr, suffixText)
+-- Returns the unit frame clear snippet and the key button clear snippet.
+local function BuildClearSnippets(slots)
+    local frameLines = { SNIPPET_FRAME_LINE }
+    local keyLines = {}
+    for _, slot in pairs(slots) do
+        local lines = slot.target == "frame" and frameLines or keyLines
+        lines[#lines + 1] = format("%s:SetAttribute(%q, nil)", slot.target, BuildAttributeName(slot.prefix, "type", slot.suffix))
+        lines[#lines + 1] = format("%s:SetAttribute(%q, nil)", slot.target, BuildAttributeName(slot.prefix, "spell", slot.suffix))
+        lines[#lines + 1] = format("%s:SetAttribute(%q, nil)", slot.target, BuildAttributeName(slot.prefix, "macro", slot.suffix))
     end
-
-    return string.format("%s-%s", attr, suffixText)
+    return concat(frameLines, "\n"), concat(keyLines, "\n")
 end
 
-local function BuildClearLinesForSlot(prefix, suffix, lines)
-    lines[#lines + 1] = string.format("frame:SetAttribute(%q, nil)", BuildAttributeName(prefix, "type", suffix))
-    lines[#lines + 1] = string.format("frame:SetAttribute(%q, nil)", BuildAttributeName(prefix, "spell", suffix))
-    lines[#lines + 1] = string.format("frame:SetAttribute(%q, nil)", BuildAttributeName(prefix, "macro", suffix))
-end
-
-local function BuildClearLinesForRouting(prefix, suffix, lines)
-    lines[#lines + 1] = string.format("frame:SetAttribute(%q, nil)", BuildAttributeName(prefix, "helpbutton", suffix))
-    lines[#lines + 1] = string.format("frame:SetAttribute(%q, nil)", BuildAttributeName(prefix, "harmbutton", suffix))
-end
-
-local function BuildSetupLinesForAction(prefix, suffix, actionType, actionID, actionName, lines)
-    lines[#lines + 1] = string.format("frame:SetAttribute(%q, %q)", BuildAttributeName(prefix, "type", suffix), actionType)
+-- Setup always runs after the clear snippet, so only non-nil attributes are written.
+local function BuildSetupLinesForAction(target, prefix, suffix, actionType, actionID, actionName, lines)
+    lines[#lines + 1] = format("%s:SetAttribute(%q, %q)", target, BuildAttributeName(prefix, "type", suffix), actionType)
     if actionType == "spell" then
         if type(actionName) == "string" and actionName ~= "" then
-            lines[#lines + 1] = string.format("frame:SetAttribute(%q, %q)", BuildAttributeName(prefix, "spell", suffix), actionName)
+            lines[#lines + 1] = format("%s:SetAttribute(%q, %q)", target, BuildAttributeName(prefix, "spell", suffix), actionName)
         else
-            lines[#lines + 1] = string.format("frame:SetAttribute(%q, %d)", BuildAttributeName(prefix, "spell", suffix), tonumber(actionID) or 0)
+            lines[#lines + 1] = format("%s:SetAttribute(%q, %d)", target, BuildAttributeName(prefix, "spell", suffix), tonumber(actionID) or 0)
         end
-        lines[#lines + 1] = string.format("frame:SetAttribute(%q, nil)", BuildAttributeName(prefix, "macro", suffix))
     else
         local macroIndex = tonumber(actionID)
         if macroIndex and macroIndex > 0 then
-            lines[#lines + 1] = string.format("frame:SetAttribute(%q, %d)", BuildAttributeName(prefix, "macro", suffix), macroIndex)
+            lines[#lines + 1] = format("%s:SetAttribute(%q, %d)", target, BuildAttributeName(prefix, "macro", suffix), macroIndex)
         elseif type(actionName) == "string" and actionName ~= "" then
-            lines[#lines + 1] = string.format("frame:SetAttribute(%q, %q)", BuildAttributeName(prefix, "macro", suffix), actionName)
-        else
-            lines[#lines + 1] = string.format("frame:SetAttribute(%q, nil)", BuildAttributeName(prefix, "macro", suffix))
+            lines[#lines + 1] = format("%s:SetAttribute(%q, %q)", target, BuildAttributeName(prefix, "macro", suffix), actionName)
         end
-        lines[#lines + 1] = string.format("frame:SetAttribute(%q, nil)", BuildAttributeName(prefix, "spell", suffix))
     end
 end
 
-local function ParseMouseBindingKey(key)
-    if type(key) ~= "string" or key == "" then
-        return nil, nil
+-- "ALT-CTRL-BUTTON3" -> "alt-ctrl-", "3"; nil for keyboard keys. Binding keys order
+-- modifiers ALT-CTRL-SHIFT, matching SecureButton_GetModifierPrefix.
+local function ParseMouseKey(key)
+    local modifiers, buttonNumber = key:match("^(.-)BUTTON(%d+)$")
+    if not buttonNumber then
+        return nil
     end
-
-    local buttonNum = key:match("BUTTON(%d+)$")
-    if not buttonNum then
-        return nil, nil
+    if modifiers ~= "" then
+        return modifiers:lower(), buttonNumber
     end
-
-    local prefix = key:sub(1, #key - #("BUTTON" .. buttonNum))
-    if prefix:sub(-1, -1) == "-" then
-        prefix = prefix:sub(1, -2)
+    -- An unmodified button also fires with an unbound modifier held, so match any
+    -- modifier. Left/right click keep Blizzard's "*type1"/"*type2".
+    if buttonNumber == "1" or buttonNumber == "2" then
+        return "", buttonNumber
     end
-
-    return prefix:lower(), buttonNum
-end
-
-local function BuildActionSlotToken(prefix, suffix)
-    return tostring(prefix or "") .. ":" .. tostring(suffix or "")
-end
-
-local function EnsureDefaultUnitMenuAttribute(frame)
-    if not frame or not frame.SetAttribute or not frame.GetAttribute then
-        return
-    end
-    local hasType2 = frame:GetAttribute("type2") ~= nil
-    local hasWildcardType2 = frame:GetAttribute("*type2") ~= nil
-    if not hasType2 and not hasWildcardType2 then
-        frame:SetAttribute("type2", "togglemenu")
-    end
+    return "*", buttonNumber
 end
 
 ----------------------------------------------------------------------------------------
@@ -140,6 +116,13 @@ function ClickCasting:EnsureSecureHeader()
     header:SetAttribute("refine_onleave", "")
     header:SetAttribute("refine_setup_actions", "")
     header:SetAttribute("refine_clear_actions", "")
+
+    local keyButton = CreateFrame("Button", KEY_BUTTON_NAME, UIParent, "SecureActionButtonTemplate")
+    -- SecureActionButton_OnClick acts on the edge the ActionButtonUseKeyDown CVar selects.
+    keyButton:RegisterForClicks("AnyUp", "AnyDown")
+    header:SetFrameRef(KEY_BUTTON_REF, keyButton)
+    header:Execute(format("keyButton = self:GetFrameRef(%q)", KEY_BUTTON_REF))
+
     self.secureHeader = header
     return header
 end
@@ -150,202 +133,64 @@ function ClickCasting:InitializeSecureSystem()
     self.registeredFrames = self.registeredFrames or {}
     self.frameRegistrationQueue = self.frameRegistrationQueue or {}
     self.lastKnownActionSlots = self.lastKnownActionSlots or {}
-    self.lastKnownRoutingSlots = self.lastKnownRoutingSlots or {}
-    self.lastKnownKeys = self.lastKnownKeys or {}
 end
 
 ----------------------------------------------------------------------------------------
 -- Snippet Programs
 ----------------------------------------------------------------------------------------
 function ClickCasting:BuildSecurePrograms()
+    -- Already sorted by key in RebuildActiveSpecBindings.
     local activeKeyActions = self:GetRuntimeActiveKeyActions()
-    local sortedActions = {}
-    for i = 1, #activeKeyActions do
-        sortedActions[i] = activeKeyActions[i]
-    end
-    sort(sortedActions, function(a, b)
-        return (a.key or "") < (b.key or "")
-    end)
-
     local currentActionSlots = {}
-    local currentRoutingSlots = {}
-    local currentKeys = {}
-    local setupLines = {
-        string.format("local frame = self:GetFrameRef(%q)", FRAME_REF_KEY),
-        "if not frame then return end",
-    }
-    local clearLines = {
-        string.format("local frame = self:GetFrameRef(%q)", FRAME_REF_KEY),
-        "if not frame then return end",
-    }
-    local onEnterLines = {
-        "local clickableButton = self:GetName()",
-        "if not clickableButton then return end",
-    }
-    local onLeaveLines = {}
-    local onEnterActionBindings = {}
-    local hasPrimaryRightClickAction = false
+    local setupLines = { SNIPPET_FRAME_LINE }
+    local keySetupLines = {}
+    local onEnterLines = { ONENTER_HEADER_LINE }
 
-    for index = 1, #sortedActions do
-        local action = sortedActions[index]
+    for index = 1, #activeKeyActions do
+        local action = activeKeyActions[index]
         local key = action.key
-        currentKeys[key] = true
 
-        if key == RESERVED_UNIT_MENU_KEY then
-            hasPrimaryRightClickAction = true
+        -- Mouse keys map to frame click attributes, prefixed by the key's modifiers since
+        -- secure lookups use the modifiers held at click time. Other keys are bound on
+        -- enter to a virtual button of the key button; the binding already matched the
+        -- modifiers, so its attributes accept any.
+        local target, lines = "frame", setupLines
+        local attrPrefix, attrSuffix = ParseMouseKey(key)
+        if not attrPrefix then
+            target, lines = "keyButton", keySetupLines
+            attrPrefix, attrSuffix = "*", "rfcc_" .. index
+            onEnterLines[#onEnterLines + 1] = format("self:SetBindingClick(true, %q, %q, %q)", key, KEY_BUTTON_NAME, attrSuffix)
         end
 
-        local keyPrefix, mouseButtonSuffix = ParseMouseBindingKey(key)
-        local attrPrefix
-        local attrSuffix
-        if mouseButtonSuffix then
-            attrPrefix = keyPrefix or ""
-            attrSuffix = mouseButtonSuffix
-        else
-            attrPrefix = ""
-            attrSuffix = "rfcc_" .. tostring(index)
-            onEnterActionBindings[#onEnterActionBindings + 1] = {
-                key = key,
-                suffix = attrSuffix,
-            }
-        end
-
-        action.suffix = attrSuffix
-        local actionSlotToken = BuildActionSlotToken(attrPrefix, attrSuffix)
-        currentActionSlots[actionSlotToken] = {
+        currentActionSlots[target .. ":" .. attrPrefix .. attrSuffix] = {
+            target = target,
             prefix = attrPrefix,
             suffix = attrSuffix,
         }
-
-        -- Route both friendly and hostile units through explicit action slots.
-        -- Mirrors Clique's help/harm strategy for hybrid spells like Holy Shock.
-        local helpSuffix = "rfcc_help_" .. tostring(index)
-        local harmSuffix = "rfcc_harm_" .. tostring(index)
-        setupLines[#setupLines + 1] = string.format(
-            "frame:SetAttribute(%q, %q)",
-            BuildAttributeName(attrPrefix, "helpbutton", attrSuffix),
-            helpSuffix
-        )
-        setupLines[#setupLines + 1] = string.format(
-            "frame:SetAttribute(%q, %q)",
-            BuildAttributeName(attrPrefix, "harmbutton", attrSuffix),
-            harmSuffix
-        )
-
-        local routingSlotToken = BuildActionSlotToken(attrPrefix, attrSuffix)
-        currentRoutingSlots[routingSlotToken] = {
-            prefix = attrPrefix,
-            suffix = attrSuffix,
-        }
-        local helpSlotToken = BuildActionSlotToken(attrPrefix, helpSuffix)
-        currentActionSlots[helpSlotToken] = {
-            prefix = attrPrefix,
-            suffix = helpSuffix,
-        }
-        local harmSlotToken = BuildActionSlotToken(attrPrefix, harmSuffix)
-        currentActionSlots[harmSlotToken] = {
-            prefix = attrPrefix,
-            suffix = harmSuffix,
-        }
-        BuildSetupLinesForAction(attrPrefix, helpSuffix, action.actionType, action.actionID, action.actionName, setupLines)
-        BuildSetupLinesForAction(attrPrefix, harmSuffix, action.actionType, action.actionID, action.actionName, setupLines)
-
-        BuildSetupLinesForAction(attrPrefix, attrSuffix, action.actionType, action.actionID, action.actionName, setupLines)
+        BuildSetupLinesForAction(target, attrPrefix, attrSuffix, action.actionType, action.actionID, action.actionName, lines)
     end
 
-    local reservedMenuKey = RESERVED_UNIT_MENU_KEY
-    if hasPrimaryRightClickAction then
-        reservedMenuKey = nil
-        for _, fallbackKey in ipairs(RESERVED_UNIT_MENU_FALLBACK_KEYS) do
-            if not currentKeys[fallbackKey] then
-                reservedMenuKey = fallbackKey
-                break
-            end
-        end
+    -- Clear both the previous and current slots before setup.
+    local slotsToClear = self.lastKnownActionSlots
+    for token, slot in pairs(currentActionSlots) do
+        slotsToClear[token] = slot
     end
-    local menuPrefix, menuButtonSuffix = ParseMouseBindingKey(reservedMenuKey)
-    if reservedMenuKey and menuButtonSuffix then
-        local normalizedMenuPrefix = menuPrefix or ""
-        local menuSlotToken = BuildActionSlotToken(normalizedMenuPrefix, menuButtonSuffix)
-        currentActionSlots[menuSlotToken] = {
-            prefix = normalizedMenuPrefix,
-            suffix = menuButtonSuffix,
-        }
-        setupLines[#setupLines + 1] = string.format(
-            "frame:SetAttribute(%q, %q)",
-            BuildAttributeName(normalizedMenuPrefix, "type", menuButtonSuffix),
-            "togglemenu"
-        )
-        setupLines[#setupLines + 1] = string.format(
-            "frame:SetAttribute(%q, nil)",
-            BuildAttributeName(normalizedMenuPrefix, "spell", menuButtonSuffix)
-        )
-        setupLines[#setupLines + 1] = string.format(
-            "frame:SetAttribute(%q, nil)",
-            BuildAttributeName(normalizedMenuPrefix, "macro", menuButtonSuffix)
-        )
-    end
-    for index = 1, #onEnterActionBindings do
-        local actionBinding = onEnterActionBindings[index]
-        local key = actionBinding.key
-        local suffix = actionBinding.suffix
-        onEnterLines[#onEnterLines + 1] = string.format(
-            "self:SetBindingClick(true, %q, clickableButton, %q)",
-            key,
-            suffix
-        )
-    end
-
-    for _, slot in pairs(self.lastKnownActionSlots or {}) do
-        BuildClearLinesForSlot(slot.prefix, slot.suffix, clearLines)
-    end
-    for _, slot in pairs(currentActionSlots) do
-        BuildClearLinesForSlot(slot.prefix, slot.suffix, clearLines)
-    end
-    for _, slot in pairs(self.lastKnownRoutingSlots or {}) do
-        BuildClearLinesForRouting(slot.prefix, slot.suffix, clearLines)
-    end
-    for _, slot in pairs(currentRoutingSlots) do
-        BuildClearLinesForRouting(slot.prefix, slot.suffix, clearLines)
-    end
-
-    local keysToClear = {
-        [RESERVED_UNIT_MENU_KEY] = true,
-    }
-    for _, fallbackKey in ipairs(RESERVED_UNIT_MENU_FALLBACK_KEYS) do
-        keysToClear[fallbackKey] = true
-    end
-    for key in pairs(self.lastKnownKeys or {}) do
-        keysToClear[key] = true
-    end
-    for key in pairs(currentKeys) do
-        keysToClear[key] = true
-    end
-    for key in pairs(keysToClear) do
-        onLeaveLines[#onLeaveLines + 1] = string.format("self:ClearBinding(%q)", key)
-    end
-
+    local clearSnippet, keyClearSnippet = BuildClearSnippets(slotsToClear)
     self.lastKnownActionSlots = currentActionSlots
-    self.lastKnownRoutingSlots = currentRoutingSlots
-    self.lastKnownKeys = currentKeys
-    self.runtimeSecureActions = sortedActions
 
-    local setupSnippet = table.concat(setupLines, "\n")
-    local clearSnippet = table.concat(clearLines, "\n")
-    local onEnterSnippet = table.concat(onEnterLines, "\n")
-    local onLeaveSnippet = table.concat(onLeaveLines, "\n")
+    local hasKeyBindings = #onEnterLines > 1
+    local onEnterSnippet = hasKeyBindings and concat(onEnterLines, "\n") or ""
+    local onLeaveSnippet = hasKeyBindings and ONLEAVE_SNIPPET or ""
+    local keySnippet = keyClearSnippet .. "\n" .. concat(keySetupLines, "\n")
 
-    return setupSnippet, clearSnippet, onEnterSnippet, onLeaveSnippet
+    return concat(setupLines, "\n"), clearSnippet, keySnippet, onEnterSnippet, onLeaveSnippet
 end
 
 ----------------------------------------------------------------------------------------
 -- Frame Registration
 ----------------------------------------------------------------------------------------
 function ClickCasting:RegisterSecureFrame(frame)
-    if not frame or type(frame) ~= "table" then
-        return false
-    end
-    if frame.IsForbidden and frame:IsForbidden() then
+    if frame:IsForbidden() then
         return false
     end
 
@@ -359,14 +204,15 @@ function ClickCasting:RegisterSecureFrame(frame)
     local frameState = GetFrameState(self.frameStateRegistry, frame)
     self.registeredFrames[frame] = true
 
-    if not frameState.wrapped then
-        if frame.RegisterForClicks then
-            -- Keep key-driven click-casting responsive (AnyDown), but preserve
-            -- native unit-menu behavior on right-click release.
-            frame:RegisterForClicks("AnyDown", "RightButtonUp")
-        end
-        EnsureDefaultUnitMenuAttribute(frame)
+    -- Mouse buttons fire on press (AnyDown). The right button also fires on release so
+    -- Blizzard's "*type2" = "menu" opens the frame menu. SecureUnitButton_OnClick
+    -- runs every registered edge, so the right-button press is remapped to a
+    -- no-op button to keep tracked right-click actions to one run, on release.
+    -- Reapplied on every call: SecureUnitButton_OnLoad resets RegisterForClicks.
+    frame:RegisterForClicks("AnyDown", "RightButtonUp")
+    frame:SetAttribute("*downbutton2", RIGHT_BUTTON_DOWN_NOOP)
 
+    if not frameState.wrapped then
         local okEnter = pcall(header.WrapScript, header, frame, "OnEnter", [[
             local snippet = control:GetAttribute("refine_onenter")
             if snippet and snippet ~= "" then
@@ -390,7 +236,6 @@ function ClickCasting:RegisterSecureFrame(frame)
     header:SetFrameRef(FRAME_REF_KEY, frame)
     header:Execute(header:GetAttribute("refine_clear_actions"), frame)
     header:Execute(header:GetAttribute("refine_setup_actions"), frame)
-    EnsureDefaultUnitMenuAttribute(frame)
     return true
 end
 
@@ -408,81 +253,45 @@ end
 ----------------------------------------------------------------------------------------
 -- Apply/Clear
 ----------------------------------------------------------------------------------------
-function ClickCasting:ClearRuntimeOverrideBindings()
-    if InCombatLockdown() then
-        self.pendingSecureApply = true
-        return
-    end
-    for frame in pairs(self.registeredFrames or {}) do
-        if frame and not (frame.IsForbidden and frame:IsForbidden()) then
-            pcall(ClearOverrideBindings, frame)
-        end
-    end
-end
-
+-- Apply/Disable run only from FlushRebuild, which defers during combat.
 function ClickCasting:ApplySecureSystem()
-    if InCombatLockdown() then
-        self.pendingSecureApply = true
-        return
-    end
-
     self:FlushPendingFrameRegistrations()
 
     local header = self:EnsureSecureHeader()
-    local setupSnippet, clearSnippet, onEnterSnippet, onLeaveSnippet = self:BuildSecurePrograms()
+    local setupSnippet, clearSnippet, keySnippet, onEnterSnippet, onLeaveSnippet = self:BuildSecurePrograms()
 
-    header:SetAttribute("refine_setup_actions", setupSnippet or "")
-    header:SetAttribute("refine_clear_actions", clearSnippet or "")
-    header:SetAttribute("refine_onenter", onEnterSnippet or "")
-    header:SetAttribute("refine_onleave", onLeaveSnippet or "")
+    header:Execute(keySnippet)
+    header:SetAttribute("refine_setup_actions", setupSnippet)
+    header:SetAttribute("refine_clear_actions", clearSnippet)
+    header:SetAttribute("refine_onenter", onEnterSnippet)
+    header:SetAttribute("refine_onleave", onLeaveSnippet)
 
-    for frame in pairs(self.registeredFrames or {}) do
-        if frame and not (frame.IsForbidden and frame:IsForbidden()) then
+    for frame in pairs(self.registeredFrames) do
+        if not frame:IsForbidden() then
             header:SetFrameRef(FRAME_REF_KEY, frame)
-            header:Execute(header:GetAttribute("refine_clear_actions"), frame)
-            header:Execute(header:GetAttribute("refine_setup_actions"), frame)
-            EnsureDefaultUnitMenuAttribute(frame)
-            pcall(ClearOverrideBindings, frame)
+            header:Execute(clearSnippet, frame)
+            header:Execute(setupSnippet, frame)
+            ClearOverrideBindings(frame)
         end
     end
 end
 
-function ClickCasting:DisableSecureSystem(reason)
-    if InCombatLockdown() then
-        self.pendingSecureApply = true
-        return
-    end
-
+function ClickCasting:DisableSecureSystem()
     local header = self:EnsureSecureHeader()
+    local clearSnippet, keyClearSnippet = BuildClearSnippets(self.lastKnownActionSlots)
+    header:Execute(keyClearSnippet)
     header:SetAttribute("refine_onenter", "")
     header:SetAttribute("refine_onleave", "")
-
-    local clearLines = {
-        string.format("local frame = self:GetFrameRef(%q)", FRAME_REF_KEY),
-        "if not frame then return end",
-    }
-    for _, slot in pairs(self.lastKnownActionSlots or {}) do
-        BuildClearLinesForSlot(slot.prefix, slot.suffix, clearLines)
-    end
-    for _, slot in pairs(self.lastKnownRoutingSlots or {}) do
-        BuildClearLinesForRouting(slot.prefix, slot.suffix, clearLines)
-    end
-    local clearSnippet = table.concat(clearLines, "\n")
     header:SetAttribute("refine_clear_actions", clearSnippet)
     header:SetAttribute("refine_setup_actions", "")
 
-    for frame in pairs(self.registeredFrames or {}) do
-        if frame and not (frame.IsForbidden and frame:IsForbidden()) then
+    for frame in pairs(self.registeredFrames) do
+        if not frame:IsForbidden() then
             header:SetFrameRef(FRAME_REF_KEY, frame)
-            header:Execute(header:GetAttribute("refine_clear_actions"), frame)
-            EnsureDefaultUnitMenuAttribute(frame)
-            pcall(ClearOverrideBindings, frame)
+            header:Execute(clearSnippet, frame)
+            ClearOverrideBindings(frame)
         end
     end
 
-    self.runtimeSecureActions = {}
-    self.lastKnownKeys = {}
     self.lastKnownActionSlots = {}
-    self.lastKnownRoutingSlots = {}
-    self.suspendReason = reason
 end

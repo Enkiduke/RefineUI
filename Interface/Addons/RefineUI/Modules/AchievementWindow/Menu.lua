@@ -2,18 +2,11 @@ local _, RefineUI = ...
 local Window = RefineUI:GetModule("AchievementWindow")
 
 function Window:HasActiveFilters()
-    local settings = self:GetSettings()
-    return self:GetCompletionFilter() ~= "all" or self.activeInstance ~= nil
-        or (self.rewardFilter or "all") ~= "all" or settings.CharacterCompletion
-        or (settings.Sort or "default") ~= "default"
+    return self:GetCompletionFilter() ~= "all" or self:HasRowFilters()
 end
 
 function Window:UpdateResetButton()
-    if not self.resetButton then return end
-    local active = self:HasActiveFilters()
-    self.resetButton:SetShown(self:IsPersonalView())
-    self.resetButton:SetEnabled(active)
-    self.resetButton:SetAlpha(active and 1 or 0.35)
+    self.filterDropdown:ValidateResetState()
 end
 
 function Window:ResetFilters()
@@ -23,29 +16,25 @@ function Window:ResetFilters()
     self.rewardFilter, self.activeInstance, self.revealID = "all", nil, nil
     AchievementFrame_SetFilter(1)
     self:RefreshFilters()
-    AchievementFrame.FilterDropdown:GenerateMenu()
+    self.filterDropdown:GenerateMenu()
     self:UpdateResetButton()
 end
 
 function Window:InstallResetButton()
-    local dropdown = AchievementFrame.FilterDropdown
-    if self.resetButton or not dropdown then return end
-    -- Retail's own filter-reset template uses auctionhouse-ui-filter-redx.
-    local button = CreateFrame("Button", nil, dropdown, "UIResetButtonTemplate")
-    -- The shared template only supplies normal/highlight textures. Keep its
-    -- icon visible while disabled so the inactive reset control remains clear.
-    button:SetDisabledAtlas("auctionhouse-ui-filter-redx")
-    button:SetPoint("LEFT", dropdown, "RIGHT", 4, 0)
-    button:SetScript("OnClick", function() self:ResetFilters() end)
-    button:SetScript("OnEnter", function(owner)
+    -- 12.1 lays the header out right to left with the dropdown at the edge, so
+    -- use the filter template's native reset button (shown only when active).
+    local dropdown = self.filterDropdown
+    dropdown:SetDefaultCallback(function() self:ResetFilters() end)
+    dropdown:SetIsDefaultCallback(function()
+        return not self:IsPersonalView() or not self:HasActiveFilters()
+    end)
+    dropdown.ResetButton:HookScript("OnEnter", function(owner)
         GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
         GameTooltip:SetText("Reset achievement filters")
         GameTooltip:AddLine("Show all achievements in this category using Warband completion and Blizzard's default order.", 1, 1, 1, true)
         GameTooltip:Show()
     end)
-    button:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    self.resetButton = button
-    dropdown:HookScript("OnShow", function() self:UpdateResetButton() end)
+    dropdown.ResetButton:HookScript("OnLeave", GameTooltip_Hide)
     self:UpdateResetButton()
 end
 

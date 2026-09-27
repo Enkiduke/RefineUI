@@ -1,5 +1,6 @@
 local _, RefineUI = ...
 local Window = RefineUI:GetModule("AchievementWindow")
+local REWARD_KINDS = { mount = "mounts", pet = "pets", toy = "toys", transmog = "appearances" }
 
 function Window:GetSettings()
     return RefineUI.Config.AchievementWindow
@@ -53,21 +54,19 @@ function Window:MatchesReward(id)
             C_Item.RequestLoadItemDataByID(itemID)
         end
     end
-    if mode == "mount" and C_MountJournal then
-        local mountID = C_MountJournal.GetMountFromItem(itemID)
-        return mountID ~= nil and mountID > 0
-    elseif mode == "pet" and C_PetJournal then
-        return C_PetJournal.GetPetInfoByItemID(itemID) ~= nil
-    elseif mode == "toy" and C_ToyBox then
-        return C_ToyBox.GetToyInfo(itemID) == itemID
-    elseif mode == "transmog" and C_TransmogCollection then
-        local appearanceID = C_TransmogCollection.GetItemInfo(itemID)
-        return appearanceID ~= nil and appearanceID > 0
-    elseif mode == "decor" and C_HousingCatalog then
+    if mode == "decor" then
         local entry = C_HousingCatalog.GetCatalogEntryInfoByItem(itemID, false)
         return entry ~= nil and entry.entryID.entryType == Enum.HousingCatalogEntryType.Decor
     end
-    return false
+    -- Reward items have no link; the item ID resolves the base appearance.
+    return RefineUI.Collections:ClassifyItem(itemID, itemID) == REWARD_KINDS[mode]
+end
+
+-- Filters and sorting that Blizzard's own achievement provider does not apply.
+function Window:HasRowFilters()
+    local settings = self:GetSettings()
+    return self.activeInstance ~= nil or (self.rewardFilter or "all") ~= "all"
+        or settings.CharacterCompletion or (settings.Sort or "default") ~= "default"
 end
 
 function Window:MatchesFilters(id)
@@ -99,9 +98,8 @@ function Window:BuildSortedProvider(filtered)
             return a.key < b.key
         end)
     end
-    local provider = CreateDataProvider()
-    for _, entry in ipairs(filtered) do provider:Insert(entry.row) end
-    return provider
+    for index, entry in ipairs(filtered) do filtered[index] = entry.row end
+    return CreateDataProvider(filtered)
 end
 
 function Window:ProcessRows(rows)
@@ -139,5 +137,5 @@ function Window:RefreshFilters()
     AchievementFrameCategories_UpdateDataProvider()
     scroll:SetScrollPercentage(offset, ScrollBoxConstants.NoScrollInterpolation)
     if type(self:GetSelectedCategory()) == "number" then AchievementFrameAchievements_UpdateDataProvider() end
-    if self.QueueSearch then self:QueueSearch() end
+    self:QueueSearch()
 end

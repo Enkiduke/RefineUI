@@ -48,8 +48,6 @@ local GetQuestLogRewardHonor = GetQuestLogRewardHonor
 local GetQuestLogItemLink = GetQuestLogItemLink
 local GetQuestObjectiveInfo = GetQuestObjectiveInfo
 local GetDifficultyColor = GetDifficultyColor
-local GetSpellInfo = GetSpellInfo
-local GetSpellTexture = GetSpellTexture
 local BreakUpLargeNumbers = BreakUpLargeNumbers
 local UnitLevel = UnitLevel
 local IsShiftKeyDown = IsShiftKeyDown
@@ -155,23 +153,7 @@ end
 ----------------------------------------------------------------------------------------
 
 function Maps:GetWorldQuestListConfig()
-    local mapsConfig = (RefineUI.Config and RefineUI.Config.Maps) or self.db or {}
-    self.db = mapsConfig
-
-    mapsConfig.WorldQuestList = mapsConfig.WorldQuestList or {}
-    local config = mapsConfig.WorldQuestList
-
-    if config.Enable == nil then
-        config.Enable = true
-    end
-
-    if config.Collapsed == nil then
-        config.Collapsed = false
-    end
-
-    config.Sort = NormalizeSort(config.Sort)
-
-    return config
+    return self.db.WorldQuestList
 end
 
 ----------------------------------------------------------------------------------------
@@ -184,6 +166,7 @@ function Maps:EnsureWorldQuestListState()
     self._worldQuestItemLevelCache = self._worldQuestItemLevelCache or {}
     self._worldQuestTagCache = self._worldQuestTagCache or {}
     self._worldQuestEntries = self._worldQuestEntries or {}
+    self._worldQuestEntryPool = self._worldQuestEntryPool or {}
     self._worldQuestSeenQuestIDs = self._worldQuestSeenQuestIDs or {}
 end
 
@@ -292,6 +275,7 @@ function Maps:CollectWorldQuestEntries()
     end
 
     local passFiltersFn = _G.WorldMap_DoesWorldQuestInfoPassFilters
+    local entryPool = self._worldQuestEntryPool
 
     for i = 1, #tasksOnMap do
         local info = tasksOnMap[i]
@@ -300,22 +284,23 @@ function Maps:CollectWorldQuestEntries()
         if questID and not seenQuestIDs[questID] then
             seenQuestIDs[questID] = true
 
-            local isWorldQuest = QuestUtils_IsQuestWorldQuest and QuestUtils_IsQuestWorldQuest(questID)
-            local hasQuestData = HaveQuestData and HaveQuestData(questID)
-            local passesFilters = type(passFiltersFn) == "function" and passFiltersFn(info) or true
-
-            if isWorldQuest and hasQuestData and passesFilters then
+            if QuestUtils_IsQuestWorldQuest(questID) and HaveQuestData(questID)
+                and (not passFiltersFn or passFiltersFn(info)) then
                 local title = C_TaskQuest.GetQuestInfoByQuestID(questID)
                 if type(title) == "string" and title ~= "" then
-                    local titleLower = strlower(title)
-                    if searchText == "" or titleLower:find(searchText, 1, true) then
-                        entries[#entries + 1] = {
-                            questID = questID,
-                            title = title,
-                            mapID = info.mapID or mapID,
-                            info = info,
-                            timeLeftMinutes = C_TaskQuest.GetQuestTimeLeftMinutes(questID),
-                        }
+                    if searchText == "" or strlower(title):find(searchText, 1, true) then
+                        local index = #entries + 1
+                        local entry = entryPool[index]
+                        if not entry then
+                            entry = {}
+                            entryPool[index] = entry
+                        end
+                        entry.questID = questID
+                        entry.title = title
+                        entry.mapID = info.mapID or mapID
+                        entry.info = info
+                        entry.timeLeftMinutes = C_TaskQuest.GetQuestTimeLeftMinutes(questID)
+                        entries[index] = entry
                     end
                 end
             end
@@ -646,15 +631,8 @@ function Maps:AddWorldQuestRewardsToTooltip(tooltip, questID)
         if spellRewards then
             for index = 1, #spellRewards do
                 local spellID = spellRewards[index]
-                local spellName = GetSpellInfo and GetSpellInfo(spellID)
-                local spellTexture = GetSpellTexture and GetSpellTexture(spellID)
-
-                if not spellName and C_Spell and C_Spell.GetSpellName then
-                    spellName = C_Spell.GetSpellName(spellID)
-                end
-                if not spellTexture and C_Spell and C_Spell.GetSpellTexture then
-                    spellTexture = C_Spell.GetSpellTexture(spellID)
-                end
+                local spellName = C_Spell.GetSpellName(spellID)
+                local spellTexture = C_Spell.GetSpellTexture(spellID)
 
                 if spellName then
                     if spellTexture then
@@ -1057,22 +1035,9 @@ function Maps:SetupWorldQuestRow(button, entry)
     button.infoX = info.x
     button.infoY = info.y
 
-    if C_TaskQuest and C_TaskQuest.RequestPreloadRewardData then
-        C_TaskQuest.RequestPreloadRewardData(questID)
-    end
-
     local title = entry.title or ""
     button.questName = title
     button.Text:SetText(title)
-    if button.Text.SetWordWrap then
-        button.Text:SetWordWrap(false)
-    end
-    if button.Text.SetNonSpaceWrap then
-        button.Text:SetNonSpaceWrap(false)
-    end
-    if button.Text.SetMaxLines then
-        button.Text:SetMaxLines(1)
-    end
 
     local questTagInfo = self:GetCachedQuestTagInfo(questID)
 
@@ -1307,12 +1272,6 @@ function Maps:UpdateWorldQuestList()
     end
 
     self:SortWorldQuestEntries(entries, config.Sort)
-
-    if self._worldQuestHeaderButton.SetHeaderText then
-        self._worldQuestHeaderButton:SetHeaderText(HEADER_TEXT)
-    else
-        self._worldQuestHeaderButton:SetText(HEADER_TEXT)
-    end
 
     local separator = questScrollFrame.Contents.Separator
     local layoutIndex

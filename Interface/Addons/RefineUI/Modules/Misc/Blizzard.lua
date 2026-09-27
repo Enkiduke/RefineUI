@@ -5,36 +5,12 @@ local Blizzard = RefineUI:RegisterModule("Blizzard")
 
 -- WoW Globals
 local NewPlayerExperience = _G.NewPlayerExperience
--- Note: HelpTip might be loaded later, so we check at runtime or use global reference
 
-local function DismissActiveHelpTips()
-    local HelpTip = _G.HelpTip
-    if not (HelpTip and HelpTip.framePool) then
-        return
-    end
-
-    for frame in HelpTip.framePool:EnumerateActive() do
-        if frame.Acknowledge then
-            frame:Acknowledge()
-        elseif frame.Hide then
-            frame:Hide()
-        end
-    end
-end
-
+-- HelpTip:AreHelpTipsEnabled() honors this unregistered CVar. Hiding HelpTips from addon code
+-- instead runs their close callbacks (micro-button alerts) tainted.
 function Blizzard:DisableTips()
-    local HelpTip = _G.HelpTip
-
-    if (HelpTip and HelpTip.framePool) then
-        DismissActiveHelpTips()
-
-        if type(HelpTip.Show) == "function" and not self._helpTipShowHooked then
-            RefineUI:HookOnce("Blizzard:HelpTip:Show", HelpTip, "Show", function()
-                DismissActiveHelpTips()
-            end)
-            self._helpTipShowHooked = true
-        end
-    end
+    C_CVar.RegisterCVar("hideHelptips", "1")
+    C_CVar.SetCVar("hideHelptips", "1")
 
     if (NewPlayerExperience) then
         if (NewPlayerExperience:GetIsActive()) then

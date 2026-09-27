@@ -519,3 +519,4 @@ end, 40)
 
 -- Store reference for debugging
 RefineUI.EventFrame = eventFrame
+RefineUI.EventHandlers = handlers

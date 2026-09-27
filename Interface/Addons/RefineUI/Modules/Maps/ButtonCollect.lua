@@ -50,9 +50,8 @@ local texList = {
 }
 
 local buttons = {}
-local buttonIndex = {}
-local hoverHooked = {}
 local buttonState = {}
+local collectConfig = {}
 local collectFrame
 local requestRefreshButtonCollect
 
@@ -136,11 +135,10 @@ local function RestoreHoverBorder(button)
     border:SetBackdropBorderColor(r, g, b, a or 1)
 end
 
-local function SkinButton(f, size)
+local function SkinButton(f)
 	f:SetPushedTexture(0)
 	f:SetHighlightTexture(0)
 	f:SetDisabledTexture(0)
-	f:SetSize(size, size)
 
 	local regions = { f:GetRegions() }
 	for i = 1, #regions do
@@ -191,33 +189,29 @@ local function NormalizeGrowDirection(value)
     return DIRECTION_FORWARD
 end
 
+-- Returns a shared table; callers read it immediately and never keep it.
 function Maps:GetButtonCollectConfig()
-    local config = RefineUI.Config.Maps or {}
-    local db = self.db or config
+    local db = self.db
 
-    local size = floor((tonumber(db.AddonButtonSize) or tonumber(config.AddonButtonSize) or DEFAULT_BUTTON_SIZE) + 0.5)
+    local size = floor((tonumber(db.AddonButtonSize) or DEFAULT_BUTTON_SIZE) + 0.5)
     if size < 16 then size = 16 end
     if size > 64 then size = 64 end
 
-    local spacing = floor((tonumber(db.AddonButtonSpacing) or tonumber(config.AddonButtonSpacing) or DEFAULT_BUTTON_SPACING) + 0.5)
+    local spacing = floor((tonumber(db.AddonButtonSpacing) or DEFAULT_BUTTON_SPACING) + 0.5)
     if spacing < 0 then spacing = 0 end
     if spacing > 30 then spacing = 30 end
 
-    local minimapSize = GetLiveMinimapSize() or tonumber(db.Size) or tonumber(config.Size) or 162
+    local minimapSize = GetLiveMinimapSize() or tonumber(db.Size) or 162
     if minimapSize <= 0 then
         minimapSize = 162
     end
 
-    local orientation = NormalizeOrientation(db.AddonButtonOrientation or config.AddonButtonOrientation or ORIENTATION_HORIZONTAL)
-    local growDirection = NormalizeGrowDirection(db.AddonButtonGrowDirection or config.AddonButtonGrowDirection or DIRECTION_FORWARD)
-
-    return {
-        size = size,
-        spacing = spacing,
-        minimapSize = minimapSize,
-        orientation = orientation,
-        growDirection = growDirection,
-    }
+    collectConfig.size = size
+    collectConfig.spacing = spacing
+    collectConfig.minimapSize = minimapSize
+    collectConfig.orientation = NormalizeOrientation(db.AddonButtonOrientation)
+    collectConfig.growDirection = NormalizeGrowDirection(db.AddonButtonGrowDirection)
+    return collectConfig
 end
 
 function Maps:GetButtonCollectGrowDirectionLabel(value)
@@ -256,7 +250,6 @@ function Maps:RegisterButtonCollectEditModeSettings()
                 return self:GetButtonCollectConfig().size
             end,
             set = function(_, value)
-                self.db = self.db or (RefineUI.DB and RefineUI.DB.Maps) or RefineUI.Config.Maps or {}
                 self.db.AddonButtonSize = floor((tonumber(value) or DEFAULT_BUTTON_SIZE) + 0.5)
                 self:RequestButtonCollectRefresh()
             end,
@@ -273,7 +266,6 @@ function Maps:RegisterButtonCollectEditModeSettings()
                 return self:GetButtonCollectConfig().spacing
             end,
             set = function(_, value)
-                self.db = self.db or (RefineUI.DB and RefineUI.DB.Maps) or RefineUI.Config.Maps or {}
                 self.db.AddonButtonSpacing = floor((tonumber(value) or DEFAULT_BUTTON_SPACING) + 0.5)
                 self:RequestButtonCollectRefresh()
             end,
@@ -291,7 +283,6 @@ function Maps:RegisterButtonCollectEditModeSettings()
                 return self:GetButtonCollectConfig().orientation
             end,
             set = function(_, value)
-                self.db = self.db or (RefineUI.DB and RefineUI.DB.Maps) or RefineUI.Config.Maps or {}
                 self.db.AddonButtonOrientation = NormalizeOrientation(value)
                 self:RequestButtonCollectRefresh()
             end,
@@ -311,7 +302,6 @@ function Maps:RegisterButtonCollectEditModeSettings()
                             return self:GetButtonCollectConfig().growDirection == data.value
                         end,
                         function(data)
-                            self.db = self.db or (RefineUI.DB and RefineUI.DB.Maps) or RefineUI.Config.Maps or {}
                             self.db.AddonButtonGrowDirection = NormalizeGrowDirection(data.value)
                             self:RequestButtonCollectRefresh()
                         end,
@@ -323,7 +313,6 @@ function Maps:RegisterButtonCollectEditModeSettings()
                 return self:GetButtonCollectConfig().growDirection
             end,
             set = function(_, value)
-                self.db = self.db or (RefineUI.DB and RefineUI.DB.Maps) or RefineUI.Config.Maps or {}
                 self.db.AddonButtonGrowDirection = NormalizeGrowDirection(value)
                 self:RequestButtonCollectRefresh()
             end,
@@ -366,18 +355,36 @@ function Maps:SetupButtonCollect()
         end, default, "Minimap Buttons")
     end
 
+    local function OnButtonEnter(button)
+        RefineUI:FadeIn(button)
+        ApplyGoldHoverBorder(button)
+    end
+
+    local function OnButtonLeave(button)
+        RefineUI:FadeOut(button)
+        RestoreHoverBorder(button)
+    end
+
+    local function CollectButton(f)
+        buttonState[f] = {
+            clearAllPoints = f.ClearAllPoints,
+            setPoint = f.SetPoint,
+        }
+        f:SetParent(collectFrame)
+        f.ClearAllPoints = RefineUI.Dummy
+        f.SetPoint = RefineUI.Dummy
+        f:HookScript("OnEnter", OnButtonEnter)
+        f:HookScript("OnLeave", OnButtonLeave)
+        buttons[#buttons + 1] = f
+    end
+
     local function TryCollectFrom(parent)
         if not parent then return end
         for _, child in ipairs({ parent:GetChildren() }) do
             local name = child:GetName()
-            if name and not BlackList[name] then
-                if child:GetObjectType() == "Button" and child:GetNumRegions() >= 3 and child:IsShown() then
-                    if not buttonIndex[child] then
-                        buttonIndex[child] = true
-                        child:SetParent(collectFrame)
-                        table.insert(buttons, child)
-                    end
-                end
+            if name and not BlackList[name] and not buttonState[child]
+                and child:GetObjectType() == "Button" and child:GetNumRegions() >= 3 and child:IsShown() then
+                CollectButton(child)
             end
         end
     end
@@ -413,14 +420,14 @@ function Maps:SetupButtonCollect()
         for i = 1, #buttons do
             local f = buttons[i]
             local state = buttonState[f]
-            if not state then
-                state = {
-                    clearAllPoints = f.ClearAllPoints,
-                    setPoint = f.SetPoint,
-                    locked = false,
-                }
-                buttonState[f] = state
+
+            -- SkinButton only strips visible regions, so skin after collectFrame is shown.
+            if not state.skinned then
+                SkinButton(f)
+                state.skinned = true
             end
+            f:SetSize(size, size)
+            f:SetAlpha(0)
 
             state.clearAllPoints(f)
             local wrapped = ((i - 1) % lineLen == 0)
@@ -468,28 +475,6 @@ function Maps:SetupButtonCollect()
                     end
                 end
             end
-
-            if not state.locked then
-                f.ClearAllPoints = RefineUI.Dummy
-                f.SetPoint = RefineUI.Dummy
-                state.locked = true
-            end
-
-            f:SetAlpha(0)
-
-            if not hoverHooked[f] then
-                hoverHooked[f] = true
-                f:HookScript("OnEnter", function(selfButton)
-                    RefineUI:FadeIn(selfButton)
-                    ApplyGoldHoverBorder(selfButton)
-                end)
-                f:HookScript("OnLeave", function(selfButton)
-                    RefineUI:FadeOut(selfButton)
-                    RestoreHoverBorder(selfButton)
-                end)
-            end
-
-            SkinButton(f, size)
         end
     end
 

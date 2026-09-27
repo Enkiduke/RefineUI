@@ -194,6 +194,11 @@ end, "InstanceCompletion:World")
 
 -- Expansion cards subscribe only while visible. One bounded worker handles all cards.
 Data.summaries, Data.summaryQueue = {}, {}
+-- Owners that only keep summaries warm (sorting/filtering); visible cards go first.
+Data.backgroundOwners = setmetatable({}, { __mode = "k" })
+local TICK_BUDGET_MS = 3
+-- Missing data is retried a bounded number of times, then settles as partial.
+local RETRY_DELAYS = { 1, 2, 4, 8 }
 
 function Data:SaveSummaryManifest(state, resolved)
     if not state.discovered or state.incomplete or not RefineUI.JournalCache then return end
@@ -228,7 +233,7 @@ end
 
 function Data:PublishSummary(state)
     if RefineUI.JournalCache and state.summary.lootReady and state.summary.achievementsReady
-        and not state.summary.unavailable then
+        and not state.summary.unavailable and not state.summary.partial then
         local ready = true
         for _, count in pairs(state.summary.instance) do
             if count.unknown > 0 then ready = false end
@@ -251,6 +256,8 @@ function Data:ResetSummaryOwnership(state)
     state.ownershipRevision = RefineUI.Collections.revision
     state.achievementRevision = self.achievementRevision
     state.missingItems = {}
+    -- Item loads can be dropped under server throttling; a new pass may ask again.
+    for _, item in ipairs(state.items) do item.requested = nil end
 end
 
 function Data:TrimSummaryCache(limit)
@@ -272,7 +279,7 @@ function Data:TrimSummaryCache(limit)
     end
 end
 
-function Data:RequestSummary(instanceID, owner, callback)
+function Data:RequestSummary(instanceID, owner, callback, background)
     local currentTier = EJ_GetCurrentTier and EJ_GetCurrentTier()
     local state = self.summaries[instanceID]
     if not state then
@@ -318,15 +325,18 @@ function Data:RequestSummary(instanceID, owner, callback)
     -- Keep the browsed expansion warm even when its native cards are recycled.
     -- Older expansions remain eligible for the session-cache eviction policy.
     state.tier = currentTier
-    if not next(state.owners) and state.summary.unavailable then
+    -- A new visit retries data that was unavailable or settled as partial.
+    if not next(state.owners) and (state.summary.unavailable or state.summary.partial) then
         if state.incomplete or not state.discovered then
             state.discovered, state.incomplete = nil, nil
             state.scan, state.difficultyIndex = { index = 1, bossIndex = 0 }, 1
+            if state.difficulties and #state.difficulties == 0 then state.difficulties = nil end
         end
-        state.pending = nil
+        state.pending, state.retryAttempts = nil, nil
         self:ResetSummaryOwnership(state)
     end
     state.owners[owner] = callback
+    self.backgroundOwners[owner] = background or nil
     self:SetItemEventsActive(true)
     if state.ownershipRevision ~= RefineUI.Collections.revision or state.achievementRevision ~= self.achievementRevision then
         self:ResetSummaryOwnership(state)
@@ -353,152 +363,206 @@ function Data:ReleaseSummary(owner)
     end
 end
 
+local function HasWork(state)
+    if not next(state.owners) then return false end
+    local summary = state.summary
+    if summary.unavailable then return state.retryRequested == true end
+    local rewardsPending = state.rewardsResolved
+        and state.rewardIndex <= #(state.rewards or {})
+        or not state.rewardsResolved and state.resolveIndex <= #state.items
+    return not state.discovered or rewardsPending or not summary.lootReady
+        or (not summary.achievementsReady and not state.achievementRequest)
+end
+
 function Data:HasSummaryWork()
     for _, state in ipairs(self.summaryQueue) do
-        if next(state.owners) and state.retryRequested and state.summary.unavailable then return true end
-        local rewardsPending = state.rewardsResolved
-            and state.rewardIndex <= #(state.rewards or {})
-            or not state.rewardsResolved and state.resolveIndex <= #state.items
-        if next(state.owners) and not state.summary.unavailable
-            and (not state.discovered or rewardsPending or not state.summary.lootReady
-                or (not state.summary.achievementsReady and not state.achievementRequest)) then return true end
+        if HasWork(state) then return true end
     end
     return false
 end
 
-function Data:StartSummaryWorker()
-    if self.summaryTicker or not self:HasSummaryWork() or (InCombatLockdown and InCombatLockdown()) then return end
-    self.summaryTicker = C_Timer.NewTicker(0.03, function() self:SummaryTick() end)
+-- Queue order is request order, so visible cards fill in from the top of the list.
+function Data:NextSummaryState()
+    local background
+    for _, state in ipairs(self.summaryQueue) do
+        if HasWork(state) then
+            for owner in pairs(state.owners) do
+                if not self.backgroundOwners[owner] then return state end
+            end
+            background = background or state
+        end
+    end
+    return background
 end
 
+function Data:StartSummaryWorker()
+    if self.summaryTicker or not self:HasSummaryWork() or (InCombatLockdown and InCombatLockdown()) then return end
+    self.summaryTicker = C_Timer.NewTicker(0, function() self:SummaryTick() end)
+end
+
+-- Item and journal events can be dropped or never fire for data that stays unresolved.
+-- Returns false once the retry budget is spent; the caller then settles the summary.
+function Data:ScheduleSummaryRetry(state)
+    local attempt = (state.retryAttempts or 0) + 1
+    local delay = RETRY_DELAYS[attempt]
+    if not delay then return false end
+    state.retryAttempts = attempt
+    C_Timer.After(delay, function()
+        if self.summaries[state.id] == state and next(state.owners) and state.summary.unavailable then
+            state.retryRequested = true
+            self:StartSummaryWorker()
+        end
+    end)
+    return true
+end
+
+-- The journal could not be read. Retry, or keep the loot found so far as partial.
+function Data:FailSummaryDiscovery(state, loading)
+    if loading then
+        state.summary.partial = true
+        state.missingItems[0] = true
+    end
+    if self:ScheduleSummaryRetry(state) then
+        state.summary.unavailable = true
+    else
+        state.incomplete, state.discovered = true, true
+    end
+    self:PublishSummary(state)
+end
+
+function Data:ProcessSummaryState(state)
+    if state.summary.unavailable then
+        -- Coalesce arrivals until the current pass finishes. Never rewind an
+        -- active scan for each item event.
+        state.retryRequested = nil
+        if state.incomplete then
+            state.discovered, state.incomplete = nil, nil
+            state.difficultyIndex, state.scan = 1, { index = 1, bossIndex = 0 }
+        end
+        if state.difficulties and #state.difficulties == 0 then state.difficulties = nil end
+        state.pending, state.identityPending = nil, nil
+        self:ResetSummaryOwnership(state)
+        self:PublishSummary(state)
+        return
+    end
+    if not state.discovered then
+        if not state.difficulties then
+            state.difficulties = self:GetDifficulties(state.id)
+            if not state.difficulties or #state.difficulties == 0 then
+                self:FailSummaryDiscovery(state, true)
+                return
+            end
+        end
+        local scan, difficulty = state.scan, state.difficulties[state.difficultyIndex]
+        local batch, total = self:ReadLootBatch(state.id, difficulty, scan)
+        if not batch then
+            self:FailSummaryDiscovery(state, total == "loading")
+            return
+        end
+        for _, item in ipairs(batch) do
+            if not item.link or not item.itemID then
+                state.incomplete = true
+                state.missingItems[item.itemID or 0] = true
+            elseif not state.links[item.link] then
+                state.links[item.link] = true
+                state.items[#state.items + 1] = item
+            end
+        end
+        scan.index = scan.index + #batch
+        if scan.index > total then
+            if scan.bossIndex < #scan.bosses then
+                scan.bossIndex, scan.index = scan.bossIndex + 1, 1
+            else
+                state.difficultyIndex = state.difficultyIndex + 1
+                state.scan = { index = 1, bossIndex = 0 }
+                state.discovered = state.difficultyIndex > #state.difficulties
+                if state.discovered then self:SaveSummaryManifest(state) end
+            end
+        end
+        return
+    end
+    if not state.summary.lootReady then
+        if state.rewardsResolved then
+            for _ = 1, BATCH do
+                local reward = state.rewards and state.rewards[state.rewardIndex]
+                if not reward then break end
+                state.rewardIndex = state.rewardIndex + 1
+                local item = state.items[reward.itemIndex]
+                local owned = RefineUI.Collections:IsCollected(reward.kind, reward.id)
+                self:AddCount(state.summary.instance, reward.kind, reward.id, owned, item)
+                if owned == nil then
+                    state.pending = true
+                    state.missingItems[item and item.itemID or 0] = true
+                end
+            end
+        else
+            for _ = 1, BATCH do
+                local itemIndex, item = state.resolveIndex, state.items[state.resolveIndex]
+                if not item then break end
+                state.resolveIndex = state.resolveIndex + 1
+                local pending = RefineUI.Collections:VisitRewards(item, function(kind, id, owned)
+                    self:RememberSummaryReward(state, kind, id, itemIndex)
+                    self:AddCount(state.summary.instance, kind, id, owned, item)
+                    if owned == nil then
+                        state.pending = true
+                        state.missingItems[item.itemID or 0] = true
+                    end
+                end)
+                if pending then
+                    state.pending, state.identityPending = true, true
+                    state.missingItems[item.itemID or 0] = true
+                end
+            end
+        end
+        local resolvedAll = state.rewardsResolved
+            and state.rewardIndex > #(state.rewards or {})
+            or not state.rewardsResolved and state.resolveIndex > #state.items
+        if resolvedAll then
+            if not state.rewardsResolved and not state.identityPending then
+                state.rewardsResolved = true
+                state.rewardIndex = #(state.rewards or {}) + 1
+                self:SaveSummaryManifest(state, true)
+            end
+            -- A partial catalog shows its known counts but never a completion
+            -- percentage, and is never persisted.
+            local complete = not state.incomplete and not state.pending
+            if complete or not self:ScheduleSummaryRetry(state) then
+                state.summary.lootReady = true
+                state.summary.partial = not complete or nil
+                if complete then state.retryRequested, state.retryAttempts = nil, nil end
+            else
+                state.summary.partial, state.summary.unavailable = true, true
+            end
+            self:PublishSummary(state)
+        end
+        return
+    end
+    if not state.summary.achievementsReady and not state.achievementRequest then
+        state.achievementRequest = true
+        local isRaid = select(12, EJ_GetInstanceInfo(state.id))
+        RefineUI.InstanceAchievements:RequestInstanceAchievementRows(state.id, isRaid, function(_, rows)
+            state.achievementRequest = nil
+            for _, row in ipairs(rows) do
+                local _, _, _, owned = GetAchievementInfo(row.achievementID)
+                self:AddCount(state.summary.instance, "achievements", row.achievementID, owned, row)
+            end
+            state.summary.achievementsReady = true
+            self:PublishSummary(state)
+        end, state)
+    end
+end
+
+-- Work runs every frame within a small time budget instead of one step per tick.
 function Data:SummaryTick()
     if InCombatLockdown and InCombatLockdown() then
         self.summaryTicker:Cancel(); self.summaryTicker = nil; return
     end
-    local queueSize = #self.summaryQueue
-    local start = self.summaryCursor or 0
-    for offset = 1, queueSize do
-        local index = (start + offset - 1) % queueSize + 1
-        local state = self.summaryQueue[index]
-        -- Coalesce arrivals until the current pass finishes. Never rewind an
-        -- active scan for each item event, and never exhaust a lifetime retry cap.
-        if next(state.owners) and state.retryRequested and state.summary.unavailable then
-            state.retryRequested = nil
-            if state.incomplete then
-                state.discovered, state.incomplete = nil, nil
-                state.difficultyIndex, state.scan = 1, { index = 1, bossIndex = 0 }
-            end
-            if state.difficulties and #state.difficulties == 0 then state.difficulties = nil end
-            state.pending, state.identityPending, state.missingItems = nil, nil, {}
-            self:ResetSummaryOwnership(state)
-            self:PublishSummary(state)
-        end
-        if next(state.owners) and not state.summary.unavailable then
-            self.summaryCursor = index
-            if not state.discovered then
-                if not state.difficulties then
-                    state.difficulties = self:GetDifficulties(state.id)
-                    if not state.difficulties or #state.difficulties == 0 then
-                        state.missingItems[0] = true
-                        state.summary.unavailable = true; self:PublishSummary(state); break
-                    end
-                end
-                local scan, difficulty = state.scan, state.difficulties[state.difficultyIndex]
-                local batch, total = self:ReadLootBatch(state.id, difficulty, scan)
-                if not batch then
-                    if total == "loading" then
-                        state.summary.partial = true
-                        state.missingItems[0] = true
-                    end
-                    state.summary.unavailable = true; self:PublishSummary(state); break
-                end
-                for _, item in ipairs(batch) do
-                    if not item.link or not item.itemID then
-                        state.incomplete = true
-                        state.missingItems[item.itemID or 0] = true
-                    elseif not state.links[item.link] then
-                        state.links[item.link] = true
-                        state.items[#state.items + 1] = item
-                    end
-                end
-                scan.index = scan.index + #batch
-                if scan.index > total then
-                    if scan.bossIndex < #scan.bosses then
-                        scan.bossIndex, scan.index = scan.bossIndex + 1, 1
-                    else
-                        state.difficultyIndex = state.difficultyIndex + 1
-                        state.scan = { index = 1, bossIndex = 0 }
-                        state.discovered = state.difficultyIndex > #state.difficulties
-                        if state.discovered then self:SaveSummaryManifest(state) end
-                    end
-                end
-                break
-            elseif not state.summary.lootReady then
-                if state.rewardsResolved then
-                    for _ = 1, BATCH do
-                        local reward = state.rewards and state.rewards[state.rewardIndex]
-                        if not reward then break end
-                        state.rewardIndex = state.rewardIndex + 1
-                        local item = state.items[reward.itemIndex]
-                        local owned = RefineUI.Collections:IsCollected(reward.kind, reward.id)
-                        self:AddCount(state.summary.instance, reward.kind, reward.id, owned, item)
-                        if owned == nil then
-                            state.pending = true
-                            state.missingItems[item and item.itemID or 0] = true
-                        end
-                    end
-                else
-                    for _ = 1, BATCH do
-                        local itemIndex, item = state.resolveIndex, state.items[state.resolveIndex]
-                        if not item then break end
-                        state.resolveIndex = state.resolveIndex + 1
-                        local pending = RefineUI.Collections:VisitRewards(item, function(kind, id, owned)
-                            self:RememberSummaryReward(state, kind, id, itemIndex)
-                            self:AddCount(state.summary.instance, kind, id, owned, item)
-                            if owned == nil then
-                                state.pending = true
-                                state.missingItems[item.itemID or 0] = true
-                            end
-                        end)
-                        if pending then
-                            state.pending, state.identityPending = true, true
-                            state.missingItems[item.itemID or 0] = true
-                        end
-                    end
-                end
-                local resolvedAll = state.rewardsResolved
-                    and state.rewardIndex > #(state.rewards or {})
-                    or not state.rewardsResolved and state.resolveIndex > #state.items
-                if resolvedAll then
-                    if not state.rewardsResolved and not state.identityPending then
-                        state.rewardsResolved = true
-                        state.rewardIndex = #(state.rewards or {}) + 1
-                        self:SaveSummaryManifest(state, true)
-                    end
-                    -- A partial catalog never becomes a completion percentage.
-                    state.summary.lootReady = not state.incomplete and not state.pending
-                    state.summary.partial = not state.summary.lootReady
-                    -- No endless polling for missing journal/item data.
-                    if state.summary.partial then state.summary.unavailable = true end
-                    if state.summary.lootReady then state.retryRequested = nil end
-                    self:PublishSummary(state)
-                end
-                break
-            elseif not state.summary.achievementsReady and not state.achievementRequest then
-                state.achievementRequest = true
-                local isRaid = select(12, EJ_GetInstanceInfo(state.id))
-                RefineUI.InstanceAchievements:RequestInstanceAchievementRows(state.id, isRaid, function(_, rows)
-                    state.achievementRequest = nil
-                    for _, row in ipairs(rows) do
-                        local _, _, _, owned = GetAchievementInfo(row.achievementID)
-                        self:AddCount(state.summary.instance, "achievements", row.achievementID, owned, row)
-                    end
-                    state.summary.achievementsReady = true
-                    self:PublishSummary(state)
-                end, state)
-                break
-            end
-        end
+    local deadline = debugprofilestop() + TICK_BUDGET_MS
+    local state = self:NextSummaryState()
+    while state do
+        self:ProcessSummaryState(state)
+        if debugprofilestop() >= deadline then break end
+        if not HasWork(state) then state = self:NextSummaryState() end
     end
     if not self:HasSummaryWork() and self.summaryTicker then
         self.summaryTicker:Cancel(); self.summaryTicker = nil

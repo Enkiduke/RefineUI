@@ -17,7 +17,6 @@ local Colors = RefineUI.Colors
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
-local _G = _G
 local type = type
 local pairs = pairs
 
@@ -40,33 +39,21 @@ local UnitAffectingCombat = UnitAffectingCombat
 local GetTime = GetTime
 local C_NamePlate = C_NamePlate
 
+local Private = Nameplates:GetPrivate()
+local Util = Private.Util
+local Runtime = Private.Runtime
+local Constants = Private.Constants
+local NameplateData = RefineUI.NameplateData
+
 ----------------------------------------------------------------------------------------
 -- Config Helpers
 ----------------------------------------------------------------------------------------
 function Nameplates:GetThreatConfig()
-    local nameplatesConfig = self:GetConfiguredNameplatesConfig()
-    if not nameplatesConfig then
-        return nil
-    end
-
-    local threatConfig = nameplatesConfig.Threat
-    if type(threatConfig) ~= "table" then
-        threatConfig = {}
-        nameplatesConfig.Threat = threatConfig
-    end
-
-    if threatConfig.Enable == nil then
-        threatConfig.Enable = true
-    end
-    if threatConfig.InstanceOnly == nil then
-        threatConfig.InstanceOnly = false
-    end
-
-    return threatConfig
+    return self:GetConfiguredNameplatesConfig().Threat
 end
 
 function Nameplates:GetThreatConfigColor(config, key, fallback)
-    local color = config and config[key]
+    local color = config[key]
     if type(color) == "table" then
         return color
     end
@@ -77,16 +64,10 @@ end
 -- Threat Role
 ----------------------------------------------------------------------------------------
 function Nameplates:RefreshPlayerThreatRole()
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    if not runtime then
-        return
-    end
-
-    local role = UnitGroupRolesAssigned and UnitGroupRolesAssigned("player")
+    local role = UnitGroupRolesAssigned("player")
     if role == nil or role == "NONE" then
-        local specIndex = GetSpecialization and GetSpecialization()
-        if specIndex and specIndex > 0 and GetSpecializationRole then
+        local specIndex = GetSpecialization()
+        if specIndex and specIndex > 0 then
             role = GetSpecializationRole(specIndex)
         end
     end
@@ -95,152 +76,85 @@ function Nameplates:RefreshPlayerThreatRole()
         role = "DAMAGER"
     end
 
-    runtime.playerThreatRole = role
+    Runtime.playerThreatRole = role
 end
 
 function Nameplates:IsPlayerTankRole()
-    local private = self:GetPrivate()
-    local runtime = private and private.Runtime
-    if not runtime then
-        return false
-    end
-
-    if runtime.playerThreatRole == nil then
+    if Runtime.playerThreatRole == nil then
         self:RefreshPlayerThreatRole()
     end
 
-    return runtime.playerThreatRole == "TANK"
+    return Runtime.playerThreatRole == "TANK"
 end
 
 ----------------------------------------------------------------------------------------
 -- Threat Display CVar
 ----------------------------------------------------------------------------------------
 local function IsThreatBitEnabled(index)
-    local private = Nameplates:GetPrivate()
-    local constants = private and private.Constants
-    if not constants or type(index) ~= "number" then
+    if type(index) ~= "number" then
         return false
     end
 
-    if not C_CVar or type(C_CVar.GetCVar) ~= "function" then
-        return false
-    end
-
-    local currentValue = C_CVar.GetCVar(constants.NAMEPLATE_THREAT_DISPLAY_CVAR)
+    local currentValue = C_CVar.GetCVar(Constants.NAMEPLATE_THREAT_DISPLAY_CVAR)
     if type(currentValue) ~= "string" or currentValue == "" then
         return false
     end
 
-    if not CVarCallbackRegistry or type(CVarCallbackRegistry.GetCVarBitfieldIndex) ~= "function" then
-        return false
-    end
-
-    return CVarCallbackRegistry:GetCVarBitfieldIndex(constants.NAMEPLATE_THREAT_DISPLAY_CVAR, index)
+    return CVarCallbackRegistry:GetCVarBitfieldIndex(Constants.NAMEPLATE_THREAT_DISPLAY_CVAR, index)
 end
 
-local function BuildThreatDisplayMask(threatConfig)
-    local threatDisplay = Enum and Enum.NamePlateThreatDisplay
-    if not threatDisplay then
-        return nil
-    end
-
-    local enableHealthColor = threatConfig == nil or threatConfig.Enable ~= false
-    local mask = 0
-
-    local function AddMaskBit(bitIndex, enabled)
-        if enabled and type(bitIndex) == "number" and bitIndex > 0 then
-            mask = mask + (2 ^ (bitIndex - 1))
-        end
-    end
-
-    -- Progressive/Flash intentionally disabled; RefineUI uses Safe/Transition/Warning only.
-    AddMaskBit(threatDisplay.Progressive, false)
-    AddMaskBit(threatDisplay.Flash, false)
-    AddMaskBit(threatDisplay.HealthBarColor, enableHealthColor)
-
-    return mask
-end
-
+-- Progressive/Flash intentionally disabled; RefineUI uses Safe/Transition/Warning only.
 function Nameplates:ApplyThreatDisplayCVarFromConfig()
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    if not constants then
+    local threatDisplay = Enum.NamePlateThreatDisplay
+    if not threatDisplay or not C_CVar.GetCVar(Constants.NAMEPLATE_THREAT_DISPLAY_CVAR) then
         return
     end
 
-    if not C_CVar or type(C_CVar.GetCVar) ~= "function" then
-        return
-    end
-    if not C_CVar.GetCVar(constants.NAMEPLATE_THREAT_DISPLAY_CVAR) then
-        return
-    end
-    if not CVarCallbackRegistry or type(CVarCallbackRegistry.SetCVarBitfieldMask) ~= "function" then
+    local desiredHealthColor = self:GetThreatConfig().Enable ~= false
+    if IsThreatBitEnabled(threatDisplay.Progressive) == false
+        and IsThreatBitEnabled(threatDisplay.Flash) == false
+        and IsThreatBitEnabled(threatDisplay.HealthBarColor) == desiredHealthColor then
         return
     end
 
-    local threatDisplay = Enum and Enum.NamePlateThreatDisplay
-    if not threatDisplay then
-        return
+    local mask = 0
+    local healthColorBit = threatDisplay.HealthBarColor
+    if desiredHealthColor and type(healthColorBit) == "number" and healthColorBit > 0 then
+        mask = 2 ^ (healthColorBit - 1)
     end
 
-    local threatConfig = self:GetThreatConfig()
-    local desiredMask = BuildThreatDisplayMask(threatConfig)
-    if type(desiredMask) ~= "number" then
-        return
-    end
-
-    local desiredProgressive = false
-    local desiredFlash = false
-    local desiredHealthColor = threatConfig == nil or threatConfig.Enable ~= false
-
-    local currentProgressive = IsThreatBitEnabled(threatDisplay.Progressive)
-    local currentFlash = IsThreatBitEnabled(threatDisplay.Flash)
-    local currentHealthColor = IsThreatBitEnabled(threatDisplay.HealthBarColor)
-
-    if currentProgressive == desiredProgressive and currentFlash == desiredFlash and currentHealthColor == desiredHealthColor then
-        return
-    end
-
-    CVarCallbackRegistry:SetCVarBitfieldMask(constants.NAMEPLATE_THREAT_DISPLAY_CVAR, desiredMask)
+    CVarCallbackRegistry:SetCVarBitfieldMask(Constants.NAMEPLATE_THREAT_DISPLAY_CVAR, mask)
+    Runtime.threatHealthColorMirrored = nil
 end
 
+-- Runs on every health color update; the CVar bit is cached until CVAR_UPDATE
+-- or ApplyThreatDisplayCVarFromConfig clears it.
 function Nameplates:ShouldMirrorThreatHealthColor()
-    local threatConfig = self:GetThreatConfig()
-    if threatConfig and threatConfig.Enable == false then
+    if self:GetThreatConfig().Enable == false then
         return false
     end
 
-    local threatDisplay = Enum and Enum.NamePlateThreatDisplay
-    if not threatDisplay then
-        return true
+    local mirrored = Runtime.threatHealthColorMirrored
+    if mirrored == nil then
+        local threatDisplay = Enum.NamePlateThreatDisplay
+        mirrored = not threatDisplay or IsThreatBitEnabled(threatDisplay.HealthBarColor) == true
+        Runtime.threatHealthColorMirrored = mirrored
     end
-
-    if not CVarCallbackRegistry or type(CVarCallbackRegistry.GetCVarBitfieldIndex) ~= "function" then
-        return true
-    end
-
-    return IsThreatBitEnabled(threatDisplay.HealthBarColor)
+    return mirrored
 end
 
 ----------------------------------------------------------------------------------------
 -- Threat Colors
 ----------------------------------------------------------------------------------------
 local function GetDefaultHealthColor(unit)
-    local private = Nameplates:GetPrivate()
-    local util = private and private.Util
-    if not util or not util.IsUsableUnitToken(unit) then
-        return 1, 1, 1
-    end
+    local classPalette = Colors.Class
+    local reactionPalette = Colors.Reaction
 
-    local palette = Colors or {}
-    local classPalette = palette.Class or {}
-    local reactionPalette = palette.Reaction or {}
-
-    if util.ReadSafeBoolean(UnitIsTapDenied(unit)) == true then
+    if Util.ReadSafeBoolean(UnitIsTapDenied(unit)) == true then
         return 0.6, 0.6, 0.6
     end
 
-    if util.ReadSafeBoolean(UnitIsPlayer(unit)) == true then
+    if Util.ReadSafeBoolean(UnitIsPlayer(unit)) == true then
         local _, class = UnitClass(unit)
         local classColor = class and classPalette[class]
         if classColor then
@@ -256,30 +170,18 @@ local function GetDefaultHealthColor(unit)
         end
     end
 
-    if UnitSelectionColor then
-        local r, g, b = UnitSelectionColor(unit, true)
-        if type(r) == "number" and type(g) == "number" and type(b) == "number" then
-            return r, g, b
-        end
+    local r, g, b = UnitSelectionColor(unit, true)
+    if type(r) == "number" and type(g) == "number" and type(b) == "number" then
+        return r, g, b
     end
 
     return 1, 0.25, 0.25
 end
 
 local function GetDefaultNameColor(unit)
-    local private = Nameplates:GetPrivate()
-    local util = private and private.Util
-    if not util or not util.IsUsableUnitToken(unit) then
-        return 1, 1, 1
-    end
-
-    local palette = Colors or {}
-    local classPalette = palette.Class or {}
-    local reactionPalette = palette.Reaction or {}
-
-    if util.ReadSafeBoolean(UnitIsPlayer(unit)) == true then
+    if Util.ReadSafeBoolean(UnitIsPlayer(unit)) == true then
         local _, class = UnitClass(unit)
-        local classColor = class and classPalette[class]
+        local classColor = class and Colors.Class[class]
         if classColor then
             return classColor.r, classColor.g, classColor.b
         end
@@ -288,7 +190,7 @@ local function GetDefaultNameColor(unit)
 
     local reaction = UnitReaction(unit, "player")
     if type(reaction) == "number" then
-        local reactionColor = reactionPalette[reaction]
+        local reactionColor = Colors.Reaction[reaction]
         if reactionColor then
             return reactionColor.r, reactionColor.g, reactionColor.b
         end
@@ -297,122 +199,73 @@ local function GetDefaultNameColor(unit)
     return 1, 1, 1
 end
 
-function Nameplates:GetContextThreatStatus(unit, playerInCombat)
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    if not constants then
-        return nil
-    end
-
-    if not UnitThreatSituation then
-        return nil
-    end
-
+function Nameplates:GetContextThreatStatus(unit, playerInCombat, inInstance)
     if not playerInCombat then
         return nil
     end
 
-    local inInstance = false
-    if IsInInstance then
-        inInstance = IsInInstance() == true
-    end
-
-    if self:IsPlayerTankRole() and UnitThreatLeadSituation then
+    if self:IsPlayerTankRole() then
         local leadStatus = UnitThreatLeadSituation("player", unit)
-        if type(leadStatus) == "number" then
-            if leadStatus == constants.THREAT_LEAD_STATUS_NONE then
-                return constants.THREAT_STATUS_AGGRO
-            end
-            if leadStatus == constants.THREAT_LEAD_STATUS_YELLOW then
-                return constants.THREAT_STATUS_TRANSITION_LOW
-            end
-            if leadStatus == constants.THREAT_LEAD_STATUS_ORANGE then
-                return constants.THREAT_STATUS_TRANSITION_HIGH
-            end
-            if leadStatus == constants.THREAT_LEAD_STATUS_RED then
-                return constants.THREAT_STATUS_LOW
-            end
+        if leadStatus == Constants.THREAT_LEAD_STATUS_NONE then
+            return Constants.THREAT_STATUS_AGGRO
+        end
+        if leadStatus == Constants.THREAT_LEAD_STATUS_YELLOW then
+            return Constants.THREAT_STATUS_TRANSITION_LOW
+        end
+        if leadStatus == Constants.THREAT_LEAD_STATUS_ORANGE then
+            return Constants.THREAT_STATUS_TRANSITION_HIGH
+        end
+        if leadStatus == Constants.THREAT_LEAD_STATUS_RED then
+            return Constants.THREAT_STATUS_LOW
         end
     end
 
     local playerStatus = UnitThreatSituation("player", unit)
-    if inInstance then
-        if type(playerStatus) == "number" then
-            return playerStatus
-        end
-        return constants.THREAT_STATUS_LOW
-    end
-
     if type(playerStatus) == "number" then
         return playerStatus
     end
 
-    return nil
+    return inInstance and Constants.THREAT_STATUS_LOW or nil
 end
 
 function Nameplates:ResolveThreatHealthColor(unit, data)
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    local util = private and private.Util
-    if not constants or not util then
+    if Util.ReadSafeBoolean(UnitIsPlayer(unit)) == true then
         return nil
     end
 
-    if not util.IsUsableUnitToken(unit) then
-        return nil
-    end
-
-    if util.ReadSafeBoolean(UnitIsPlayer(unit)) == true then
-        return nil
-    end
-
-    if util.ReadSafeBoolean(UnitCanAttack("player", unit)) ~= true then
+    if Util.ReadSafeBoolean(UnitCanAttack("player", unit)) ~= true then
         return nil
     end
 
     local threatConfig = self:GetThreatConfig()
-    if threatConfig and threatConfig.Enable == false then
-        return nil
-    end
-
-    if threatConfig and threatConfig.InstanceOnly == true then
-        local inInstance = false
-        if IsInInstance then
-            inInstance = IsInInstance() == true
-        end
-        if not inInstance then
-            return nil
-        end
-    end
-
     if not self:ShouldMirrorThreatHealthColor() then
         return nil
     end
 
-    local playerInCombat = util.ReadSafeBoolean(UnitAffectingCombat("player")) == true
+    local inInstance = IsInInstance() == true
+    if threatConfig.InstanceOnly == true and not inInstance then
+        return nil
+    end
 
-    local unitInCombat = util.ReadSafeBoolean(UnitAffectingCombat(unit))
-    if unitInCombat == nil and data then
+    local unitInCombat = Util.ReadSafeBoolean(UnitAffectingCombat(unit))
+    if unitInCombat == nil then
         unitInCombat = data.inCombat
     end
     unitInCombat = unitInCombat == true
-    if data then
-        data.inCombat = unitInCombat
-    end
+    data.inCombat = unitInCombat
 
     if not unitInCombat then
         return nil
     end
 
-    local threatStatus = self:GetContextThreatStatus(unit, playerInCombat)
-    if type(threatStatus) == "number" and data and GetTime then
+    local playerInCombat = Util.ReadSafeBoolean(UnitAffectingCombat("player")) == true
+    local threatStatus = self:GetContextThreatStatus(unit, playerInCombat, inInstance)
+    if type(threatStatus) == "number" then
         data.LastThreatStatusAt = GetTime()
-    end
-
-    if type(threatStatus) ~= "number" and data and data.ThreatColorApplied == true and GetTime then
+    elseif data.ThreatColorApplied == true then
         local lastThreatStatusAt = data.LastThreatStatusAt
         if type(lastThreatStatusAt) == "number" and (GetTime() - lastThreatStatusAt) <= 0.25 then
-            threatStatus = constants.THREAT_STATUS_TRANSITION_HIGH
+            threatStatus = Constants.THREAT_STATUS_TRANSITION_HIGH
         end
     end
 
@@ -420,45 +273,38 @@ function Nameplates:ResolveThreatHealthColor(unit, data)
         return nil
     end
 
-    local safeColor = self:GetThreatConfigColor(threatConfig, "SafeColor", constants.DEFAULT_THREAT_SAFE_COLOR)
-    local transitionColor = self:GetThreatConfigColor(threatConfig, "TransitionColor", constants.DEFAULT_THREAT_TRANSITION_COLOR)
-    local warningColor = self:GetThreatConfigColor(threatConfig, "WarningColor", constants.DEFAULT_THREAT_WARNING_COLOR)
     local isTank = self:IsPlayerTankRole()
 
-    if threatStatus == constants.THREAT_STATUS_AGGRO then
-        return isTank and safeColor or warningColor
+    if threatStatus == Constants.THREAT_STATUS_AGGRO then
+        return isTank
+            and self:GetThreatConfigColor(threatConfig, "SafeColor", Constants.DEFAULT_THREAT_SAFE_COLOR)
+            or self:GetThreatConfigColor(threatConfig, "WarningColor", Constants.DEFAULT_THREAT_WARNING_COLOR)
     end
 
-    if threatStatus == constants.THREAT_STATUS_TRANSITION_LOW or threatStatus == constants.THREAT_STATUS_TRANSITION_HIGH then
-        return transitionColor
+    if threatStatus == Constants.THREAT_STATUS_TRANSITION_LOW or threatStatus == Constants.THREAT_STATUS_TRANSITION_HIGH then
+        return self:GetThreatConfigColor(threatConfig, "TransitionColor", Constants.DEFAULT_THREAT_TRANSITION_COLOR)
     end
 
-    if threatStatus == constants.THREAT_STATUS_LOW then
-        return isTank and warningColor or safeColor
+    if threatStatus == Constants.THREAT_STATUS_LOW then
+        return isTank
+            and self:GetThreatConfigColor(threatConfig, "WarningColor", Constants.DEFAULT_THREAT_WARNING_COLOR)
+            or self:GetThreatConfigColor(threatConfig, "SafeColor", Constants.DEFAULT_THREAT_SAFE_COLOR)
     end
 
     return nil
 end
 
-function Nameplates:UpdateThreatColor(nameplate, unit, _forced)
-    local private = self:GetPrivate()
-    local util = private and private.Util
-    if not nameplate or not util or not util.IsUsableUnitToken(unit) then
-        return
-    end
-
+function Nameplates:UpdateThreatColor(nameplate, unit)
     local unitFrame = nameplate.UnitFrame
-    if not unitFrame then
+    local data = unitFrame and NameplateData[unitFrame]
+    if not data or not data.RefineName or not Util.IsUsableUnitToken(unit) then
         return
     end
 
     local health = unitFrame.healthBar or unitFrame.HealthBar
-    local data = RefineUI.NameplateData[unitFrame]
-    if not data or not data.RefineName then
-        return
+    if data.RefineHidden == true then
+        health = nil
     end
-    local suppressHealthBarWork = RefineUI.IsRuntimeSuppressedNameplate
-        and RefineUI:IsRuntimeSuppressedNameplate(unitFrame, data)
 
     local threatColor = self:ResolveThreatHealthColor(unit, data)
     if threatColor then
@@ -466,7 +312,7 @@ function Nameplates:UpdateThreatColor(nameplate, unit, _forced)
         local g = threatColor[2] or 1
         local b = threatColor[3] or 1
 
-        if health and not suppressHealthBarWork then
+        if health then
             self:SetBarColorIfChanged(health, r, g, b)
         end
         self:SetNameColorIfChanged(data, r, g, b)
@@ -474,52 +320,23 @@ function Nameplates:UpdateThreatColor(nameplate, unit, _forced)
         return
     end
 
-    if health and not suppressHealthBarWork then
-        local hr, hg, hb = GetDefaultHealthColor(unit)
-        self:SetBarColorIfChanged(health, hr, hg, hb)
+    if health then
+        self:SetBarColorIfChanged(health, GetDefaultHealthColor(unit))
     end
 
-    local nr, ng, nb = GetDefaultNameColor(unit)
-    self:SetNameColorIfChanged(data, nr, ng, nb)
+    self:SetNameColorIfChanged(data, GetDefaultNameColor(unit))
     data.ThreatColorApplied = false
 end
 
 ----------------------------------------------------------------------------------------
 -- Refresh API
 ----------------------------------------------------------------------------------------
-function Nameplates:RequestBlizzardHealthColorUpdate(unitFrame, fallbackNameplate, fallbackUnit)
-    local updateHealthColor = _G.CompactUnitFrame_UpdateHealthColor
-    if unitFrame and type(updateHealthColor) == "function" then
-        updateHealthColor(unitFrame)
-        return
-    end
-
-    if fallbackNameplate and fallbackUnit then
-        self:UpdateThreatColor(fallbackNameplate, fallbackUnit, true)
-    end
-end
-
-function Nameplates:RefreshAllThreatColors(_forced)
-    local private = self:GetPrivate()
-    local activeNameplates = private and private.ActiveNameplates or {}
-    local util = private and private.Util
-
-    if C_NamePlate and type(C_NamePlate.GetNamePlates) == "function" then
-        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
-            local unitFrame = nameplate and nameplate.UnitFrame
-            local unit = unitFrame and util and util.ResolveUnitToken(unitFrame.unit)
-            if unit then
-                self:RequestBlizzardHealthColorUpdate(unitFrame, nameplate, unit)
-            end
-        end
-        return
-    end
-
-    for nameplate, unit in pairs(activeNameplates) do
-        local unitFrame = nameplate and nameplate.UnitFrame
-        local resolvedUnit = util and util.ResolveUnitToken(unit, unitFrame and unitFrame.unit)
-        if resolvedUnit then
-            self:RequestBlizzardHealthColorUpdate(unitFrame, nameplate, resolvedUnit)
+-- Blizzard's color pass runs first; the UpdateHealthColor hook then applies RefineUI colors.
+function Nameplates:RefreshAllThreatColors()
+    for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+        local unitFrame = nameplate.UnitFrame
+        if unitFrame and Util.ResolveUnitToken(unitFrame.unit) then
+            CompactUnitFrame_UpdateHealthColor(unitFrame)
         end
     end
 end
@@ -535,11 +352,11 @@ end
 ----------------------------------------------------------------------------------------
 -- Public API (Compatibility)
 ----------------------------------------------------------------------------------------
-function RefineUI:RefreshNameplateThreatColors(forced)
+function RefineUI:RefreshNameplateThreatColors()
     Nameplates:ApplyThreatDisplayCVarFromConfig()
-    Nameplates:RefreshAllThreatColors(forced == true)
+    Nameplates:RefreshAllThreatColors()
 end
 
 function RefineUI:ApplyNameplateThreatDisplaySettings()
-    RefineUI:RefreshNameplateThreatColors(true)
+    RefineUI:RefreshNameplateThreatColors()
 end

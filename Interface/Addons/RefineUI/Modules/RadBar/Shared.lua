@@ -102,26 +102,8 @@ local function GetDefaultBorderColor()
     return 0.3, 0.3, 0.3, 1
 end
 
-local function CopyTable(src)
-    if _G.type(src) ~= "table" then
-        return src
-    end
-
-    local dest = {}
-    for k, v in next, src do
-        dest[k] = CopyTable(v)
-    end
-    return dest
-end
-
 local function GetDefaultMainRing()
-    local defaults = RefineUI.DefaultConfig and RefineUI.DefaultConfig.RadBar and RefineUI.DefaultConfig.RadBar.Rings
-    if defaults and defaults.Main then
-        return CopyTable(defaults.Main)
-    end
-    return {
-        Slices = {},
-    }
+    return _G.CopyTable(RefineUI.DefaultConfig.RadBar.Rings.Main)
 end
 
 local function IsLegacyDefaultMainRing(ring)
@@ -164,6 +146,5 @@ Private.IsNonEmptyString = IsNonEmptyString
 Private.GetSlotPrefix = GetSlotPrefix
 Private.GetSelection = GetSelection
 Private.GetDefaultBorderColor = GetDefaultBorderColor
-Private.CopyTable = CopyTable
 Private.GetDefaultMainRing = GetDefaultMainRing
 Private.IsLegacyDefaultMainRing = IsLegacyDefaultMainRing

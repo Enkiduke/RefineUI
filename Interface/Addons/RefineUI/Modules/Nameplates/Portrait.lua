@@ -15,8 +15,8 @@ local Config = RefineUI.Config
 ----------------------------------------------------------------------------------------
 local _G = _G
 local canaccessvalue = _G.canaccessvalue
-local math = math
-local pairs, ipairs, select = pairs, ipairs, select
+local type, tonumber, pcall = type, tonumber, pcall
+local pairs, ipairs = pairs, ipairs
 local strmatch = string.match
 local wipe = table.wipe
 
@@ -32,12 +32,8 @@ local UnitCastingInfo = UnitCastingInfo
 local UnitChannelInfo = UnitChannelInfo
 local SetPortraitTexture = SetPortraitTexture
 local C_QuestLog = C_QuestLog
-local GetQuestLogSpecialItemInfo = GetQuestLogSpecialItemInfo
-local GetNumQuestLeaderBoards = GetNumQuestLeaderBoards
-local GetQuestObjectiveInfo = GetQuestObjectiveInfo
 local THREAT_TOOLTIP = THREAT_TOOLTIP
 local C_TooltipInfo = C_TooltipInfo
-local CreateColor = CreateColor
 local C_Spell = C_Spell
 
 ----------------------------------------------------------------------------------------
@@ -51,25 +47,22 @@ local IsSecret = NameplatesUtil.IsSecret
 local HasValue = NameplatesUtil.HasValue
 local ReadSafeBoolean = NameplatesUtil.ReadSafeBoolean
 local IsTargetNameplateUnitFrame = NameplatesUtil.IsTargetNameplateUnitFrame
+local IsCastBarActive = NameplatesUtil.IsCastBarActive
 local TOOLTIP_LINE_TYPE_QUEST_OBJECTIVE = (_G.Enum and _G.Enum.TooltipDataLineType and _G.Enum.TooltipDataLineType.QuestObjective) or 8
 local TOOLTIP_LINE_TYPE_QUEST_TITLE = (_G.Enum and _G.Enum.TooltipDataLineType and _G.Enum.TooltipDataLineType.QuestTitle) or 17
 local TOOLTIP_LINE_TYPE_QUEST_PLAYER = (_G.Enum and _G.Enum.TooltipDataLineType and _G.Enum.TooltipDataLineType.QuestPlayer) or 18
 local PLAYER_NAME = UnitName("player")
 local NO_QUEST_TOOLTIP_RESULT = false
-local pendingQuestTooltipCacheReset = false
 local pendingQuestPortraitRefresh = false
 local PORTRAIT_EVENT_KEY_PREFIX = "Nameplates:Portrait:QuestCache"
+local QUEST_REFRESH_KEY = "Nameplates:Portrait:QuestRefresh"
+local QUEST_REFRESH_DELAY_SECONDS = 0.1
 
--- External Data Registry to prevent Taint
-RefineUI.NameplateData = RefineUI.NameplateData or setmetatable({}, { __mode = "k" })
 local IMPORTANT_CAST_GLOW_ATLAS = "PowerSwirlAnimation-SpinningGlowys"
 local IMPORTANT_CAST_GLOW_PADDING = 0
 local IMPORTANT_CAST_GLOW_ALPHA = 1
 local IMPORTANT_CAST_GLOW_ROTATION_SECONDS = 1.2
-local IMPORTANT_CAST_GLOW_TEST_ALL_CASTS = false
 local BASE_PORTRAIT_SIZE = 36
-local DYNAMIC_PORTRAIT_SCALE_MIN = 0.5
-local DYNAMIC_PORTRAIT_SCALE_MAX = 2.0
 local DEFAULT_BORDER_COLOR = { 0.25, 0.25, 0.25, 1 }
 local DEFAULT_CAST_COLOR = { 1, 0.7, 0 }
 local CAST_START_EVENTS = {
@@ -86,62 +79,10 @@ local CAST_STOP_EVENTS = {
     UNIT_SPELLCAST_CHANNEL_STOP = true,
     UNIT_SPELLCAST_EMPOWER_STOP = true,
 }
-local cachedCastSignalInterruptibleColor = nil
-local cachedCastSignalNonInterruptibleColor = nil
-local cachedCastSignalInterruptibleR, cachedCastSignalInterruptibleG, cachedCastSignalInterruptibleB, cachedCastSignalInterruptibleA = nil, nil, nil, nil
-local cachedCastSignalNonInterruptibleR, cachedCastSignalNonInterruptibleG, cachedCastSignalNonInterruptibleB, cachedCastSignalNonInterruptibleA = nil, nil, nil, nil
-
-local function GetConfiguredDynamicPortraitScale()
-    if Nameplates and Nameplates.GetConfiguredNameplateScale then
-        return Nameplates:GetConfiguredNameplateScale()
-    end
-
-    local cfg = Config and Config.Nameplates
-    local scale = tonumber(cfg and cfg.Scale) or tonumber(cfg and cfg.DynamicPortraitScale) or 1
-    if scale < DYNAMIC_PORTRAIT_SCALE_MIN then
-        return DYNAMIC_PORTRAIT_SCALE_MIN
-    end
-    if scale > DYNAMIC_PORTRAIT_SCALE_MAX then
-        return DYNAMIC_PORTRAIT_SCALE_MAX
-    end
-    return scale
-end
-
-local function GetConfiguredDynamicPortraitSize()
-    return RefineUI:Scale(BASE_PORTRAIT_SIZE * GetConfiguredDynamicPortraitScale())
-end
-
-local function IsCastBarActive(castBar)
-    if not castBar then
-        return false
-    end
-
-    if castBar.IsShown and not castBar:IsShown() then
-        return false
-    end
-
-    if ReadSafeBoolean(castBar.casting) == true then
-        return true
-    end
-    if ReadSafeBoolean(castBar.channeling) == true then
-        return true
-    end
-    if ReadSafeBoolean(castBar.reverseChanneling) == true then
-        return true
-    end
-
-    local barType = castBar.barType
-    if not IsSecret(barType) and type(barType) == "string" then
-        if barType == "standard"
-            or barType == "channel"
-            or barType == "uninterruptable"
-            or barType == "uninterruptible" then
-            return true
-        end
-    end
-
-    return false
-end
+local PORTRAIT_UPDATE_EVENTS = {
+    UNIT_PORTRAIT_UPDATE = true,
+    UNIT_MODEL_CHANGED = true,
+}
 
 ----------------------------------------------------------------------------------------
 -- Radial Statusbar Logic
@@ -202,7 +143,11 @@ local function CheckTextForQuest(text)
 
     local x, y = strmatch(text, "(%d+)/(%d+)")
     if x and y then
-        return tonumber(x) / tonumber(y), x == y
+        local total = tonumber(y)
+        if total == 0 then
+            return nil, false
+        end
+        return tonumber(x) / total, x == y
     elseif not strmatch(text, ThreatTooltip) then
         local progress = tonumber(strmatch(text, "([%d%.]+)%%"))
         if progress and progress <= 100 then
@@ -399,58 +344,6 @@ local function GetNameplateCastRenderedColor(castBar)
     return nil, nil, nil
 end
 
-local function GetPortraitCastSignalColors()
-    local castPalette = RefineUI.Colors and RefineUI.Colors.Cast
-    local interruptible = castPalette and castPalette.Interruptible or DEFAULT_CAST_COLOR
-    local nonInterruptible = castPalette and castPalette.NonInterruptible or DEFAULT_CAST_COLOR
-
-    local intR = tonumber(interruptible[1]) or DEFAULT_CAST_COLOR[1]
-    local intG = tonumber(interruptible[2]) or DEFAULT_CAST_COLOR[2]
-    local intB = tonumber(interruptible[3]) or DEFAULT_CAST_COLOR[3]
-    local intA = tonumber(interruptible[4]) or 1
-
-    if cachedCastSignalInterruptibleColor == nil
-        or cachedCastSignalInterruptibleR ~= intR
-        or cachedCastSignalInterruptibleG ~= intG
-        or cachedCastSignalInterruptibleB ~= intB
-        or cachedCastSignalInterruptibleA ~= intA then
-        cachedCastSignalInterruptibleColor = CreateColor(
-            intR,
-            intG,
-            intB,
-            intA
-        )
-        cachedCastSignalInterruptibleR = intR
-        cachedCastSignalInterruptibleG = intG
-        cachedCastSignalInterruptibleB = intB
-        cachedCastSignalInterruptibleA = intA
-    end
-
-    local nonIntR = tonumber(nonInterruptible[1]) or DEFAULT_CAST_COLOR[1]
-    local nonIntG = tonumber(nonInterruptible[2]) or DEFAULT_CAST_COLOR[2]
-    local nonIntB = tonumber(nonInterruptible[3]) or DEFAULT_CAST_COLOR[3]
-    local nonIntA = tonumber(nonInterruptible[4]) or 1
-
-    if cachedCastSignalNonInterruptibleColor == nil
-        or cachedCastSignalNonInterruptibleR ~= nonIntR
-        or cachedCastSignalNonInterruptibleG ~= nonIntG
-        or cachedCastSignalNonInterruptibleB ~= nonIntB
-        or cachedCastSignalNonInterruptibleA ~= nonIntA then
-        cachedCastSignalNonInterruptibleColor = CreateColor(
-            nonIntR,
-            nonIntG,
-            nonIntB,
-            nonIntA
-        )
-        cachedCastSignalNonInterruptibleR = nonIntR
-        cachedCastSignalNonInterruptibleG = nonIntG
-        cachedCastSignalNonInterruptibleB = nonIntB
-        cachedCastSignalNonInterruptibleA = nonIntA
-    end
-
-    return cachedCastSignalInterruptibleColor, cachedCastSignalNonInterruptibleColor
-end
-
 local function ApplyPortraitCastSignalColor(borderTexture, signal)
     if not borderTexture or signal == nil then
         return false
@@ -459,12 +352,9 @@ local function ApplyPortraitCastSignalColor(borderTexture, signal)
         return false
     end
 
-    local interruptibleColorObj, nonInterruptibleColorObj = GetPortraitCastSignalColors()
-    borderTexture:SetVertexColorFromBoolean(
-        signal,
-        nonInterruptibleColorObj,
-        interruptibleColorObj
-    )
+    -- Built by RefreshNameplateCastColors (CastBars) before any cast bar is styled.
+    local colorObjs = RefineUI.Colors.CastColorObj
+    borderTexture:SetVertexColorFromBoolean(signal, colorObjs.NonInterruptible, colorObjs.Interruptible)
     return true
 end
 
@@ -530,124 +420,29 @@ local function GetActiveCastSpellIdentifier(unit, castBar)
     return nil
 end
 
-local function ReadComparableSignatureValue(value)
-    if value == nil or IsSecret(value) then
-        return nil
-    end
-    if canaccessvalue and not canaccessvalue(value) then
-        return nil
-    end
-
-    local valueType = type(value)
-    if valueType == "number" or valueType == "string" or valueType == "boolean" then
-        return value
-    end
-
-    return nil
-end
-
-local function ReadComparableTextureSignature(texture)
-    local comparableTexture = ReadComparableSignatureValue(texture)
-    if comparableTexture == nil then
-        return nil
-    end
-    return tostring(comparableTexture)
-end
-
-local function GetPortraitScaleSignature()
-    return tostring(GetConfiguredDynamicPortraitSize())
-end
-
-local function GetComparableCastDiscriminator(unit, castBar)
-    local spellIdentifier = GetActiveCastSpellIdentifier(unit, castBar)
-    if spellIdentifier ~= nil then
-        return "spell:" .. tostring(spellIdentifier)
-    end
-
-    local texture = castBar and castBar.Icon and castBar.Icon.GetTexture and castBar.Icon:GetTexture() or nil
-    local textureSignature = ReadComparableTextureSignature(texture)
-    if textureSignature ~= nil then
-        return "icon:" .. textureSignature
-    end
-
-    return nil
-end
-
-local function BuildQuestPortraitVisualSignature(quest, scaleSignature)
-    if type(quest) ~= "table" or scaleSignature == nil then
-        return nil
-    end
-
-    local questType = ReadComparableSignatureValue(quest.questType) or "DEFAULT"
-    local questID = ReadComparableSignatureValue(quest.questID)
-    local objectiveProgress = ReadComparableSignatureValue(quest.objectiveProgress)
-    local isPercent = ReadSafeBoolean(quest.isPercent) == true and "1" or "0"
-
-    local progressSignature = "na"
-    if type(objectiveProgress) == "number" then
-        progressSignature = tostring(math.floor((objectiveProgress * 1000) + 0.5))
-    elseif objectiveProgress ~= nil then
-        progressSignature = tostring(objectiveProgress)
-    end
-
-    return "quest:" .. scaleSignature .. ":" .. tostring(questType) .. ":" .. tostring(questID or "nil") .. ":" .. isPercent .. ":" .. progressSignature
-end
-
-local function BuildCrowdControlPortraitVisualSignature(data, scaleSignature)
-    if not data or scaleSignature == nil then
-        return nil
-    end
-
-    local crowdControlSignature = data.CrowdControlVisualSignature
-    if type(crowdControlSignature) ~= "string" or crowdControlSignature == "" then
-        return nil
-    end
-
-    return "cc:" .. scaleSignature .. ":" .. crowdControlSignature
-end
-
-local function BuildPortraitVisualSignatureForGUID(guid, scaleSignature)
-    local comparableGUID = ReadComparableSignatureValue(guid)
-    if comparableGUID == nil or scaleSignature == nil then
-        return nil
-    end
-
-    return "portrait:" .. scaleSignature .. ":" .. tostring(comparableGUID)
-end
-
 local function ShouldSuppressQuestPortraits()
-    if type(Nameplates.IsInGroupInstanceContent) ~= "function" then
-        return false
-    end
-
     return Nameplates:IsInGroupInstanceContent()
 end
 
-local function RefreshAllQuestPortraits(event)
-    local active = RefineUI.ActiveNameplates
-    if active then
-        for nameplate, unit in pairs(active) do
-            RefineUI:UpdateDynamicPortrait(nameplate, unit, event)
-        end
-        return
-    end
-
-    if C_NamePlate and type(C_NamePlate.GetNamePlates) == "function" then
-        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
-            RefineUI:UpdateDynamicPortrait(nameplate, nameplate.UnitFrame and nameplate.UnitFrame.unit, event)
+-- QUEST_LOG_UPDATE fires in bursts; coalesce them and spread the tooltip rescans
+-- across frames through the budgeted portrait refresh queue.
+local function RefreshAllQuestPortraits()
+    wipe(tooltipCache)
+    for nameplate, unit in pairs(RefineUI.ActiveNameplates) do
+        local unitFrame = nameplate.UnitFrame
+        if unitFrame then
+            Nameplates:QueuePortraitRefresh(unitFrame, unit, "QUEST_LOG_UPDATE")
         end
     end
 end
 
-local function InvalidateQuestPortraitCache(event)
-    if InCombatLockdown and InCombatLockdown() then
-        pendingQuestTooltipCacheReset = true
+local function InvalidateQuestPortraitCache()
+    if InCombatLockdown() then
         pendingQuestPortraitRefresh = true
         return
     end
 
-    wipe(tooltipCache)
-    RefreshAllQuestPortraits(event)
+    RefineUI:Debounce(QUEST_REFRESH_KEY, QUEST_REFRESH_DELAY_SECONDS, RefreshAllQuestPortraits)
 end
 
 local function SafeIsSpellImportant(spellIdentifier)
@@ -784,209 +579,6 @@ local function ShouldProbeUnitCastState(event, data, previousPortraitMode)
     return data and data.wasCasting == true
 end
 
-local function ResolveNameplateBorderVisualModes(unitFrame, forceCastCheck)
-    if not unitFrame then
-        return nil
-    end
-
-    local unit = unitFrame.unit
-    if not unit then
-        return nil
-    end
-
-    local data = RefineUI.NameplateData[unitFrame]
-    if not data then
-        return nil
-    end
-
-    local castBar = unitFrame.castBar or unitFrame.CastBar
-    local castSignal, hasCastSignal
-    local castColor
-    local castColorR, castColorG, castColorB
-    local hasActiveCast = false
-    local castBarActive = false
-    local importantCastActive = false
-    if forceCastCheck ~= false then
-        castBarActive = IsCastBarActive(castBar)
-
-        if RefineUI.GetNameplateCastInterruptibilitySignal then
-            castSignal, hasCastSignal = RefineUI:GetNameplateCastInterruptibilitySignal(unit, castBar)
-            hasActiveCast = hasCastSignal == true
-        end
-
-        if not hasActiveCast and castBarActive then
-            hasActiveCast = true
-        end
-
-        if hasActiveCast or hasCastSignal == nil or castBarActive then
-            castColorR, castColorG, castColorB = GetNameplateCastRenderedColor(castBar)
-            if castColorR == nil or castColorG == nil or castColorB == nil then
-                castColor = RefineUI:GetCastColor(unit, castBar)
-                if type(castColor) == "table" then
-                    castColorR = castColor[1]
-                    castColorG = castColor[2]
-                    castColorB = castColor[3]
-                end
-            end
-            if (hasCastSignal == nil or hasCastSignal == false)
-                and castColorR ~= nil and castColorG ~= nil and castColorB ~= nil then
-                hasActiveCast = true
-            end
-            if (castColorR == nil or castColorG == nil or castColorB == nil) and hasActiveCast then
-                local fallbackCastColor = RefineUI.Colors and RefineUI.Colors.Cast and RefineUI.Colors.Cast.Interruptible
-                    or DEFAULT_CAST_COLOR
-                castColorR = fallbackCastColor[1]
-                castColorG = fallbackCastColor[2]
-                castColorB = fallbackCastColor[3]
-            end
-        end
-
-        if hasActiveCast then
-            if IMPORTANT_CAST_GLOW_TEST_ALL_CASTS then
-                importantCastActive = true
-            else
-                local spellIdentifier = GetActiveCastSpellIdentifier(unit, castBar)
-                if spellIdentifier then
-                    local cachedImportant = IsImportantCastCached(data, spellIdentifier)
-                    if cachedImportant ~= nil then
-                        importantCastActive = cachedImportant
-                    else
-                        importantCastActive = CacheImportantCastResult(data, spellIdentifier, SafeIsSpellImportant(spellIdentifier))
-                    end
-                elseif data then
-                    data.LastImportantCastSpellIdentifier = nil
-                    data.LastImportantCastIsImportant = nil
-                end
-            end
-        elseif data then
-            data.LastImportantCastSpellIdentifier = nil
-            data.LastImportantCastIsImportant = nil
-        end
-    end
-
-    local isTarget = data.isTarget
-    if type(isTarget) ~= "boolean" then
-        isTarget = IsTargetNameplateUnitFrame(unitFrame)
-        data.isTarget = isTarget
-    end
-
-    local nameplatesConfig = Config and Config.Nameplates
-    local ccConfig = nameplatesConfig and (nameplatesConfig.CrowdControl or nameplatesConfig.CrowdControlTest)
-    local crowdControlEnabled = data.CrowdControlActive == true and ccConfig and ccConfig.Enable ~= false
-
-    local nameplateBorderMode = isTarget and "target" or "default"
-    local portraitBorderMode = "default"
-    local resolvedCastSignal = ReadSafeBoolean(castSignal)
-
-    if forceCastCheck ~= false and hasCastSignal == true and resolvedCastSignal ~= nil then
-        portraitBorderMode = resolvedCastSignal and "cast_signal_noninterruptible" or "cast_signal_interruptible"
-    elseif forceCastCheck ~= false and hasActiveCast then
-        portraitBorderMode = "cast_color"
-    elseif crowdControlEnabled then
-        portraitBorderMode = "cc"
-    elseif isTarget then
-        portraitBorderMode = "target"
-    end
-
-    return nameplateBorderMode, portraitBorderMode, importantCastActive == true
-end
-
-local function BuildBorderVisualSignature(nameplateBorderMode, portraitBorderMode, importantCastActive)
-    if type(nameplateBorderMode) ~= "string" or type(portraitBorderMode) ~= "string" then
-        return nil
-    end
-
-    local glowState = importantCastActive == true and "1" or "0"
-    return "nameplate:" .. nameplateBorderMode .. "|portrait:" .. portraitBorderMode .. "|glow:" .. glowState
-end
-
-function RefineUI:GetPredictedNameplateBorderVisualSignature(unitFrame, forceCastCheck)
-    local nameplateBorderMode, portraitBorderMode, importantCastActive = ResolveNameplateBorderVisualModes(unitFrame, forceCastCheck)
-    if nameplateBorderMode == nil or portraitBorderMode == nil then
-        return nil
-    end
-
-    return BuildBorderVisualSignature(nameplateBorderMode, portraitBorderMode, importantCastActive)
-end
-
-function RefineUI:GetPredictedNameplatePortraitVisualSignature(unitFrame, unit, event)
-    if not unitFrame then
-        return nil
-    end
-
-    local data = RefineUI.NameplateData[unitFrame]
-    if not data then
-        return nil
-    end
-
-    if data.RefineHidden == true then
-        return "hidden"
-    end
-
-    if data.PortraitFrame and data.PortraitFrame.IsShown and not data.PortraitFrame:IsShown() then
-        return "hidden"
-    end
-
-    if IsSecret(unit) or type(unit) ~= "string" then
-        return nil
-    end
-
-    local scaleSignature = GetPortraitScaleSignature()
-    local castBar = unitFrame.castBar or unitFrame.CastBar
-    local previousPortraitMode = data.lastPortraitMode
-    local isCastStartEvent = CAST_START_EVENTS[event] == true
-    local isCastStopEvent = CAST_STOP_EVENTS[event] == true
-    local castBarActive = IsCastBarActive(castBar)
-    local isCasting = castBarActive
-
-    if not isCasting and ShouldProbeUnitCastState(event, data, previousPortraitMode) then
-        local castName
-        castName = UnitCastingInfo(unit)
-        isCasting = HasValue(castName)
-        if not isCasting then
-            castName = UnitChannelInfo(unit)
-            isCasting = HasValue(castName)
-        end
-    end
-
-    if isCastStopEvent and not isCastStartEvent and not castBarActive then
-        isCasting = false
-    end
-
-    if isCastStartEvent and not isCasting and castBar and castBar.Icon and castBar.Icon.GetTexture then
-        local startTexture = castBar.Icon:GetTexture()
-        if HasValue(startTexture) then
-            isCasting = true
-        end
-    end
-
-    if isCasting then
-        local castDiscriminator = GetComparableCastDiscriminator(unit, castBar)
-        if castDiscriminator == nil or scaleSignature == nil then
-            return nil
-        end
-        return "cast:" .. scaleSignature .. ":" .. castDiscriminator
-    end
-
-    if data.CrowdControlActive == true and HasValue(data.CrowdControlIcon) then
-        return BuildCrowdControlPortraitVisualSignature(data, scaleSignature)
-    end
-
-    local quest = nil
-    if not ShouldSuppressQuestPortraits() then
-        if InCombatLockdown and InCombatLockdown() then
-            quest = GetCachedQuestInfoForUnit(unit)
-        else
-            quest = GetQuestInfoFromTooltip(unit)
-        end
-    end
-    if quest then
-        return BuildQuestPortraitVisualSignature(quest, scaleSignature)
-    end
-
-    return BuildPortraitVisualSignatureForGUID(UnitGUID(unit), scaleSignature)
-end
-
 function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
     if not unitFrame then return end
     local unit = unitFrame.unit
@@ -996,7 +588,7 @@ function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
     if not data then return end
     
     -- Priority 1: Check for active cast
-    local castBar = unitFrame.castBar or unitFrame.CastBar
+    local castBar = RefineUI.NameplatesUtil.GetNameplateCastBar(unitFrame)
     local castSignal, hasCastSignal
     local castColor
     local castColorR, castColorG, castColorB
@@ -1040,23 +632,19 @@ function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
         end
 
         if hasActiveCast then
-            if IMPORTANT_CAST_GLOW_TEST_ALL_CASTS then
-                importantCastActive = true
-            else
-                local spellIdentifier = GetActiveCastSpellIdentifier(unit, castBar)
-                if spellIdentifier then
-                    local cachedImportant = IsImportantCastCached(data, spellIdentifier)
-                    if cachedImportant ~= nil then
-                        importantCastActive = cachedImportant
-                    else
-                        importantCastActive = CacheImportantCastResult(data, spellIdentifier, SafeIsSpellImportant(spellIdentifier))
-                    end
-                elseif data then
-                    data.LastImportantCastSpellIdentifier = nil
-                    data.LastImportantCastIsImportant = nil
+            local spellIdentifier = GetActiveCastSpellIdentifier(unit, castBar)
+            if spellIdentifier then
+                local cachedImportant = IsImportantCastCached(data, spellIdentifier)
+                if cachedImportant ~= nil then
+                    importantCastActive = cachedImportant
+                else
+                    importantCastActive = CacheImportantCastResult(data, spellIdentifier, SafeIsSpellImportant(spellIdentifier))
                 end
+            else
+                data.LastImportantCastSpellIdentifier = nil
+                data.LastImportantCastIsImportant = nil
             end
-        elseif data then
+        else
             data.LastImportantCastSpellIdentifier = nil
             data.LastImportantCastIsImportant = nil
         end
@@ -1073,11 +661,6 @@ function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
     local nameplatesConfig = Config and Config.Nameplates
     local generalConfig = Config and Config.General
     local targetColor = isTarget and nameplatesConfig and nameplatesConfig.TargetBorderColor
-    local ccConfig = nameplatesConfig and (nameplatesConfig.CrowdControl or nameplatesConfig.CrowdControlTest)
-    local ccColor = nil
-    if data.CrowdControlActive and ccConfig and ccConfig.Enable ~= false then
-        ccColor = ccConfig.BorderColor or ccConfig.Color
-    end
     local defaultColor = (generalConfig and generalConfig.BorderColor) or DEFAULT_BORDER_COLOR
     local nameplateColor = targetColor or defaultColor
     local portraitColorR = defaultColor[1] or DEFAULT_BORDER_COLOR[1]
@@ -1088,17 +671,11 @@ function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
         portraitColorR = castColorR
         portraitColorG = castColorG
         portraitColorB = castColorB
-    elseif ccColor then
-        portraitColorR = ccColor[1] or portraitColorR
-        portraitColorG = ccColor[2] or portraitColorG
-        portraitColorB = ccColor[3] or portraitColorB
     elseif targetColor then
         portraitColorR = targetColor[1] or portraitColorR
         portraitColorG = targetColor[2] or portraitColorG
         portraitColorB = targetColor[3] or portraitColorB
     end
-    local nameplateBorderMode = isTarget and "target" or "default"
-    local portraitBorderMode = "default"
 
     -- Apply to nameplate border (Target or Default only)
     if data.RefineBorder then
@@ -1114,36 +691,12 @@ function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
     
     -- Apply to portrait border (Cast > CC > Target > Default)
     if data.PortraitBorder then
-        local appliedCastSignal = false
-        if forceCastCheck ~= false and hasCastSignal == true then
-            appliedCastSignal = ApplyPortraitCastSignalColor(data.PortraitBorder, castSignal)
-            if appliedCastSignal then
-                local resolvedCastSignal = ReadSafeBoolean(castSignal)
-                if resolvedCastSignal ~= nil then
-                    portraitBorderMode = resolvedCastSignal and "cast_signal_noninterruptible" or "cast_signal_interruptible"
-                end
-            end
-        end
-
+        local appliedCastSignal = forceCastCheck ~= false and hasCastSignal == true
+            and ApplyPortraitCastSignalColor(data.PortraitBorder, castSignal)
         if not appliedCastSignal then
             data.PortraitBorder:SetVertexColor(portraitColorR, portraitColorG, portraitColorB)
-            if forceCastCheck ~= false and hasActiveCast then
-                portraitBorderMode = "cast_color"
-            elseif ccColor then
-                portraitBorderMode = "cc"
-            elseif targetColor then
-                portraitBorderMode = "target"
-            end
         end
-    elseif forceCastCheck ~= false and hasActiveCast then
-        portraitBorderMode = "cast_color"
-    elseif ccColor then
-        portraitBorderMode = "cc"
-    elseif targetColor then
-        portraitBorderMode = "target"
     end
-
-    data.BorderVisualSignature = BuildBorderVisualSignature(nameplateBorderMode, portraitBorderMode, importantCastActive)
 end
 
 ----------------------------------------------------------------------------------------
@@ -1159,9 +712,8 @@ function RefineUI:UpdateDynamicPortrait(nameplate, unit, event)
     
     local data = RefineUI.NameplateData[unitFrame]
     if not data then return end
-    local desiredPortraitScale = GetConfiguredDynamicPortraitScale()
-    local desiredPortraitSize = GetConfiguredDynamicPortraitSize()
-    local portraitScaleSignature = tostring(desiredPortraitSize)
+    local desiredPortraitScale = Nameplates:GetConfiguredNameplateScale()
+    local desiredPortraitSize = RefineUI:Scale(BASE_PORTRAIT_SIZE * desiredPortraitScale)
 
     -- Lazy Creation of Portrait Elements
     -- Optimization: Only create these if the unit is not hidden (hostile) or is starting a cast
@@ -1187,6 +739,14 @@ function RefineUI:UpdateDynamicPortrait(nameplate, unit, event)
         mask:SetTexture(MediaTextures.PortraitMask)
         RefineUI.SetInside(mask, pf, 0, 0)
         portrait:AddMaskTexture(mask)
+
+        -- Cast and quest icons use their own texture so the rendered portrait survives
+        -- them; SetPortraitTexture renders the unit's model.
+        local icon = pf:CreateTexture(nil, "ARTWORK", nil, 1)
+        RefineUI.SetInside(icon, pf, 0, 0)
+        icon:AddMaskTexture(mask)
+        icon:Hide()
+        data.PortraitIcon = icon
 
         local bg = pf:CreateTexture(nil, "BACKGROUND")
         bg:SetTexture(MediaTextures.PortraitBG)
@@ -1223,10 +783,10 @@ function RefineUI:UpdateDynamicPortrait(nameplate, unit, event)
     end
     
     local portrait = data.Portrait
+    local icon = data.PortraitIcon
     local radial = data.PortraitRadialStatusbar
     local text = data.PortraitText
     if not portrait then return end
-    local portraitVisualSignature = nil
 
     -- Hide if requested or if health bar is hidden
     if data.PortraitFrame and (not data.PortraitFrame:IsShown() or data.RefineHidden) then
@@ -1236,13 +796,17 @@ function RefineUI:UpdateDynamicPortrait(nameplate, unit, event)
         SetPortraitImportantCastGlow(data, false)
         if data.PortraitFrame then data.PortraitFrame:Hide() end
         data.lastPortraitMode = "hidden"
-        data.lastPortraitGUID = nil
-        data.PortraitVisualSignature = "hidden"
+        data.PortraitRendered = nil
         return
     end
 
-    local guid = UnitGUID(unit)
-    local castBar = unitFrame.castBar or unitFrame.CastBar
+    -- The unit is fixed for a plate assignment (add and pooled reset clear the flag),
+    -- so only a portrait/model change needs a new render.
+    if PORTRAIT_UPDATE_EVENTS[event] == true then
+        data.PortraitRendered = nil
+    end
+
+    local castBar = RefineUI.NameplatesUtil.GetNameplateCastBar(unitFrame)
     local previousPortraitMode = data.lastPortraitMode
     
     -- Source of truth for cast state is the Unit API + castbar runtime state.
@@ -1251,6 +815,8 @@ function RefineUI:UpdateDynamicPortrait(nameplate, unit, event)
     local isCastStopEvent = CAST_STOP_EVENTS[event] == true
 
     local castBarActive = IsCastBarActive(castBar)
+    local borderDirty = false
+    local borderForceCastCheck = nil
     local castTexture = nil
     if castBar and castBar.Icon and castBar.Icon.GetTexture then
         castTexture = castBar.Icon:GetTexture()
@@ -1286,117 +852,68 @@ function RefineUI:UpdateDynamicPortrait(nameplate, unit, event)
     end
     
     if isCasting then
-        portrait:SetTexture(castTexture or (castBar and castBar.Icon and castBar.Icon:GetTexture()) or 136235) -- Fallback to default spell icon if all fails
+        icon:SetTexture(castTexture or (castBar and castBar.Icon and castBar.Icon:GetTexture()) or 136235) -- Fallback to default spell icon if all fails
+        icon:Show()
+        portrait:Hide()
         if text then text:SetText("") end
         if radial then
             radial:SetRadialStatusBarValue(0)
             radial:Hide()
         end
         data.lastPortraitMode = "cast"
-        data.lastPortraitGUID = nil
-        portraitVisualSignature = GetComparableCastDiscriminator(unit, castBar)
-        if portraitVisualSignature ~= nil and portraitScaleSignature ~= nil then
-            portraitVisualSignature = "cast:" .. portraitScaleSignature .. ":" .. portraitVisualSignature
-        else
-            portraitVisualSignature = nil
-        end
-        
-        -- Defer border color update to end of this function (coalesced)
-        data._borderColorDirty = true
+        borderDirty = true
     else
-        local ccActive = data.CrowdControlActive == true
-        local ccIcon = data.CrowdControlIcon
+        -- CC is drawn over the portrait by the CrowdControl AuraContainer overlay.
+        local quest = nil
+        if not ShouldSuppressQuestPortraits() then
+            if InCombatLockdown and InCombatLockdown() then
+                quest = GetCachedQuestInfoForUnit(unit)
+            else
+                quest = GetQuestInfoFromTooltip(unit)
+            end
+        end
+        if quest then
+            if radial then
+                radial:SetRadialStatusBarValue(quest.objectiveProgress)
+                radial:Show()
+            end
 
-        if ccActive and HasValue(ccIcon) then
-            portrait:SetTexture(ccIcon)
+            icon:SetTexture(MediaTextures.QuestIcon)
+            icon:Show()
+            portrait:Hide()
+            data.lastPortraitMode = "quest"
+
+            if text then
+                text:SetText("")
+                text:SetTextColor(1, 0.82, 0)
+            end
+        else
+            icon:Hide()
+            portrait:Show()
+            if not data.PortraitRendered then
+                SetPortraitTexture(portrait, unit)
+                data.PortraitRendered = true
+            end
+            data.lastPortraitMode = "portrait"
+
             if text then text:SetText("") end
             if radial then
                 radial:SetRadialStatusBarValue(0)
                 radial:Hide()
             end
-            data.lastPortraitMode = "cc"
-            data.lastPortraitGUID = nil
-            portraitVisualSignature = BuildCrowdControlPortraitVisualSignature(data, portraitScaleSignature)
 
-            data._borderColorDirty = true
-        else
-            local quest = nil
-            if not ShouldSuppressQuestPortraits() then
-                if InCombatLockdown and InCombatLockdown() then
-                    quest = GetCachedQuestInfoForUnit(unit)
-                else
-                    quest = GetQuestInfoFromTooltip(unit)
-                end
-            end
-            if quest then
-                if radial then
-                    radial:SetTexture(MediaTextures.PortraitBorder)
-                    radial:SetVertexColor(1, 0.82, 0)
-                    radial:SetRadialStatusBarValue(quest.objectiveProgress)
-                    radial:Show()
-                end
-
-                portrait:SetTexture(MediaTextures.QuestIcon)
-                data.lastPortraitMode = "quest"
-                data.lastPortraitGUID = nil
-                portraitVisualSignature = BuildQuestPortraitVisualSignature(quest, portraitScaleSignature)
-
-                if text then
-                    text:SetText("")
-                    text:SetTextColor(1, 0.82, 0)
-                end
-            else
-                -- Guard for SECRET values: If either GUID is secret, always update portrait
-                local cachedGUID = data.lastPortraitGUID
-                local shouldUpdate = (previousPortraitMode ~= "portrait")
-                
-                if HasValue(cachedGUID) and HasValue(guid) then
-                    local cachedIsSecret = IsSecret(cachedGUID)
-                    local guidIsSecret = IsSecret(guid)
-                    
-                    if not cachedIsSecret and not guidIsSecret then
-                        -- Update if GUID changed OR if we just finished casting (to clear spell icon)
-                        shouldUpdate = shouldUpdate or (cachedGUID ~= guid) or data.wasCasting or isCastStopEvent
-                    else
-                        shouldUpdate = true
-                    end
-                else
-                    shouldUpdate = true
-                end
-                
-                if shouldUpdate then
-                    SetPortraitTexture(portrait, unit)
-                    data.lastPortraitGUID = IsSecret(guid) and nil or guid
-                end
-                data.lastPortraitMode = "portrait"
-                portraitVisualSignature = BuildPortraitVisualSignatureForGUID(guid, portraitScaleSignature)
-                
-                if text then text:SetText("") end
-                if radial then
-                    radial:SetRadialStatusBarValue(0)
-                    radial:Hide()
-                end
-                
-                -- Defer border color reset to end of function (coalesced)
-                data._borderColorDirty = true
-                data._borderColorForceCastCheck = false
-            end
+            borderDirty = true
+            borderForceCastCheck = false
         end
     end
-    
+
     -- Track casting state for next update
     data.isCasting = isCasting
     data.wasCasting = isCasting
-    data.PortraitVisualSignature = portraitVisualSignature
 
     -- Coalesced border color update — runs at most once per UpdateDynamicPortrait call
-    if data._borderColorDirty then
-        local forceCastCheck = data._borderColorForceCastCheck
-        data._borderColorDirty = nil
-        data._borderColorForceCastCheck = nil
-        if data.SuppressPortraitBorderRefresh ~= true and RefineUI.UpdateBorderColors then
-            RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
-        end
+    if borderDirty and data.SuppressPortraitBorderRefresh ~= true then
+        RefineUI:UpdateBorderColors(unitFrame, borderForceCastCheck)
     end
 end
 
@@ -1405,21 +922,22 @@ end
 ----------------------------------------------------------------------------------------
 
 local function OnPortraitEvent(event)
+    -- Dungeons, raids, and PvP never show quest portraits; leaving fires PLAYER_ENTERING_WORLD,
+    -- which rebuilds the cache.
+    if ShouldSuppressQuestPortraits() then
+        pendingQuestPortraitRefresh = false
+        return
+    end
+
     if event == "PLAYER_REGEN_ENABLED" then
-        if pendingQuestTooltipCacheReset then
-            pendingQuestTooltipCacheReset = false
-            wipe(tooltipCache)
-        end
         if pendingQuestPortraitRefresh then
             pendingQuestPortraitRefresh = false
-            RefreshAllQuestPortraits(event)
+            RefreshAllQuestPortraits()
         end
         return
     end
 
-    if event == "QUEST_LOG_UPDATE" or event == "PLAYER_ENTERING_WORLD" then
-        InvalidateQuestPortraitCache(event)
-    end
+    InvalidateQuestPortraitCache()
 end
 
 function Nameplates:RegisterPortraitEvents()

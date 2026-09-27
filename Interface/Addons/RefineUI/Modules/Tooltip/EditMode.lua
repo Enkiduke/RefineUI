@@ -9,9 +9,6 @@ local _, RefineUI = ...
 -- Module
 ----------------------------------------------------------------------------------------
 local Tooltip = RefineUI:GetModule("Tooltip")
-if not Tooltip then
-    return
-end
 
 ----------------------------------------------------------------------------------------
 -- Shared Aliases (Explicit)
@@ -31,17 +28,9 @@ local tonumber = tonumber
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local MOVER_FRAME_NAME = Tooltip.TOOLTIP_ANCHOR_MOVER_FRAME_NAME or "RefineUI_TooltipAnchorMover"
-local TOOLTIP_ANCHOR_MODE = Tooltip.TOOLTIP_ANCHOR_MODE or {
-    MOUSE = "MOUSE",
-    MOVER = "MOVER",
-}
-local TOOLTIP_ANCHOR_PLACEMENT = Tooltip.TOOLTIP_ANCHOR_PLACEMENT or {
-    TOPLEFT = "TOPLEFT",
-    TOPRIGHT = "TOPRIGHT",
-    BOTTOMLEFT = "BOTTOMLEFT",
-    BOTTOMRIGHT = "BOTTOMRIGHT",
-}
+local MOVER_FRAME_NAME = Tooltip.TOOLTIP_ANCHOR_MOVER_FRAME_NAME
+local TOOLTIP_ANCHOR_MODE = Tooltip.TOOLTIP_ANCHOR_MODE
+local TOOLTIP_ANCHOR_PLACEMENT = Tooltip.TOOLTIP_ANCHOR_PLACEMENT
 local EDIT_MODE_LABEL = "Tooltip Anchor"
 local SETTING_NAME_ANCHOR_MODE = "Anchor Mode"
 local SETTING_NAME_PLACEMENT = "Placement"
@@ -69,14 +58,6 @@ local editModeSettingsAttached = false
 ----------------------------------------------------------------------------------------
 -- Helpers
 ----------------------------------------------------------------------------------------
-local function EnsureAnchorConfig()
-    Config.Tooltip = Config.Tooltip or {}
-    if type(Config.Tooltip.Anchor) ~= "table" then
-        Config.Tooltip.Anchor = {}
-    end
-    return Config.Tooltip.Anchor
-end
-
 local function ResolveRelativeFrame(relativeTo)
     if type(relativeTo) == "string" then
         return _G[relativeTo]
@@ -397,7 +378,7 @@ function Tooltip:RegisterTooltipAnchorEditModeSettings()
                 return Tooltip:GetTooltipAnchorConfig().Mode
             end,
             set = function(_, value)
-                local anchorConfig = EnsureAnchorConfig()
+                local anchorConfig = Config.Tooltip.Anchor
                 if value ~= TOOLTIP_ANCHOR_MODE.MOVER then
                     value = TOOLTIP_ANCHOR_MODE.MOUSE
                 end
@@ -415,7 +396,7 @@ function Tooltip:RegisterTooltipAnchorEditModeSettings()
                 return Tooltip:GetTooltipAnchorConfig().Placement
             end,
             set = function(_, value)
-                local anchorConfig = EnsureAnchorConfig()
+                local anchorConfig = Config.Tooltip.Anchor
                 anchorConfig.Placement = value
                 Tooltip:RefreshTooltipAnchorMover()
             end,
@@ -431,7 +412,7 @@ function Tooltip:RegisterTooltipAnchorEditModeSettings()
                 return Tooltip:GetTooltipAnchorConfig().OffsetX
             end,
             set = function(_, value)
-                local anchorConfig = EnsureAnchorConfig()
+                local anchorConfig = Config.Tooltip.Anchor
                 anchorConfig.OffsetX = RoundOffset(value, 0)
                 Tooltip:RefreshTooltipAnchorMover()
             end,
@@ -447,7 +428,7 @@ function Tooltip:RegisterTooltipAnchorEditModeSettings()
                 return Tooltip:GetTooltipAnchorConfig().OffsetY
             end,
             set = function(_, value)
-                local anchorConfig = EnsureAnchorConfig()
+                local anchorConfig = Config.Tooltip.Anchor
                 anchorConfig.OffsetY = RoundOffset(value, 4)
                 Tooltip:RefreshTooltipAnchorMover()
             end,
@@ -460,7 +441,7 @@ function Tooltip:RegisterTooltipAnchorEditModeSettings()
                 return Tooltip:GetTooltipAnchorConfig().ClampToScreen
             end,
             set = function(_, value)
-                local anchorConfig = EnsureAnchorConfig()
+                local anchorConfig = Config.Tooltip.Anchor
                 anchorConfig.ClampToScreen = value and true or false
                 Tooltip:RefreshTooltipAnchorMover()
             end,

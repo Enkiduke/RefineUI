@@ -14,11 +14,8 @@ end
 ----------------------------------------------------------------------------------------
 local _G = _G
 local type = type
-local tinsert = table.insert
 local pcall = pcall
-local pairs = pairs
 local next = next
-local CreateFrame = CreateFrame
 local GetTime = GetTime
 local InCombatLockdown = InCombatLockdown
 local C_AddOns = C_AddOns
@@ -42,25 +39,6 @@ end
 
 local function IsSecret(value)
     return issecretvalue and issecretvalue(value)
-end
-
-local function AddCooldownIDToList(list, seen, cooldownID)
-    if type(cooldownID) ~= "number" or cooldownID <= 0 or seen[cooldownID] then
-        return
-    end
-
-    seen[cooldownID] = true
-    list[#list + 1] = cooldownID
-end
-
-local function AddCooldownSetToList(list, seen, cooldownSet)
-    if type(cooldownSet) ~= "table" then
-        return
-    end
-
-    for cooldownID in pairs(cooldownSet) do
-        AddCooldownIDToList(list, seen, cooldownID)
-    end
 end
 
 local function SetCVarIfDifferent(name, value)
@@ -155,47 +133,36 @@ local function SnapshotNativeAuraViewerState(viewer)
         end
     end
 
-    if state.originalMouseEnabled == nil and type(viewer.IsMouseEnabled) == "function" then
-        local ok, mouseEnabled = pcall(viewer.IsMouseEnabled, viewer)
-        if ok and type(mouseEnabled) == "boolean" then
-            state.originalMouseEnabled = mouseEnabled
-        end
-    end
-
     return state
 end
 
-local function ApplyViewerInteractivity(viewer, enabled)
-    if not viewer then
-        return
-    end
-
-    local inputEnabled = enabled and true or false
-    if type(viewer.EnableMouse) == "function" then
-        pcall(viewer.EnableMouse, viewer, inputEnabled)
-    end
-    if type(viewer.SetMouseClickEnabled) == "function" then
-        pcall(viewer.SetMouseClickEnabled, viewer, inputEnabled)
-    end
-    if type(viewer.SetMouseMotionEnabled) == "function" then
-        pcall(viewer.SetMouseMotionEnabled, viewer, inputEnabled)
-    end
-
+-- Blizzard items never take clicks (SetMouseClickEnabled(false)); motion only drives
+-- their tooltips. Items claimed by RefineUI trackers manage their own mouse state.
+local function SetViewerItemTooltipsEnabled(viewer, enabled)
     local itemPool = viewer.itemFramePool
-    if type(itemPool) ~= "table" or type(itemPool.EnumerateActive) ~= "function" then
+    if not itemPool then
         return
     end
 
     for itemFrame in itemPool:EnumerateActive() do
-        if type(itemFrame.EnableMouse) == "function" then
-            pcall(itemFrame.EnableMouse, itemFrame, inputEnabled)
+        if not enabled then
+            itemFrame:SetMouseMotionEnabled(false)
+        elseif itemFrame:GetParent() == viewer then
+            itemFrame:SetMouseMotionEnabled(viewer.tooltipsShown ~= false)
         end
-        if type(itemFrame.SetMouseClickEnabled) == "function" then
-            pcall(itemFrame.SetMouseClickEnabled, itemFrame, inputEnabled)
-        end
-        if type(itemFrame.SetMouseMotionEnabled) == "function" then
-            pcall(itemFrame.SetMouseMotionEnabled, itemFrame, inputEnabled)
-        end
+    end
+end
+
+local function SuppressNativeViewer(viewer)
+    viewer:SetAlpha(0)
+    SetViewerItemTooltipsEnabled(viewer, false)
+end
+
+-- Edit Mode reapplies viewer opacity on layout loads, and Blizzard re-enables item
+-- tooltips whenever it acquires items or changes the tooltip setting.
+local function OnNativeViewerStateReset(viewer)
+    if CDM.nativeAuraViewerVisibilityApplied then
+        SuppressNativeViewer(viewer)
     end
 end
 
@@ -227,85 +194,16 @@ local function HideViewerTooltip(viewer)
     end
 end
 
-local function GetViewerShownState(viewer)
-    if not viewer or type(viewer.IsShown) ~= "function" then
-        return false
-    end
-
-    local ok, shown = pcall(viewer.IsShown, viewer)
-    if not ok or IsSecret(shown) then
-        return false
-    end
-
-    return shown == true
-end
-
-local function EnsureNativeAuraViewerBlocker(viewer)
-    if not viewer then
-        return nil
-    end
-
-    local state = GetNativeAuraViewerState(viewer)
-    if state.blockerFrame then
-        return state.blockerFrame
-    end
-
-    local blocker = CreateFrame("Frame", nil, viewer)
-    blocker:EnableMouse(true)
-    blocker:SetClampedToScreen(false)
-    blocker:SetAllPoints(viewer)
-    blocker:SetScript("OnEnter", function()
-        HideViewerTooltip(viewer)
-    end)
-    blocker:SetScript("OnMouseDown", function()
-    end)
-    blocker:SetScript("OnMouseUp", function()
-    end)
-    blocker:SetScript("OnHide", function()
-        HideViewerTooltip(viewer)
-    end)
-
-    state.blockerFrame = blocker
-    return blocker
-end
-
-local function SyncNativeAuraViewerBlocker(viewer, suppressNativeViewers)
-    local blocker = EnsureNativeAuraViewerBlocker(viewer)
-    if not blocker then
-        return
-    end
-
-    blocker:SetFrameStrata(viewer:GetFrameStrata())
-    blocker:SetFrameLevel((viewer:GetFrameLevel() or 0) + 50)
-    blocker:SetShown(suppressNativeViewers and GetViewerShownState(viewer))
-end
-
 local function CancelScheduledRefreshWork()
-    if RefineUI.CancelTimer then
-        RefineUI:CancelTimer(CDM.UPDATE_TIMER_KEY)
-    end
-    if RefineUI.CancelThrottle then
-        RefineUI:CancelThrottle(CDM.UPDATE_THROTTLE_KEY)
-    end
-
+    RefineUI:CancelTimer(CDM.UPDATE_TIMER_KEY)
     CDM.refreshUpdateScheduled = nil
-    CDM.refreshUpdatePending = nil
-    CDM.pendingDirtyCooldownIDs = nil
-end
-
-local function WasRefineRuntimeOwnerPreviouslyActive(previousEnabled, previousMode)
-    return previousEnabled ~= false and previousMode ~= "blizzard"
 end
 
 ----------------------------------------------------------------------------------------
 -- Public Methods
 ----------------------------------------------------------------------------------------
 function CDM:EnsureBlizzardCooldownManagerEnabled()
-    local changed = SetCVarIfDifferent("cooldownViewerEnabled", true)
-    if changed then
-        self.refineRuntimeTouchedBlizzard = true
-    end
-    return changed
+    return SetCVarIfDifferent("cooldownViewerEnabled", true)
 end
 
 function CDM:InitializeRefineRuntime()
@@ -323,31 +221,14 @@ function CDM:InitializeRefineRuntime()
         self:InitializeVisuals()
     end
 
-    if self.EnsureBlizzardPrimaryAuraRuntime then
-        self:EnsureBlizzardPrimaryAuraRuntime()
-    end
+    self:EnsureBlizzardTrackerRuntime()
 end
 
-function CDM:HandleRuntimeModeConfigurationChanged(previousEnabled, previousMode)
-    local wasRefineRuntimeActive = WasRefineRuntimeOwnerPreviouslyActive(previousEnabled, previousMode)
-    local refineRuntimeActive = self.IsRefineRuntimeOwnerActive and self:IsRefineRuntimeOwnerActive()
-
-    if refineRuntimeActive then
+function CDM:HandleRuntimeModeConfigurationChanged()
+    if self:IsRefineRuntimeOwnerActive() then
         self:InitializeRefineRuntime()
-        if not wasRefineRuntimeActive and self.ActivateStoredRefineBlizzardLayout then
-            self:ActivateStoredRefineBlizzardLayout()
-        end
     end
-
     self:HandleRuntimeOwnerStateChanged()
-
-    if wasRefineRuntimeActive
-        and not refineRuntimeActive
-        and self.refineRuntimeTouchedBlizzard
-        and self.RequireReloadForBlizzardIsolation
-    then
-        self:RequireReloadForBlizzardIsolation()
-    end
 end
 
 function CDM:EnsureBlizzardCooldownViewerLoaded()
@@ -355,11 +236,7 @@ function CDM:EnsureBlizzardCooldownViewerLoaded()
         return false
     end
 
-    local loaded = LoadAddonIfNeeded("Blizzard_CooldownViewer")
-    if loaded then
-        self.refineRuntimeTouchedBlizzard = true
-    end
-    return loaded
+    return LoadAddonIfNeeded("Blizzard_CooldownViewer")
 end
 
 function CDM:EnsureBlizzardBridgeReady()
@@ -372,54 +249,20 @@ function CDM:EnsureBlizzardBridgeReady()
     return addonReady or cvarReady
 end
 
-function CDM:ShouldEnableAuraProbeFallback(snapshot)
-    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
-        return false
-    end
-
-    snapshot = snapshot or (self.GetAssignedCooldownSnapshot and self:GetAssignedCooldownSnapshot()) or nil
-    return type(snapshot) == "table" and snapshot.hasAuraAssignments == true
-end
-
-function CDM:EnsureOptionalAuraProbeFallback(snapshot)
-    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
-        return false
-    end
-    if not self:ShouldEnableAuraProbeFallback(snapshot) then
-        return false
-    end
-    if not self:EnsureBlizzardBridgeReady() then
-        return false
-    end
-    if self.InitializeAuraProbe then
-        self:InitializeAuraProbe()
-    end
-    if self.InitializeNativeAuraViewerHooks then
-        self:InitializeNativeAuraViewerHooks()
-    end
-    return self.auraProbeInitialized == true
-end
-
-function CDM:EnsureBlizzardPrimaryAuraRuntime(snapshot)
-    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
-        self.blizzardPrimaryAuraRuntimeActive = nil
-        return false
-    end
-
-    if not self:EnsureOptionalAuraProbeFallback(snapshot) then
-        self.blizzardPrimaryAuraRuntimeActive = nil
-        return false
-    end
-
-    if self.CanUseStoredRefineBlizzardLayout and self:CanUseStoredRefineBlizzardLayout() then
-        self.blizzardAssignmentSyncActive = true
-        self.blizzardPrimaryAuraRuntimeActive = true
-        return true
-    end
-
+-- Tracked buffs render through Blizzard's Tracked Buffs viewer, so it must be loaded
+-- and running the saved RefineUI layout whenever buffs are assigned.
+function CDM:EnsureBlizzardTrackerRuntime()
     self.blizzardAssignmentSyncActive = nil
-    self.blizzardPrimaryAuraRuntimeActive = nil
-    return false
+    if not self:IsRefineRuntimeOwnerActive() then
+        return false
+    end
+    if not self:GetAssignedCooldownSnapshot().hasAuraAssignments or not self:EnsureBlizzardBridgeReady() then
+        return false
+    end
+
+    self:InitializeNativeAuraViewerHooks()
+    self.blizzardAssignmentSyncActive = self:CanUseStoredRefineBlizzardLayout() or nil
+    return self.blizzardAssignmentSyncActive == true
 end
 
 function CDM:ApplyNativeAuraViewerVisibility(force)
@@ -428,25 +271,20 @@ function CDM:ApplyNativeAuraViewerVisibility(force)
     if not suppressNativeViewers and not self.nativeAuraViewerVisibilityApplied then
         return
     end
+    if suppressNativeViewers then
+        self:InitializeNativeAuraViewerHooks()
+    end
 
     for i = 1, #self.NATIVE_AURA_VIEWERS do
         local viewer = _G[self.NATIVE_AURA_VIEWERS[i]]
         if viewer then
             local viewerState = SnapshotNativeAuraViewerState(viewer)
-            SyncNativeAuraViewerBlocker(viewer, suppressNativeViewers)
-
             if suppressNativeViewers then
-                ApplyViewerInteractivity(viewer, false)
-                if type(viewer.SetAlpha) == "function" then
-                    viewer:SetAlpha(0)
-                end
+                SuppressNativeViewer(viewer)
                 HideViewerTooltip(viewer)
             else
-                local mouseEnabled = viewerState.originalMouseEnabled
-                ApplyViewerInteractivity(viewer, mouseEnabled ~= false)
-                if type(viewer.SetAlpha) == "function" then
-                    viewer:SetAlpha(type(viewerState.originalAlpha) == "number" and viewerState.originalAlpha or 1)
-                end
+                SetViewerItemTooltipsEnabled(viewer, true)
+                viewer:SetAlpha(viewerState.originalAlpha)
             end
         end
     end
@@ -469,34 +307,30 @@ function CDM:HandleRuntimeOwnerStateChanged()
         return
     end
 
-    if self.EnsureBlizzardPrimaryAuraRuntime then
-        self:EnsureBlizzardPrimaryAuraRuntime()
-    end
-
+    self:EnsureBlizzardTrackerRuntime()
     self:ApplyNativeAuraViewerVisibility(true)
-
-    if self.PrimeRuntimeAuraCache then
-        self:PrimeRuntimeAuraCache()
-    end
 end
 
 function CDM:InitializeNativeAuraViewerHooks()
     if self.nativeAuraViewerHooksInstalled then
         return
     end
-    if not self.IsRefineRuntimeOwnerActive or not self:IsRefineRuntimeOwnerActive() then
+    if not self:IsRefineRuntimeOwnerActive() or not _G.BuffIconCooldownViewer then
         return
     end
-    if not self.auraProbeInitialized then
-        return
-    end
+
+    self:InstallBlizzardTrackerHooks()
 
     for i = 1, #self.NATIVE_AURA_VIEWERS do
         local viewer = _G[self.NATIVE_AURA_VIEWERS[i]]
         if viewer then
-            RefineUI:HookScriptOnce("CDM:NativeViewer:" .. self.NATIVE_AURA_VIEWERS[i] .. ":OnShow", viewer, "OnShow", function()
+            local key = "CDM:NativeViewer:" .. self.NATIVE_AURA_VIEWERS[i]
+            RefineUI:HookScriptOnce(key .. ":OnShow", viewer, "OnShow", function()
                 CDM:ApplyNativeAuraViewerVisibility(true)
             end)
+            RefineUI:HookOnce(key .. ":UpdateSystemSettingOpacity", viewer, "UpdateSystemSettingOpacity", OnNativeViewerStateReset)
+            RefineUI:HookOnce(key .. ":RefreshLayout", viewer, "RefreshLayout", OnNativeViewerStateReset)
+            RefineUI:HookOnce(key .. ":SetTooltipsShown", viewer, "SetTooltipsShown", OnNativeViewerStateReset)
         end
     end
 
@@ -507,20 +341,11 @@ function CDM:InitializeNativeAuraViewerHooks()
         end)
         RefineUI:HookScriptOnce("CDM:NativeViewer:SettingsOnHide", settingsFrame, "OnHide", function()
             CDM:ApplyNativeAuraViewerVisibility(true)
+            CDM:RequestBlizzardTrackerSetupCheck()
         end)
     end
 
     self.nativeAuraViewerHooksInstalled = true
-end
-
-function CDM:ShouldProcessAuraUnit(unit)
-    if not self:IsRefineRuntimeOwnerActive() then
-        return false
-    end
-    if not IsStringUnitToken(unit) then
-        return false
-    end
-    return unit == "player" or unit == "target"
 end
 
 function CDM:MarkAssignedCooldownSnapshotDirty()
@@ -528,7 +353,7 @@ function CDM:MarkAssignedCooldownSnapshotDirty()
 end
 
 function CDM:GetAssignedCooldownSnapshot()
-    local layoutKey = self.GetCurrentLayoutKey and self:GetCurrentLayoutKey() or "0:0"
+    local layoutKey = self:GetCurrentLayoutKey()
     local cached = self.assignedCooldownSnapshot
     if cached and not self.assignedCooldownSnapshotDirty and cached.layoutKey == layoutKey then
         return cached
@@ -536,174 +361,30 @@ function CDM:GetAssignedCooldownSnapshot()
 
     local snapshot = {
         layoutKey = layoutKey,
-        allAssignedIDs = {},
-        requiresPlayerAura = false,
-        requiresTargetAura = false,
         hasAssignments = false,
         hasAuraAssignments = false,
-        cooldownBuckets = {},
+        bucketByCooldownID = {},
         bucketCooldownIDs = {},
-        associatedSpellToCooldownIDs = {},
-        playerSpellToCooldownIDs = {},
-        targetSpellToCooldownIDs = {},
-        totemSpellToCooldownIDs = {},
-        playerDependentCooldownIDs = {},
-        targetDependentCooldownIDs = {},
         externalCooldownIDs = {},
     }
 
-    local seen = {}
-    local assignments = self.GetCurrentAssignments and self:GetCurrentAssignments()
-    if type(assignments) == "table" then
-        for i = 1, #self.TRACKER_BUCKETS do
-            local bucket = self.TRACKER_BUCKETS[i]
-            local ids = assignments[bucket]
-            if type(ids) == "table" then
-                snapshot.bucketCooldownIDs[bucket] = {}
-                for n = 1, #ids do
-                    local cooldownID = ids[n]
-                    if type(cooldownID) == "number" and cooldownID > 0 then
-                        snapshot.hasAssignments = true
-                        snapshot.bucketCooldownIDs[bucket][#snapshot.bucketCooldownIDs[bucket] + 1] = cooldownID
-
-                        local bucketList = snapshot.cooldownBuckets[cooldownID]
-                        if type(bucketList) ~= "table" then
-                            bucketList = {}
-                            snapshot.cooldownBuckets[cooldownID] = bucketList
-                        end
-                        bucketList[#bucketList + 1] = bucket
-
-                        if not seen[cooldownID] then
-                            seen[cooldownID] = true
-                            tinsert(snapshot.allAssignedIDs, cooldownID)
-
-                            local isExternalCooldown = self.IsExternalCooldownID
-                                and self:IsExternalCooldownID(cooldownID)
-                            if isExternalCooldown then
-                                snapshot.externalCooldownIDs[cooldownID] = true
-                            else
-                            snapshot.hasAuraAssignments = true
-                            local info = self.GetCooldownInfo and self:GetCooldownInfo(cooldownID)
-                            local associatedSpellIDs = self.GetAssociatedSpellIDs and self:GetAssociatedSpellIDs(info) or nil
-                            if type(associatedSpellIDs) == "table" then
-                                for spellIndex = 1, #associatedSpellIDs do
-                                    local spellID = associatedSpellIDs[spellIndex]
-                                    if type(spellID) == "number" and spellID > 0 then
-                                        local associatedSet = snapshot.associatedSpellToCooldownIDs[spellID]
-                                        if type(associatedSet) ~= "table" then
-                                            associatedSet = {}
-                                            snapshot.associatedSpellToCooldownIDs[spellID] = associatedSet
-                                        end
-                                        associatedSet[cooldownID] = true
-                                    end
-                                end
-                            end
-
-                            if not IsSecret(info) and type(info) == "table" then
-                                local selfAura = info.selfAura
-                                if not IsSecret(selfAura) and selfAura == false then
-                                    -- Some target-classified cooldowns can still resolve from
-                                    -- player aura events first (for example self-cast target buffs),
-                                    -- so refresh ownership must include both units.
-                                    snapshot.requiresPlayerAura = true
-                                    snapshot.requiresTargetAura = true
-                                    snapshot.playerDependentCooldownIDs[cooldownID] = true
-                                    snapshot.targetDependentCooldownIDs[cooldownID] = true
-                                    if type(associatedSpellIDs) == "table" then
-                                        for spellIndex = 1, #associatedSpellIDs do
-                                            local spellID = associatedSpellIDs[spellIndex]
-                                            if type(spellID) == "number" and spellID > 0 then
-                                                local playerSet = snapshot.playerSpellToCooldownIDs[spellID]
-                                                if type(playerSet) ~= "table" then
-                                                    playerSet = {}
-                                                    snapshot.playerSpellToCooldownIDs[spellID] = playerSet
-                                                end
-                                                playerSet[cooldownID] = true
-
-                                                local targetSet = snapshot.targetSpellToCooldownIDs[spellID]
-                                                if type(targetSet) ~= "table" then
-                                                    targetSet = {}
-                                                    snapshot.targetSpellToCooldownIDs[spellID] = targetSet
-                                                end
-                                                targetSet[cooldownID] = true
-
-                                                local totemSet = snapshot.totemSpellToCooldownIDs[spellID]
-                                                if type(totemSet) ~= "table" then
-                                                    totemSet = {}
-                                                    snapshot.totemSpellToCooldownIDs[spellID] = totemSet
-                                                end
-                                                totemSet[cooldownID] = true
-                                            end
-                                        end
-                                    end
-                                elseif not IsSecret(selfAura) and selfAura == true then
-                                    snapshot.requiresPlayerAura = true
-                                    snapshot.playerDependentCooldownIDs[cooldownID] = true
-                                    if type(associatedSpellIDs) == "table" then
-                                        for spellIndex = 1, #associatedSpellIDs do
-                                            local spellID = associatedSpellIDs[spellIndex]
-                                            if type(spellID) == "number" and spellID > 0 then
-                                                local playerSet = snapshot.playerSpellToCooldownIDs[spellID]
-                                                if type(playerSet) ~= "table" then
-                                                    playerSet = {}
-                                                    snapshot.playerSpellToCooldownIDs[spellID] = playerSet
-                                                end
-                                                playerSet[cooldownID] = true
-
-                                                local totemSet = snapshot.totemSpellToCooldownIDs[spellID]
-                                                if type(totemSet) ~= "table" then
-                                                    totemSet = {}
-                                                    snapshot.totemSpellToCooldownIDs[spellID] = totemSet
-                                                end
-                                                totemSet[cooldownID] = true
-                                            end
-                                        end
-                                    end
-                                else
-                                    snapshot.requiresPlayerAura = true
-                                    snapshot.requiresTargetAura = true
-                                    snapshot.playerDependentCooldownIDs[cooldownID] = true
-                                    snapshot.targetDependentCooldownIDs[cooldownID] = true
-                                    if type(associatedSpellIDs) == "table" then
-                                        for spellIndex = 1, #associatedSpellIDs do
-                                            local spellID = associatedSpellIDs[spellIndex]
-                                            if type(spellID) == "number" and spellID > 0 then
-                                                local playerSet = snapshot.playerSpellToCooldownIDs[spellID]
-                                                if type(playerSet) ~= "table" then
-                                                    playerSet = {}
-                                                    snapshot.playerSpellToCooldownIDs[spellID] = playerSet
-                                                end
-                                                playerSet[cooldownID] = true
-
-                                                local targetSet = snapshot.targetSpellToCooldownIDs[spellID]
-                                                if type(targetSet) ~= "table" then
-                                                    targetSet = {}
-                                                    snapshot.targetSpellToCooldownIDs[spellID] = targetSet
-                                                end
-                                                targetSet[cooldownID] = true
-
-                                                local totemSet = snapshot.totemSpellToCooldownIDs[spellID]
-                                                if type(totemSet) ~= "table" then
-                                                    totemSet = {}
-                                                    snapshot.totemSpellToCooldownIDs[spellID] = totemSet
-                                                end
-                                                totemSet[cooldownID] = true
-                                            end
-                                        end
-                                    end
-                                end
-                            else
-                                snapshot.requiresPlayerAura = true
-                                snapshot.requiresTargetAura = true
-                                snapshot.playerDependentCooldownIDs[cooldownID] = true
-                                snapshot.targetDependentCooldownIDs[cooldownID] = true
-                            end
-                            end
-                        end
-                    end
+    local assignments = self:GetCurrentAssignments()
+    for i = 1, #self.TRACKER_BUCKETS do
+        local bucket = self.TRACKER_BUCKETS[i]
+        local ids = assignments[bucket]
+        local bucketIDs = {}
+        snapshot.bucketCooldownIDs[bucket] = bucketIDs
+        for n = 1, #ids do
+            local cooldownID = ids[n]
+            if type(cooldownID) == "number" and cooldownID > 0 and not snapshot.bucketByCooldownID[cooldownID] then
+                snapshot.hasAssignments = true
+                snapshot.bucketByCooldownID[cooldownID] = bucket
+                bucketIDs[#bucketIDs + 1] = cooldownID
+                if self:IsExternalCooldownID(cooldownID) then
+                    snapshot.externalCooldownIDs[cooldownID] = true
+                else
+                    snapshot.hasAuraAssignments = true
                 end
-            else
-                snapshot.bucketCooldownIDs[bucket] = {}
             end
         end
     end
@@ -713,158 +394,44 @@ function CDM:GetAssignedCooldownSnapshot()
     return snapshot
 end
 
-function CDM:ShouldRefreshForAuraEvent(event, unit)
-    if not self:IsRefineRuntimeOwnerActive() then
-        return false
-    end
-    local snapshot = self:GetAssignedCooldownSnapshot()
-    if not snapshot or not snapshot.hasAssignments then
-        return false
-    end
-
-    if event == "UNIT_AURA" then
-        if unit == "player" then
-            return snapshot.requiresPlayerAura
-        end
-        if unit == "target" then
-            return snapshot.requiresTargetAura
-        end
-        return false
-    end
-
-    if event == "UNIT_TARGET" then
-        return snapshot.requiresTargetAura
-    end
-
-    if event == "PLAYER_TOTEM_UPDATE" then
-        return snapshot.hasAssignments
-    end
-
-    return true
-end
-
 function CDM:IsSettingsFrameShown()
     local settingsFrame = self:GetCooldownViewerSettingsFrame()
     return settingsFrame and settingsFrame:IsShown() and true or false
 end
 
-function CDM:ShouldRefreshNow()
-    return self:IsRefineRuntimeOwnerActive()
-end
-
-function CDM:GetDirtyCooldownIDsForEvent(event, unit)
-    if not self:IsRefineRuntimeOwnerActive() then
-        return nil
-    end
-    local snapshot = self:GetAssignedCooldownSnapshot()
-    if not snapshot or not snapshot.hasAssignments then
-        return nil
-    end
-
-    local dirtyCooldownIDs = {}
-    local seen = {}
-
-    if event == "UNIT_AURA" then
-        local dependentCooldownIDs = nil
-        if unit == "player" then
-            dependentCooldownIDs = snapshot.playerDependentCooldownIDs
-        elseif unit == "target" then
-            dependentCooldownIDs = snapshot.targetDependentCooldownIDs
-        end
-
-        AddCooldownSetToList(dirtyCooldownIDs, seen, dependentCooldownIDs)
-        return #dirtyCooldownIDs > 0 and dirtyCooldownIDs or nil
-    end
-
-    if event == "UNIT_TARGET" then
-        AddCooldownSetToList(dirtyCooldownIDs, seen, snapshot.targetDependentCooldownIDs)
-        return #dirtyCooldownIDs > 0 and dirtyCooldownIDs or nil
-    end
-
-    if event == "PLAYER_TOTEM_UPDATE" then
-        AddCooldownSetToList(dirtyCooldownIDs, seen, snapshot.playerDependentCooldownIDs)
-        return #dirtyCooldownIDs > 0 and dirtyCooldownIDs or nil
-    end
-
-    return nil
-end
-
-function CDM:RequestRefresh(force, dirtyCooldownIDs)
+function CDM:RequestRefresh()
     if not self:IsRefineRuntimeOwnerActive() then
         CancelScheduledRefreshWork()
-        if self.HideTrackers then
-            self:HideTrackers()
-        end
+        self:HideTrackers()
         return
-    end
-
-    if not force and not self:ShouldRefreshNow() then
-        return
-    end
-
-    if type(dirtyCooldownIDs) == "table" and #dirtyCooldownIDs > 0 then
-        local pendingDirtyCooldownIDs = self.pendingDirtyCooldownIDs
-        if type(pendingDirtyCooldownIDs) ~= "table" then
-            pendingDirtyCooldownIDs = {}
-            self.pendingDirtyCooldownIDs = pendingDirtyCooldownIDs
-        end
-        for i = 1, #dirtyCooldownIDs do
-            local cooldownID = dirtyCooldownIDs[i]
-            if type(cooldownID) == "number" and cooldownID > 0 then
-                pendingDirtyCooldownIDs[cooldownID] = true
-            end
-        end
     end
 
     if self.refreshUpdateScheduled then
-        self.refreshUpdatePending = true
         return
     end
 
     self.refreshUpdateScheduled = true
-
-    local function RunRefresh()
+    RefineUI:After(self.UPDATE_TIMER_KEY, 0, function()
         CDM.refreshUpdateScheduled = nil
-        CDM:IncrementPerfCounter("cdm_full_refresh")
         CDM:RefreshAll()
-        if CDM.refreshUpdatePending then
-            CDM.refreshUpdatePending = nil
-            CDM:RequestRefresh()
-        end
-    end
-
-    if RefineUI.After then
-        RefineUI:After(self.UPDATE_TIMER_KEY, 0, RunRefresh)
-        return
-    end
-
-    RefineUI:Throttle(self.UPDATE_THROTTLE_KEY, 0, RunRefresh)
+    end)
 end
 
 function CDM:RefreshAll()
     if not self:IsRefineRuntimeOwnerActive() then
-        if self.HideTrackers then
-            self:HideTrackers()
-        end
+        self:HideTrackers()
         return
     end
 
-    if self.PruneCurrentLayoutAssignments and self.assignmentsPruneDirty and not self:IsEditModeActive() then
+    local inCombat = InCombatLockdown()
+    -- Blizzard's cooldown lists can be partial in combat; pruning then would drop saved assignments.
+    if self.assignmentsPruneDirty and not inCombat and not self:IsEditModeActive() then
         self:PruneCurrentLayoutAssignments()
     end
 
-    local pendingDirtyCooldownIDs = self.pendingDirtyCooldownIDs
-    self.pendingDirtyCooldownIDs = nil
+    self:RefreshTrackers()
 
-    if self.RefreshTrackers then
-        self:RefreshTrackers(pendingDirtyCooldownIDs)
-    end
-
-    if pendingDirtyCooldownIDs == nil
-        and (not InCombatLockdown or not InCombatLockdown())
-        and self:IsSettingsFrameShown()
-        and self.RefreshSettingsSection
-    then
+    if not inCombat and self:IsSettingsFrameShown() and self.RefreshSettingsSection then
         self:RefreshSettingsSection()
     end
 end
@@ -901,114 +468,47 @@ function CDM:OnEnable()
         if not self:IsRefineRuntimeOwnerActive() then
             return
         end
-        if self.InvalidateCooldownCatalog then
-            self:InvalidateCooldownCatalog()
-        end
-        if self.InvalidateRuntimeResolver then
-            self:InvalidateRuntimeResolver()
-        end
-        if self.InvalidateAuraProbeCache then
-            self:InvalidateAuraProbeCache()
-        end
-        if self.MarkAssignmentsPruneDirty then
-            self:MarkAssignmentsPruneDirty()
-        end
-        if self.MarkAssignedCooldownSnapshotDirty then
-            self:MarkAssignedCooldownSnapshotDirty()
-        end
-        if self.EnsureOptionalAuraProbeFallback then
-            self:EnsureOptionalAuraProbeFallback()
-        end
-        if self.PrimeRuntimeAuraCache then
-            self:PrimeRuntimeAuraCache()
-        end
-        if self.RequestAuraProbeReconcile then
-            self:RequestAuraProbeReconcile()
-        end
+        self:InvalidateCooldownCatalog()
+        self:MarkAssignmentsPruneDirty()
+        self:MarkAssignedCooldownSnapshotDirty()
+        self:EnsureBlizzardTrackerRuntime()
     end
 
     local function OnEvent(event, ...)
-        local dirtyCooldownIDs = nil
-        if event == "BAG_UPDATE_DELAYED" then
-            if self.ScanExternalCooldowns then
-                self:ScanExternalCooldowns()
+        if event == "SPELL_UPDATE_COOLDOWN" or event == "BAG_UPDATE_COOLDOWN" then
+            if next(self:GetAssignedCooldownSnapshot().externalCooldownIDs) then
+                self:RequestExternalTrackerRefresh()
             end
+            return
+        elseif event == "PLAYER_REGEN_DISABLED" then
+            self.lastCombatEndedTime = nil
+            return
+        elseif event == "BAG_UPDATE_DELAYED" then
+            self:ScanExternalCooldowns()
         elseif event == "PLAYER_EQUIPMENT_CHANGED" then
             local slot = ...
             if slot ~= 13 and slot ~= 14 then
                 return
             end
-            if self.ScanExternalCooldowns then
-                self:ScanExternalCooldowns()
-            end
-        elseif event == "SPELL_UPDATE_COOLDOWN" or event == "BAG_UPDATE_COOLDOWN" then
-            local snapshot = self:GetAssignedCooldownSnapshot()
-            if not snapshot or not next(snapshot.externalCooldownIDs) then
-                return
-            end
-            dirtyCooldownIDs = {}
-            AddCooldownSetToList(dirtyCooldownIDs, {}, snapshot.externalCooldownIDs)
-        elseif event == "UNIT_TARGET" then
-            if not self:IsRefineRuntimeOwnerActive() then
-                return
-            end
-            local unit = ...
-            if not IsStringUnitToken(unit) or unit ~= "player" then
-                return
-            end
-            if not self:ShouldRefreshForAuraEvent(event, "target") then
-                return
-            end
-            dirtyCooldownIDs = self:GetDirtyCooldownIDsForEvent(event, "target")
-            if self.ClearRuntimeAuraCache then
-                self:ClearRuntimeAuraCache("target")
-            end
-            if self.PrimeRuntimeAuraCache then
-                self:PrimeRuntimeAuraCache("target")
-            end
+            self:ScanExternalCooldowns()
         elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
-            if not self:IsRefineRuntimeOwnerActive() then
-                return
-            end
             local unit = ...
             if not IsStringUnitToken(unit) or unit ~= "player" then
                 return
             end
             InvalidateRuntimeState()
-        elseif event == "PLAYER_ENTERING_WORLD"
-            or event == "PLAYER_REGEN_DISABLED"
-            or event == "PLAYER_REGEN_ENABLED"
-            or event == "TRAIT_CONFIG_UPDATED"
-            or event == "SPELLS_CHANGED"
-            or event == "ADDON_LOADED"
-            or event == "COOLDOWN_VIEWER_DATA_LOADED"
-            or event == "COOLDOWN_VIEWER_TABLE_HOTFIXED"
-        then
-            if (event == "PLAYER_ENTERING_WORLD" or event == "SPELLS_CHANGED")
-                and self.ScanExternalCooldowns
-            then
+        elseif event == "ADDON_LOADED" then
+            local addonName = ...
+            if addonName ~= "Blizzard_CooldownViewer" then
+                return
+            end
+            self.nativeAuraViewerHooksInstalled = nil
+            InvalidateRuntimeState()
+        else
+            if event == "PLAYER_ENTERING_WORLD" or event == "SPELLS_CHANGED" then
                 self:ScanExternalCooldowns()
-            end
-            if event == "PLAYER_REGEN_DISABLED" then
-                self.lastCombatEndedTime = nil
-            elseif event == "PLAYER_REGEN_ENABLED" and type(GetTime) == "function" then
+            elseif event == "PLAYER_REGEN_ENABLED" then
                 self.lastCombatEndedTime = GetTime()
-            end
-
-            if event == "ADDON_LOADED" then
-                local addonName = ...
-                if addonName ~= "Blizzard_CooldownViewer" then
-                    return
-                end
-                if not self:IsRefineRuntimeOwnerActive() then
-                    self:HandleRuntimeOwnerStateChanged()
-                    return
-                end
-                self.nativeAuraViewerHooksInstalled = nil
-                if self.InitializeAuraProbe then
-                    self:InitializeAuraProbe()
-                end
-                self:InitializeNativeAuraViewerHooks()
             end
             InvalidateRuntimeState()
         end
@@ -1019,13 +519,12 @@ function CDM:OnEnable()
             or event == "COOLDOWN_VIEWER_DATA_LOADED"
         then
             self:HandleRuntimeOwnerStateChanged()
-            if event == "PLAYER_ENTERING_WORLD"
-                and self.RequestPendingPostReloadSettingsOpen
-            then
+            if event == "PLAYER_ENTERING_WORLD" then
                 self:RequestPendingPostReloadSettingsOpen()
+                self:RequestBlizzardTrackerSetupCheck()
             end
         end
-        self:RequestRefresh(true, dirtyCooldownIDs)
+        self:RequestRefresh()
     end
 
     if not self.lifecycleEventsRegistered then
@@ -1041,43 +540,11 @@ function CDM:OnEnable()
             "BAG_UPDATE_DELAYED",
             "BAG_UPDATE_COOLDOWN",
             "PLAYER_EQUIPMENT_CHANGED",
-            "UNIT_TARGET",
             "COOLDOWN_VIEWER_DATA_LOADED",
             "COOLDOWN_VIEWER_TABLE_HOTFIXED",
         }, OnEvent, "CDM:Lifecycle")
         self.lifecycleEventsRegistered = true
     end
-
-    -- Route secret-heavy aura events through the shared EventBus so the raw
-    -- UNIT_AURA updateInfo table never enters addon code. Only the units accepted by
-    -- ShouldProcessAuraUnit are registered, so other units never reach Lua.
-    local function OnUnitAura(_event, unit)
-        if not self:IsRefineRuntimeOwnerActive() then
-            return
-        end
-        if not self:ShouldProcessAuraUnit(unit) then
-            return
-        end
-        if self.PrimeRuntimeAuraCache then
-            self:PrimeRuntimeAuraCache(unit)
-        end
-        if not self:ShouldRefreshForAuraEvent("UNIT_AURA", unit) then
-            return
-        end
-        self:RequestRefresh(true, self:GetDirtyCooldownIDsForEvent("UNIT_AURA", unit))
-    end
-    RefineUI:RegisterUnitEventCallback("UNIT_AURA", "player", OnUnitAura, "CDM:Runtime:UnitAura")
-    RefineUI:RegisterUnitEventCallback("UNIT_AURA", "target", OnUnitAura, "CDM:Runtime:UnitAura")
-
-    RefineUI:RegisterEventCallback("PLAYER_TOTEM_UPDATE", function()
-        if not self:IsRefineRuntimeOwnerActive() then
-            return
-        end
-        if not self:ShouldRefreshForAuraEvent("PLAYER_TOTEM_UPDATE", "player") then
-            return
-        end
-        self:RequestRefresh(true, self:GetDirtyCooldownIDsForEvent("PLAYER_TOTEM_UPDATE", "player"))
-    end, "CDM:Runtime:PlayerTotemUpdate")
 
     if RefineUI.LibEditMode and type(RefineUI.LibEditMode.RegisterCallback) == "function" then
         RefineUI.LibEditMode:RegisterCallback("enter", function()
@@ -1098,6 +565,7 @@ function CDM:OnEnable()
         RefineUI:HookScriptOnce("CDM:EditMode:OnHide", _G.EditModeManagerFrame, "OnHide", function()
             CDM:ApplyNativeAuraViewerVisibility(true)
             CDM:RequestRefresh(true)
+            CDM:RequestBlizzardTrackerSetupCheck()
         end)
     end
 

@@ -4,16 +4,7 @@ local Module = RefineUI:GetModule("AdventureGuideInstances")
 if not Module then return end
 
 local Data = RefineUI.InstanceCompletion
-local TYPES = {
-    { key = "achievements", label = "Achievements" },
-    { key = "appearances", label = "Appearances" },
-    { key = "pets", label = "Pets" },
-    { key = "mounts", label = "Mounts" },
-    { key = "toys", label = "Toys" },
-}
-local function IsReady(summary, key)
-    return key == "achievements" and summary.achievementsReady or key ~= "achievements" and summary.lootReady
-end
+local TYPES = Module.COMPLETION_BADGES
 
 function Module:IsGuideInstanceListVisible()
     local journal = _G.EncounterJournal
@@ -33,27 +24,25 @@ end
 function Module:GuideListNeedsSummaries()
     if not next(self.guideCollectionTypes) then return false end
     return self.guideSortKey ~= nil or not self:AreAllGuideTypesSelected()
-        or not self.guideIncludeCompleted
+end
+
+-- A partial loot catalog is shown with its known counts but is not fully assessed.
+local function IsAssessed(summary, key)
+    return Module:IsCompletionReady(summary, key) and not (summary.partial and key ~= "achievements")
 end
 
 -- Unknown catalogs stay visible until their type can be assessed. A match means
--- at least one selected category has a missing reward.
+-- at least one selected category has a reward, collected or not.
 function Module:GuideInstancePassesFilter(summary)
-    local pending, hasReward = false, false
     if not next(self.guideCollectionTypes) then return false end
     if not summary then return true end
     for _, entry in ipairs(TYPES) do
         if self.guideCollectionTypes[entry.key] then
             local count = summary.instance[entry.key]
-            if not IsReady(summary, entry.key) or count.unknown > 0 then
-                pending = true
-            elseif count.total > 0 then
-                hasReward = true
-                if count.earned < count.total then return true end
-            end
+            if not IsAssessed(summary, entry.key) or count.unknown > 0 or count.total > 0 then return true end
         end
     end
-    return pending or (self.guideIncludeCompleted and hasReward) or false
+    return false
 end
 
 function Module:GetGuideSortRate(summary)
@@ -61,7 +50,7 @@ function Module:GetGuideSortRate(summary)
     local earned, total = 0, 0
     for _, entry in ipairs(TYPES) do
         if self.guideCollectionTypes[entry.key] then
-            if not IsReady(summary, entry.key) then return nil end
+            if not IsAssessed(summary, entry.key) then return nil end
             local count = summary.instance[entry.key]
             if count.unknown > 0 then return nil end
             earned, total = earned + count.earned, total + count.total
@@ -117,7 +106,6 @@ function Module:RefreshGuideInstanceList()
     if not self:IsGuideInstanceListVisible() then return end
     local list = _G.EncounterJournal.instanceSelect
     local custom = self.guideAllExpansions or self.guideSortKey or not self:AreAllGuideTypesSelected()
-        or not self.guideIncludeCompleted
     if not custom then
         self.guideListEmpty:Hide()
         return -- Blizzard's provider is already installed.
@@ -152,8 +140,7 @@ function Module:RefreshGuideInstanceList()
     for _, row in ipairs(rows) do provider:Insert(row) end
     list.ScrollBox:SetDataProvider(provider, ScrollBoxConstants and ScrollBoxConstants.RetainScrollPosition)
     local emptyText = not next(self.guideCollectionTypes) and "Select a collection type to show instances."
-        or self.guideIncludeCompleted and "No instances have rewards in the selected types."
-        or "No instances have remaining rewards in the selected types."
+        or "No instances have rewards in the selected types."
     self.guideListEmpty:SetText(emptyText)
     self.guideListEmpty:SetShown(#rows == 0)
     if self.guideAllExpansions then
@@ -181,8 +168,12 @@ function Module:OnGuideSummaryUpdated(summary)
     local passes = self:GuideInstancePassesFilter(summary)
     local rate = self:GetGuideSortRate(summary)
     local previous = self._guideSummarySortState[summary.instanceID]
-    if previous and previous.passes == passes and previous.rate == rate then return end
-    self._guideSummarySortState[summary.instanceID] = { passes = passes, rate = rate }
+    if previous then
+        if previous.passes == passes and previous.rate == rate then return end
+        previous.passes, previous.rate = passes, rate
+    else
+        self._guideSummarySortState[summary.instanceID] = { passes = passes, rate = rate }
+    end
     self:ScheduleGuideInstanceListRefresh()
 end
 
@@ -281,7 +272,6 @@ function Module:InstallGuideInstanceList()
     self._guideInstanceListInstalled = true
     self.guideCollectionTypes = {}
     for _, entry in ipairs(TYPES) do self.guideCollectionTypes[entry.key] = true end
-    self.guideIncludeCompleted = false
     self.guideSortKey, self.guideSortDescending = nil, true
     self._guideSummarySortState = {}
 
@@ -337,11 +327,6 @@ function Module:InstallGuideInstanceList()
                 self:GuideListSelectionChanged()
             end)
         end
-        root:CreateDivider()
-        root:CreateCheckbox("Include completed", function() return self.guideIncludeCompleted end, function()
-            self.guideIncludeCompleted = not self.guideIncludeCompleted
-            self:GuideListSelectionChanged()
-        end)
     end)
     self.guideListEmpty = list:CreateFontString(nil, "OVERLAY", "GameFontDisable")
     self.guideListEmpty:SetPoint("CENTER", list.ScrollBox, "CENTER", 0, 0)
@@ -351,11 +336,8 @@ function Module:InstallGuideInstanceList()
         function() self:SetupGuideExpansionDropdown() end)
     RefineUI:HookOnce(self:BuildKey("GuideList", "Instances"), "EncounterJournal_ListInstances",
         function() self:UpdateGuideListControls(); self:RefreshGuideInstanceList() end)
-    if _G.EventRegistry then
-        _G.EventRegistry:RegisterCallback("EncounterJournal.TabSet", function(_, owner)
-            if owner == journal then self:UpdateGuideListControls() end
-        end, self)
-    end
+    -- EncounterJournal.TabSet is handled by OnEncounterJournalTabSet; EventRegistry
+    -- keeps one callback per owner, so a second registration would replace it.
     self:UpdateGuideListDropdownText()
     self:UpdateGuideListControls()
     self:SetupGuideExpansionDropdown()

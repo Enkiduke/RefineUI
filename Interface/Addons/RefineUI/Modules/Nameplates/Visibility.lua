@@ -14,7 +14,6 @@ end
 ----------------------------------------------------------------------------------------
 local type = type
 local pcall = pcall
-local setmetatable = setmetatable
 
 local UnitIsFriend = UnitIsFriend
 local UnitCanAttack = UnitCanAttack
@@ -22,150 +21,53 @@ local UnitCanAttack = UnitCanAttack
 ----------------------------------------------------------------------------------------
 -- Locals
 ----------------------------------------------------------------------------------------
+local Private = Nameplates:GetPrivate()
+local Util = Private.Util
+local RAID_ICON_SIZE = Private.Constants.RAID_ICON_SIZE
+
 local EMPTY_TEXT_OPTS = {
     emptyText = "",
 }
 
-local function GetUtil()
-    local private = Nameplates:GetPrivate()
-    return private and private.Util
-end
-
 local function ReadAccessibleFrameNumber(frame, methodName)
-    if not frame or type(methodName) ~= "string" then
+    local ok, value = pcall(frame[methodName], frame)
+    if not ok or not Util.IsAccessibleValue(value) or type(value) ~= "number" then
         return nil
     end
-
-    local method = frame[methodName]
-    if type(method) ~= "function" then
-        return nil
-    end
-
-    local ok, value = pcall(method, frame)
-    if not ok then
-        return nil
-    end
-
-    local util = GetUtil()
-    if util and (not util.IsAccessibleValue(value) or type(value) ~= "number") then
-        return nil
-    end
-
-    if type(value) ~= "number" then
-        return nil
-    end
-
     return value
 end
 
-local function EnsureRaidTargetFrameSize(raidTargetFrame, raidIconSize)
-    if not raidTargetFrame or type(raidIconSize) ~= "number" then
-        return
-    end
-
+local function EnsureRaidTargetFrameSize(raidTargetFrame)
     local width = ReadAccessibleFrameNumber(raidTargetFrame, "GetWidth")
     local height = ReadAccessibleFrameNumber(raidTargetFrame, "GetHeight")
-    if width ~= raidIconSize or height ~= raidIconSize then
-        raidTargetFrame:SetSize(raidIconSize, raidIconSize)
+    if width ~= RAID_ICON_SIZE or height ~= RAID_ICON_SIZE then
+        raidTargetFrame:SetSize(RAID_ICON_SIZE, RAID_ICON_SIZE)
     end
-end
-
-local function GetRaidTargetFrame(unitFrame)
-    if not unitFrame then
-        return nil
-    end
-
-    return unitFrame.RaidTargetFrame or unitFrame.raidTargetFrame
 end
 
 local function EvaluateNameOnlyFromUnit(unit)
-    local util = GetUtil()
-    if not util or not util.IsUsableUnitToken(unit) then
-        -- Match original behavior for unavailable tokens.
+    if not Util.IsUsableUnitToken(unit) then
         return true
     end
 
-    local isFriend = false
-    local canAttack = false
-
-    local friendValue = util.ReadSafeBoolean(UnitIsFriend("player", unit))
-    if friendValue ~= nil then
-        isFriend = friendValue
-    end
-
-    local attackValue = util.ReadSafeBoolean(UnitCanAttack("player", unit))
-    if attackValue ~= nil then
-        canAttack = attackValue
-    end
-
+    local isFriend = Util.ReadSafeBoolean(UnitIsFriend("player", unit)) == true
+    local canAttack = Util.ReadSafeBoolean(UnitCanAttack("player", unit)) == true
     return isFriend or not canAttack
 end
 
-local function GetBlizzardNameOnlyState(unitFrame, util)
-    if not unitFrame or not util then
-        return nil
-    end
-
-    if type(unitFrame.IsShowOnlyName) == "function" then
-        local ok, isShowOnlyName = pcall(unitFrame.IsShowOnlyName, unitFrame)
-        if ok then
-            local resolvedShowOnlyName = util.ReadSafeBoolean(isShowOnlyName)
-            if resolvedShowOnlyName ~= nil then
-                return resolvedShowOnlyName
-            end
-        end
-    end
-
-    local showOnlyName = util.ReadSafeBoolean(unitFrame.showOnlyName)
-    if showOnlyName ~= nil then
-        return showOnlyName
-    end
-
-    local widgetsOnlyMode = util.ReadSafeBoolean(unitFrame.widgetsOnlyMode)
-    if widgetsOnlyMode == true then
-        return true
-    end
-
-    if type(unitFrame.IsSimplified) == "function" then
-        local ok, isSimplified = pcall(unitFrame.IsSimplified, unitFrame)
-        if ok and util.ReadSafeBoolean(isSimplified) == true then
-            return true
-        end
-    end
-
-    if util.ReadSafeBoolean(unitFrame.isSimplified) == true then
-        return true
-    end
-
-    local optionTable = unitFrame.optionTable
-    if util.ReadSafeBoolean(util.SafeTableIndex(optionTable, "nameOnly")) == true then
-        return true
-    end
-    if util.ReadSafeBoolean(util.SafeTableIndex(optionTable, "showOnlyName")) == true then
+local function IsBlizzardNameOnly(unitFrame)
+    if unitFrame:IsShowOnlyName() or unitFrame.widgetsOnlyMode == true or unitFrame:IsSimplified() then
         return true
     end
 
     local healthContainer = unitFrame.HealthBarsContainer or unitFrame.healthBar or unitFrame.HealthBar
-    if healthContainer and healthContainer.IsShown and not healthContainer:IsShown() then
-        return true
-    end
-
-    return nil
+    return healthContainer ~= nil and not healthContainer:IsShown()
 end
 
-local function ResolveNameOnlyRaidAnchor(unitFrame, data)
-    if data and data.RefineName then
-        return data.RefineName
+local function UpdateRaidTargetShownState(raidTargetFrame)
+    if raidTargetFrame.UpdateShownState then
+        raidTargetFrame:UpdateShownState()
     end
-
-    if unitFrame then
-        local name = unitFrame.name or (unitFrame.NameContainer and unitFrame.NameContainer.Name)
-        if name then
-            return name
-        end
-    end
-
-    return nil
 end
 
 ----------------------------------------------------------------------------------------
@@ -176,13 +78,7 @@ function Nameplates:IsNameOnlyNameplateInternal(unitFrame, data, allowCachedStat
         return false
     end
 
-    local util = GetUtil()
-    if not util then
-        return false
-    end
-
-    local nameOnlyByUnit = EvaluateNameOnlyFromUnit(unitFrame.unit)
-    if nameOnlyByUnit then
+    if EvaluateNameOnlyFromUnit(unitFrame.unit) then
         return true
     end
 
@@ -190,124 +86,66 @@ function Nameplates:IsNameOnlyNameplateInternal(unitFrame, data, allowCachedStat
         return true
     end
 
-    local nameOnlyState = GetBlizzardNameOnlyState(unitFrame, util)
-    if nameOnlyState == true then
-        return true
-    end
-
-    return false
-end
-
-function RefineUI:IsNameOnlyNameplate(unitFrame, data, allowCachedState)
-    return Nameplates:IsNameOnlyNameplateInternal(unitFrame, data, allowCachedState)
-end
-
-function Nameplates:IsRuntimeSuppressedNameplate(unitFrame, data)
-    if not unitFrame then
-        return false
-    end
-
-    if not data then
-        data = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame] or nil
-    end
-
-    return data and data.RefineHidden == true or false
-end
-
-function RefineUI:IsRuntimeSuppressedNameplate(unitFrame, data)
-    return Nameplates:IsRuntimeSuppressedNameplate(unitFrame, data)
+    return IsBlizzardNameOnly(unitFrame)
 end
 
 ----------------------------------------------------------------------------------------
 -- Raid Icon Anchor API
 ----------------------------------------------------------------------------------------
 function Nameplates:ApplyPortraitRaidIconAnchor(unitFrame, data)
-    if not unitFrame or not data then
+    local raidTargetFrame = unitFrame.RaidTargetFrame
+    if not raidTargetFrame then
         return
     end
 
-    local raidTargetFrame = GetRaidTargetFrame(unitFrame)
-    if not raidTargetFrame or not raidTargetFrame.ClearAllPoints or not raidTargetFrame.SetPoint then
+    local healthBar = unitFrame.healthBar or unitFrame.HealthBar or unitFrame.HealthBarsContainer or unitFrame
+    local anchorTarget = data.HealthBorderOverlay or healthBar
+    -- Blizzard only re-anchors the icon in UpdateAnchors, whose hook clears the mode.
+    if data.RaidIconAnchorMode == "portrait" and data.RaidIconAnchorTarget == anchorTarget then
         return
     end
 
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    local healthContainer = unitFrame.HealthBarsContainer or unitFrame.healthBar or unitFrame.HealthBar or unitFrame
-    local healthBar = unitFrame.healthBar or unitFrame.HealthBar or healthContainer
-    local anchorTarget = data.HealthBorderOverlay or healthBar or healthContainer
-    local raidIconSize = (constants and constants.RAID_ICON_SIZE) or 28
-
-    if raidTargetFrame.SetFrameLevel and healthBar and healthBar.GetFrameLevel then
-        local desiredFrameLevel = healthBar:GetFrameLevel() + 5
-        local currentFrameLevel = ReadAccessibleFrameNumber(raidTargetFrame, "GetFrameLevel")
-        if currentFrameLevel ~= desiredFrameLevel then
-            raidTargetFrame:SetFrameLevel(desiredFrameLevel)
-        end
+    local desiredFrameLevel = healthBar:GetFrameLevel() + 5
+    if ReadAccessibleFrameNumber(raidTargetFrame, "GetFrameLevel") ~= desiredFrameLevel then
+        raidTargetFrame:SetFrameLevel(desiredFrameLevel)
     end
 
-    EnsureRaidTargetFrameSize(raidTargetFrame, raidIconSize)
+    EnsureRaidTargetFrameSize(raidTargetFrame)
 
-    if anchorTarget then
-        raidTargetFrame:ClearAllPoints()
-        RefineUI.Point(raidTargetFrame, "CENTER", anchorTarget, "RIGHT", 0, 0)
-    end
+    raidTargetFrame:ClearAllPoints()
+    RefineUI.Point(raidTargetFrame, "CENTER", anchorTarget, "RIGHT", 0, 0)
 
     data.RaidIconAnchorMode = "portrait"
     data.RaidIconAnchorTarget = anchorTarget
 
-    if raidTargetFrame.UpdateShownState then
-        raidTargetFrame:UpdateShownState()
-    end
+    UpdateRaidTargetShownState(raidTargetFrame)
 end
 
 function Nameplates:ApplyNameOnlyRaidIconAnchor(unitFrame, data)
-    if not unitFrame then
+    data = data or self:GetNameplateData(unitFrame)
+
+    local nameAnchor = data.RefineName or unitFrame.name
+    local raidTargetFrame = unitFrame.RaidTargetFrame
+    if not nameAnchor or not raidTargetFrame then
+        return
+    end
+    if data.RaidIconAnchorMode == "name" and data.RaidIconAnchorTarget == nameAnchor then
         return
     end
 
-    if not data then
-        RefineUI.NameplateData = RefineUI.NameplateData or setmetatable({}, { __mode = "k" })
-        data = RefineUI.NameplateData[unitFrame]
-        if not data then
-            data = {}
-            RefineUI.NameplateData[unitFrame] = data
-        end
+    if raidTargetFrame:GetParent() ~= unitFrame then
+        pcall(raidTargetFrame.SetParent, raidTargetFrame, unitFrame)
     end
 
-    local nameAnchor = ResolveNameOnlyRaidAnchor(unitFrame, data)
-    if not nameAnchor then
-        return
-    end
+    EnsureRaidTargetFrameSize(raidTargetFrame)
 
-    local raidTargetFrame = GetRaidTargetFrame(unitFrame)
-    if not raidTargetFrame or not raidTargetFrame.ClearAllPoints or not raidTargetFrame.SetPoint then
-        return
-    end
-
-    if raidTargetFrame.SetParent and raidTargetFrame.GetParent then
-        if raidTargetFrame:GetParent() ~= unitFrame then
-            pcall(raidTargetFrame.SetParent, raidTargetFrame, unitFrame)
-        end
-    end
-
-    local private = self:GetPrivate()
-    local constants = private and private.Constants
-    local raidIconSize = (constants and constants.RAID_ICON_SIZE) or 28
-
-    EnsureRaidTargetFrameSize(raidTargetFrame, raidIconSize)
-
-    if nameAnchor then
-        raidTargetFrame:ClearAllPoints()
-        RefineUI.Point(raidTargetFrame, "BOTTOM", nameAnchor, "TOP", 0, 6)
-    end
+    raidTargetFrame:ClearAllPoints()
+    RefineUI.Point(raidTargetFrame, "BOTTOM", nameAnchor, "TOP", 0, 6)
 
     data.RaidIconAnchorMode = "name"
     data.RaidIconAnchorTarget = nameAnchor
 
-    if raidTargetFrame.UpdateShownState then
-        raidTargetFrame:UpdateShownState()
-    end
+    UpdateRaidTargetShownState(raidTargetFrame)
 end
 
 function Nameplates:ApplyRaidIconAnchor(unitFrame, data, isNameOnlyOverride)
@@ -315,9 +153,7 @@ function Nameplates:ApplyRaidIconAnchor(unitFrame, data, isNameOnlyOverride)
         return
     end
 
-    if not data then
-        data = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame] or nil
-    end
+    data = data or RefineUI.NameplateData[unitFrame]
 
     local isNameOnly = isNameOnlyOverride
     if isNameOnly == nil then
@@ -331,29 +167,18 @@ function Nameplates:ApplyRaidIconAnchor(unitFrame, data, isNameOnlyOverride)
     end
 end
 
-function RefineUI:UpdateNameplateRaidIconAnchor(unitFrame, data, isNameOnlyOverride)
-    Nameplates:ApplyRaidIconAnchor(unitFrame, data, isNameOnlyOverride)
-end
-
 ----------------------------------------------------------------------------------------
 -- Visibility Pipeline
 ----------------------------------------------------------------------------------------
 function Nameplates:UpdateVisibility(nameplate, unit)
-    if not nameplate then
-        return
-    end
-
-    local unitFrame = nameplate.UnitFrame
-    if not unitFrame then
-        return
-    end
-
-    local data = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
+    local unitFrame = nameplate and nameplate.UnitFrame
+    local data = unitFrame and RefineUI.NameplateData[unitFrame]
     if not data then
         return
     end
 
     local healthContainer = unitFrame.HealthBarsContainer or unitFrame.healthBar or unitFrame.HealthBar
+    local castBar = Util.GetNameplateCastBar(unitFrame)
     local isNameOnly = self:IsNameOnlyNameplateInternal(unitFrame, data, false)
     local wasHidden = data.RefineHidden == true
 
@@ -372,42 +197,26 @@ function Nameplates:UpdateVisibility(nameplate, unit)
         end
 
         if not wasHidden then
-            local castBar = unitFrame.castBar or unitFrame.CastBar
-            if castBar then
-                if self.SuppressCastBarForNameOnly then
-                    self:SuppressCastBarForNameOnly(castBar)
-                elseif self.SetCastBarVisualAlpha then
-                    self:SetCastBarVisualAlpha(castBar, 0)
-                else
-                    castBar:SetAlpha(0)
-                end
-            end
-
+            -- Set before suppressing the cast bar: its hide path reads this flag.
             data.RefineHidden = true
             data.isCasting = false
 
-            if self.UpdateNameplatePortraitModelEvents then
-                self:UpdateNameplatePortraitModelEvents(unitFrame, unit, false)
+            if castBar then
+                self:SuppressCastBarForNameOnly(castBar)
             end
 
-            if self.ClearDeferredPortraitRefreshQueue then
-                self:ClearDeferredPortraitRefreshQueue(unitFrame)
-            end
+            self:UpdateNameplatePortraitModelEvents(unitFrame, unit, false)
+            self:ClearDeferredPortraitRefreshQueue(unitFrame)
 
             if data.RefineHealth then
                 RefineUI:SetFontStringValue(data.RefineHealth, nil, EMPTY_TEXT_OPTS)
                 data.RefineHealth:Hide()
             end
 
-            if self.ApplyRefineTextVisibility and self.IsNativeNameShown then
-                self:ApplyRefineTextVisibility(data, self:IsNativeNameShown(unitFrame))
-            end
+            self:ApplyRefineTextVisibility(data, self:IsNativeNameShown(unitFrame))
+            RefineUI:ClearNameplateCrowdControl(unitFrame)
 
-            if RefineUI.ClearNameplateCrowdControl then
-                RefineUI:ClearNameplateCrowdControl(unitFrame, true)
-            end
-
-            if data.PortraitFrame and RefineUI.UpdateDynamicPortrait then
+            if data.PortraitFrame then
                 RefineUI:UpdateDynamicPortrait(nameplate, unit, "UNIT_FACTION")
             end
         end
@@ -425,45 +234,27 @@ function Nameplates:UpdateVisibility(nameplate, unit)
             data.PortraitFrame:Show()
         end
 
-        local castBar = unitFrame.castBar or unitFrame.CastBar
         if castBar then
-            if self.SetCastBarVisualAlpha then
-                self:SetCastBarVisualAlpha(castBar, 1)
-            else
-                castBar:SetAlpha(1)
-            end
+            self:SetCastBarVisualAlpha(castBar, 1)
         end
 
         data.RefineHidden = false
 
         if wasHidden then
-            if self.UpdateNameplatePortraitModelEvents then
-                self:UpdateNameplatePortraitModelEvents(unitFrame, unit, true)
-            end
+            self:UpdateNameplatePortraitModelEvents(unitFrame, unit, true)
+            self:UpdateHealth(nameplate, unit)
+            RefineUI:UpdateDynamicPortrait(nameplate, unit, "UNIT_FACTION")
+            RefineUI:UpdateNameplateCrowdControl(unitFrame, unit)
 
-            if self.UpdateHealth then
-                self:UpdateHealth(nameplate, unit)
-            end
-
-            if RefineUI.UpdateNameplateCrowdControl then
-                RefineUI:UpdateNameplateCrowdControl(unitFrame, unit, "UNIT_FACTION")
-            end
-
-            if RefineUI.UpdateDynamicPortrait then
-                RefineUI:UpdateDynamicPortrait(nameplate, unit, "UNIT_FACTION")
-            end
-
-            if castBar and self.RefreshCastBarForRuntimeMode then
+            if castBar then
                 self:RefreshCastBarForRuntimeMode(castBar)
             end
         end
     end
 
-    if wasHidden ~= data.RefineHidden and RefineUI.UpdateTarget then
+    if wasHidden ~= data.RefineHidden then
         RefineUI:UpdateTarget(unitFrame)
     end
 
-    if self.ApplyNpcTitleVisual then
-        self:ApplyNpcTitleVisual(nameplate, unit, { allowResolve = false })
-    end
+    self:ApplyNpcTitleVisual(nameplate, unit)
 end

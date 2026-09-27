@@ -16,7 +16,6 @@ local rawget = rawget
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
-local C_Timer = C_Timer
 local C_AddOns = C_AddOns
 local GetCursorPosition = GetCursorPosition
 local CreateFrame = CreateFrame
@@ -31,6 +30,7 @@ local UIParent = _G.UIParent
 ----------------------------------------------------------------------------------------
 
 local DEFAULT_MINIMAP_SIZE = 294
+local INSTANCE_DIFFICULTY_KEYS = { "Default", "Guild", "ChallengeMode" }
 
 local function GetCurrentLayoutTierKey()
     local context = RefineUI.GetLayoutContext and RefineUI:GetLayoutContext() or nil
@@ -189,7 +189,7 @@ local function ApplyInstanceDifficultyLayout()
     instanceDifficulty:ClearAllPoints()
     instanceDifficulty:SetPoint("TOPLEFT", Minimap, "TOPLEFT", -1, 1)
 
-    for _, key in ipairs({"Default", "Guild", "ChallengeMode"}) do
+    for _, key in ipairs(INSTANCE_DIFFICULTY_KEYS) do
         local diff = instanceDifficulty[key]
         if diff then
             if diff.Border then
@@ -324,7 +324,7 @@ function Maps:SetupMinimap()
     -- Keep Blizzard default minimap anchoring until install/layout is ready.
     -- Moving MinimapCluster while EditMode still marks it as default can produce
     -- negative right-action-bar autoscale in Blizzard startup layout math.
-    if installReady then
+    if installReady and not MinimapCluster:IsInDefaultPosition() then
         MinimapCluster:ClearAllPoints()
         if self.positions.MinimapCluster then
             MinimapCluster:SetPoint(unpack(self.positions.MinimapCluster))
@@ -342,8 +342,6 @@ function Maps:SetupMinimap()
     RefineUI:HookOnce("Minimap:MinimapCluster:AnchorSelectionFrame", MinimapCluster, "AnchorSelectionFrame", UpdateMinimapSelectionFrame)
     RefreshMinimapLayoutOverlays()
     MinimapCluster:EnableMouse(false)
-
-    ApplyInstanceDifficultyLayout()
 
     if _G.QueueStatusButton then
         _G.QueueStatusButton:ClearAllPoints()
@@ -364,6 +362,7 @@ function Maps:SetupMinimap()
     end
 
     if MinimapCluster.IndicatorFrame then
+        MinimapCluster.IndicatorFrame:SetParent(Minimap)
         local MailFrame = MinimapCluster.IndicatorFrame.MailFrame
         if MailFrame then
             RefineUI:HookOnce("Minimap:IndicatorMailFrame:SetPoint", MailFrame, "SetPoint", function(self, _, anchor)
@@ -372,6 +371,8 @@ function Maps:SetupMinimap()
                     self:SetPoint("BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", -2, 4)
                 end
             end)
+            MailFrame:ClearAllPoints()
+            MailFrame:SetPoint("BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", -2, 4)
             if _G.MiniMapMailIcon then _G.MiniMapMailIcon:SetSize(20, 18) end
         end
         
@@ -387,28 +388,18 @@ function Maps:SetupMinimap()
     end
 
     if self.db.ZoomReset then
-        local resetting = 0
+        local function ResetZoom()
+            Minimap:SetZoom(0)
+        end
         RefineUI:RegisterEventCallback("MINIMAP_UPDATE_ZOOM", function()
-            if Minimap:GetZoom() > 0 and resetting == 0 then
-                resetting = 1
-                C_Timer.After(self.db.ResetTime or 5, function()
-                    Minimap:SetZoom(0)
-                    resetting = 0
-                end)
+            if Minimap:GetZoom() > 0 then
+                RefineUI:Debounce("Minimap:ZoomReset", self.db.ResetTime or 5, ResetZoom)
             end
-        end)
+        end, "Minimap:ZoomReset")
     end
 
+    -- Blizzard's MinimapMixin:OnMouseWheel already zooms via the (killed) zoom buttons.
     Minimap:EnableMouseWheel(true)
-    Minimap:SetScript("OnMouseWheel", function(_, d)
-        if d > 0 then
-            local zi = rawget(Minimap, 'ZoomIn')
-            if zi and zi.Click then zi:Click() end
-        elseif d < 0 then
-            local zo = rawget(Minimap, 'ZoomOut')
-            if zo and zo.Click then zo:Click() end
-        end
-    end)
 
     if not trackingClickProxy then
         trackingClickProxy = CreateFrame("Frame", nil, Minimap)
@@ -434,17 +425,10 @@ function Maps:SetupMinimap()
         local menu = MinimapCluster.Tracking.Button.menu
         if not menu then return end
 
-        local ok = pcall(function()
-            local cursorX, cursorY = GetCursorPosition()
-            local scale = UIParent:GetEffectiveScale()
-            menu:ClearAllPoints()
-            menu:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", cursorX / scale, cursorY / scale)
-        end)
-
-        if not ok then
-            menu:ClearAllPoints()
-            menu:SetPoint("TOPRIGHT", Minimap, "LEFT", -4, 0)
-        end
+        local cursorX, cursorY = GetCursorPosition()
+        local scale = UIParent:GetEffectiveScale()
+        menu:ClearAllPoints()
+        menu:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", cursorX / scale, cursorY / scale)
     end)
 
     RefineUI:RegisterEventCallback("ZONE_CHANGED", RefreshCustomZoneText, "Minimap:CustomZoneText:ZoneChanged")
@@ -453,17 +437,14 @@ function Maps:SetupMinimap()
 
     ForceHideFrame(MinimapCluster.ZoneTextButton, "Minimap:ZoneTextButton:OnShow:Hide")
     ForceHideFrame(_G.GameTimeFrame, "Minimap:GameTimeFrame:OnShow:Hide")
-    ForceHideFrame(_G.TimeManagerClockButton, "Minimap:TimeManagerClockButton:OnShow:Hide")
     ForceHideFrame(_G.AddonCompartmentFrame, "Minimap:AddonCompartmentFrame:OnShow:Hide")
-    if _G.MinimapZoneText then _G.MinimapZoneText:Hide() end
-    if _G.TimeManagerClockTicker then _G.TimeManagerClockTicker:Hide() end
-    if _G.GameTimeCalendarInvitesTexture then _G.GameTimeCalendarInvitesTexture:Hide() end
+    if _G.MinimapBackdrop then
+        _G.MinimapBackdrop:Hide()
+        _G.MinimapBackdrop:UnregisterAllEvents()
+    end
     if MinimapCluster.Tracking then
         if MinimapCluster.Tracking.Background then
             MinimapCluster.Tracking.Background:Hide()
-            RefineUI:HookScriptOnce("Minimap:TrackingBackground:OnShow:Hide", MinimapCluster.Tracking.Background, "OnShow", function(self)
-                self:Hide()
-            end)
         end
         if MinimapCluster.Tracking.Button then
             MinimapCluster.Tracking.Button:SetAlpha(0)
@@ -471,12 +452,6 @@ function Maps:SetupMinimap()
                 self:SetAlpha(0)
             end)
         end
-    end
-    if MinimapCluster.IndicatorFrame then
-        MinimapCluster.IndicatorFrame:Hide()
-        RefineUI:HookScriptOnce("Minimap:IndicatorFrame:OnShow:Hide", MinimapCluster.IndicatorFrame, "OnShow", function(self)
-            self:Hide()
-        end)
     end
 
     local feedback = rawget(_G, 'FeedbackUIButton')
@@ -515,36 +490,9 @@ function Maps:SetupMinimap()
         end
     end
 
-    ForceHideFrame(_G.AddonCompartmentFrame, "Minimap:AddonCompartmentFrame:OnShow:Hide")
-    ForceHideFrame(_G.GameTimeFrame, "Minimap:GameTimeFrame:OnShow:Hide")
-    if MinimapCluster.IndicatorFrame then
-        MinimapCluster.IndicatorFrame:SetParent(Minimap)
-        MinimapCluster.IndicatorFrame:Hide()
-    end
-    if MinimapCluster.Tracking then
-        if MinimapCluster.Tracking.Background then MinimapCluster.Tracking.Background:Hide() end
-        if MinimapCluster.Tracking.Button then MinimapCluster.Tracking.Button:SetAlpha(0) end
-    end
-    local HiddenFrames = {
-        "MinimapBorder", "MinimapBorderTop", "MinimapNorthTag",
-        "MiniMapWorldMapButton", "MinimapBackdrop", "TimeManagerClockTicker",
-    }
-    for _, name in ipairs(HiddenFrames) do
-        local f = _G[name]
-        if f then
-            f:Hide()
-            if f.UnregisterAllEvents then f:UnregisterAllEvents() end
-        end
-    end
-
-    ForceHideFrame(MinimapCluster.ZoneTextButton, "Minimap:ZoneTextButton:OnShow:Hide")
-    if _G.MinimapZoneText then _G.MinimapZoneText:Hide() end
-
-    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addon)
+    local function StyleLoadOnDemand(addon)
         if addon == "Blizzard_TimeManager" then
-            if _G.TimeManagerClockButton then
-                ForceHideFrame(_G.TimeManagerClockButton, "Minimap:TimeManagerClockButton:OnShow:Hide")
-            end
+            ForceHideFrame(_G.TimeManagerClockButton, "Minimap:TimeManagerClockButton:OnShow:Hide")
         elseif addon == "Blizzard_HybridMinimap" then
             local hm = _G.HybridMinimap
             hm:SetFrameStrata("BACKGROUND")
@@ -553,18 +501,17 @@ function Maps:SetupMinimap()
             hm.CircleMask:SetTexture("Interface\\BUTTONS\\WHITE8X8")
             hm.MapCanvas:SetUseMaskTexture(true)
         end
-    end)
-    
-    if C_AddOns.IsAddOnLoaded("Blizzard_TimeManager") then
-        if _G.TimeManagerClockButton then
-            ForceHideFrame(_G.TimeManagerClockButton, "Minimap:TimeManagerClockButton:OnShow:Hide")
-        end
     end
+    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addon)
+        StyleLoadOnDemand(addon)
+    end, "Minimap:ADDON_LOADED")
+    if C_AddOns.IsAddOnLoaded("Blizzard_TimeManager") then StyleLoadOnDemand("Blizzard_TimeManager") end
+    if C_AddOns.IsAddOnLoaded("Blizzard_HybridMinimap") then StyleLoadOnDemand("Blizzard_HybridMinimap") end
 
     if _G.ExpansionLandingPageMinimapButton then
         _G.ExpansionLandingPageMinimapButton:SetScale(0.0001)
         _G.ExpansionLandingPageMinimapButton:SetAlpha(0)
     end
-end
 
-_G.GetMinimapShape = function() return "SQUARE" end
+    _G.GetMinimapShape = function() return "SQUARE" end
+end

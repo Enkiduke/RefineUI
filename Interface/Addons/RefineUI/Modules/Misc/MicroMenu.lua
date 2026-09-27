@@ -7,43 +7,43 @@ local AddOnName, RefineUI = ...
 local MicroMenu = RefineUI:RegisterModule("MicroMenu")
 
 local _G = _G
-local select = select
-local string = string
 local unpack = unpack
-local pairs = pairs
 local ipairs = ipairs
+local pairs = pairs
 local format = string.format
-local type = type
+local floor = math.floor
+local ceil = math.ceil
 local GOLD_R, GOLD_G, GOLD_B = 1, 0.82, 0
-
--- Safe helper: find index of a value in a sequential array
-local function indexOf(list, value)
-    if type(list) ~= "table" then return nil end
-    for i = 1, #list do
-        if list[i] == value then
-            return i
-        end
-    end
-    return nil
-end
 
 -- Small constants to avoid magic numbers
 local MAX_GUILD_TOOLTIP_LIST = 30
 local MAX_FRIENDS_TOOLTIP_LIST = 20
 local GV_TOTAL_SLOTS = 9
-local UPDATE_JOB_KEY = {
-    GUILD_ROSTER = "MicroMenu:GuildRosterPoll",
-    LATENCY = "MicroMenu:LatencyPoll",
-}
+local BUTTON_SPACING = -2
 local TIMER_KEY = {
     SUPPRESS_DEFAULT_BUTTONS = "MicroMenu:SuppressDefaultButtons",
 }
 
--- Tooltip helper: consistent section spacing + header color
-local function AddSectionHeader(text, r, g, b)
-    _G.GameTooltip:AddLine(" ")
-    _G.GameTooltip:AddLine(text, r or 0.8, g or 0.8, b or 1)
-end
+-- Layout order; hidden buttons are skipped. StoreMicroButton is removed in OnEnable.
+local MICRO_BUTTON_ORDER = {
+    "CharacterMicroButton",
+    "RefineDurabilityMicroButton",
+    "RefineBagsMicroButton",
+    "ProfessionMicroButton",
+    "PlayerSpellsMicroButton",
+    "AchievementMicroButton",
+    "RefineGreatVaultMicroButton",
+    "QuestLogMicroButton",
+    "HousingMicroButton",
+    "GuildMicroButton",
+    "RefineFriendsMicroButton",
+    "LFDMicroButton",
+    "CollectionsMicroButton",
+    "EJMicroButton",
+    "MainMenuMicroButton",
+    "HelpMicroButton",
+}
+local layoutButtons = {}
 
 -- Unified disable predicate for micro buttons
 local function IsQuickKeybindMode()
@@ -57,32 +57,77 @@ local function MicroButtons_ShouldDisable()
 end
 
 -- =========================
+-- Tooltip style
+-- =========================
+-- Matches Blizzard micro button tooltips: white title with gold keybind, gold section
+-- headers, white primary text, gray secondary text.
+local RAID_CLASS_COLORS = (rawget(_G, 'CUSTOM_CLASS_COLORS') or _G.RAID_CLASS_COLORS)
+local HEADER_COLOR = _G.NORMAL_FONT_COLOR
+local TEXT_COLOR = _G.HIGHLIGHT_FONT_COLOR
+local SUBTEXT_COLOR = _G.GRAY_FONT_COLOR
+local AFK_ICON = "|TInterface\\FriendsFrame\\StatusIcon-Away:14:14|t "
+local DND_ICON = "|TInterface\\FriendsFrame\\StatusIcon-DnD:14:14|t "
+
+local function SetTooltipTitle(owner, text)
+    local tooltip = _G.GameTooltip
+    tooltip:SetOwner(owner, "ANCHOR_RIGHT")
+    local command = owner.cfg.commandName
+    GameTooltip_SetTitle(tooltip, command and MicroButtonTooltipText(text, command) or text)
+end
+
+local function AddTooltipHeader(text, count)
+    local tooltip = _G.GameTooltip
+    GameTooltip_AddBlankLineToTooltip(tooltip)
+    tooltip:AddDoubleLine(text, count, HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b, HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
+end
+
+local function AddTooltipRow(left, right, leftColor, rightColor)
+    leftColor, rightColor = leftColor or TEXT_COLOR, rightColor or SUBTEXT_COLOR
+    _G.GameTooltip:AddDoubleLine(left, right, leftColor.r, leftColor.g, leftColor.b, rightColor.r, rightColor.g, rightColor.b)
+end
+
+local function AddTooltipNote(text)
+    _G.GameTooltip:AddLine(text, SUBTEXT_COLOR.r, SUBTEXT_COLOR.g, SUBTEXT_COLOR.b)
+end
+
+local function StatusIcon(isAFK, isDND)
+    return isAFK and AFK_ICON or isDND and DND_ICON or ""
+end
+
+local function ColorText(color, text)
+    return format("|cff%02x%02x%02x%s|r", color.r * 255, color.g * 255, color.b * 255, text)
+end
+
+-- Friend APIs return localized class names; RAID_CLASS_COLORS is keyed by class file.
+local classFileByName
+local function GetClassColorByName(className)
+    if not classFileByName then
+        classFileByName = {}
+        for file, name in pairs(LocalizedClassList(false)) do classFileByName[name] = file end
+        for file, name in pairs(LocalizedClassList(true)) do classFileByName[name] = file end
+    end
+    local file = className and classFileByName[className]
+    return file and RAID_CLASS_COLORS[file] or TEXT_COLOR
+end
+
+-- =========================
 -- Guild online overlay
 -- =========================
-local guildCountFrame
-local RAID_CLASS_COLORS = (rawget(_G, 'CUSTOM_CLASS_COLORS') or _G.RAID_CLASS_COLORS)
-local NORMAL_COLOR = _G.NORMAL_FONT_COLOR or { r = 1, g = 1, b = 1 }
-local FRIENDS_TEX_ON = _G.FRIENDS_TEXTURE_ONLINE or "Interface\\FriendsFrame\\StatusIcon-Online"
-local FRIENDS_TEX_AFK = _G.FRIENDS_TEXTURE_AFK or "Interface\\FriendsFrame\\StatusIcon-Away"
-local FRIENDS_TEX_DND = _G.FRIENDS_TEXTURE_DND or "Interface\\FriendsFrame\\StatusIcon-DnD"
+local function SortByRankIndex(a, b)
+    return a.rankIndex < b.rankIndex
+end
 
 local function GetOnlineGuildMembers()
     local onlineMembers = {}
     local numTotalMembers, numOnlineMembers = GetNumGuildMembers()
     for i = 1, numTotalMembers do
-        local name, rank, rankIndex, level, _, _, _, _, online, status, class = GetGuildRosterInfo(i)
+        local name, rank, rankIndex, _, _, _, _, _, online, status, class = GetGuildRosterInfo(i)
         if online then
-            onlineMembers[#onlineMembers + 1] = { name = name, rank = rank, rankIndex = rankIndex, level = level, status = status, class = class }
+            onlineMembers[#onlineMembers + 1] = { name = Ambiguate(name, "guild"), rank = rank, rankIndex = rankIndex, status = status, class = class }
         end
     end
-    table.sort(onlineMembers, function(a, b) return a.rankIndex < b.rankIndex end)
+    table.sort(onlineMembers, SortByRankIndex)
     return onlineMembers, numOnlineMembers
-end
-
-local function GetGuildOnlineCount()
-    if not IsInGuild or not IsInGuild() then return 0 end
-    local _, numOnline = GetNumGuildMembers()
-    return numOnline or 0
 end
 
 local function RequestGuildRosterUpdate()
@@ -94,7 +139,6 @@ end
 local guildCountText
 
 local function GetOverlayFrame(button)
-    if not button then return end
     if not button.OverlayFrame then
         button.OverlayFrame = CreateFrame("Frame", nil, button)
         button.OverlayFrame:SetAllPoints()
@@ -105,102 +149,70 @@ local function GetOverlayFrame(button)
 end
 
 local function UpdateGuildOnlineCount()
-    local numOnline = GetGuildOnlineCount()
-    if _G.GuildMicroButton and not guildCountText then
-        guildCountText = GetOverlayFrame(_G.GuildMicroButton):CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        guildCountText:SetFont(RefineUI.Media.Fonts.Default, 12, "OUTLINE")
-        guildCountText:SetTextColor(1, 1, 1)
-        guildCountText:SetPoint("BOTTOM", _G.GuildMicroButton, "BOTTOM", 1, 2)
-        guildCountText:SetJustifyH("CENTER")
+    local numOnline = 0
+    if IsInGuild() then
+        local _, online = GetNumGuildMembers()
+        numOnline = online or 0
     end
-    if guildCountText then
-        guildCountText:SetText(numOnline > 0 and numOnline or "")
-    end
+    guildCountText:SetText(numOnline > 0 and numOnline or "")
 end
 
--- Error handling wrapper
-local function SafeCall(func, ...)
-    local ok, err = pcall(func, ...)
-    if not ok then
-        RefineUI:Print("|cFFFF0000GuildOnlineCount Error:|r %s", tostring(err))
+-- Appends to Blizzard's guild button tooltip; skip when Blizzard didn't show one.
+local function GuildMicroButton_OnEnter(self)
+    if not IsInGuild() or _G.GameTooltip:GetOwner() ~= self then return end
+    local onlineMembers, numOnlineMembers = GetOnlineGuildMembers()
+    AddTooltipHeader("Online", numOnlineMembers)
+    for i, member in ipairs(onlineMembers) do
+        if i > MAX_GUILD_TOOLTIP_LIST then
+            AddTooltipNote(format("+%d more", numOnlineMembers - MAX_GUILD_TOOLTIP_LIST))
+            break
+        end
+        local name = StatusIcon(member.status == 1, member.status == 2) .. member.name
+        AddTooltipRow(name, member.rank, RAID_CLASS_COLORS[member.class])
     end
+    _G.GameTooltip:Show()
 end
-
-local SafeUpdateGuildOnlineCount = function() SafeCall(UpdateGuildOnlineCount) end
-local SafeRequestGuildRosterUpdate = function() SafeCall(RequestGuildRosterUpdate) end
 
 -- =========================
 -- Base micro button mixin/factory
 -- =========================
 local ExtraMicroButtons = {}
 
-local function UpdateAllExtraMicroButtons()
-    for _, b in ipairs(ExtraMicroButtons) do
-        if b and b.UpdateMicroButton then b:UpdateMicroButton() end
-    end
-end
-
 local RefineMicroButtonMixin = CreateFromMixins(_G.MainMenuBarMicroButtonMixin)
 
 function RefineMicroButtonMixin:OnLoadCommon(cfg)
     self.cfg = cfg
+    self.iconR, self.iconG, self.iconB = 1, 1, 1
     self:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    if cfg.events then
-        for _, e in ipairs(cfg.events) do
-            local ok = pcall(self.RegisterEvent, self, e)
-        end
+    for _, e in ipairs(cfg.events) do
+        self:RegisterEvent(e)
     end
-    
-    if cfg.secure then
-        self:HookScript("OnClick", function(_, btn)
-            if cfg.onClick then cfg.onClick(self, btn) end
-        end)
-    else
-        self:SetScript("OnClick", function(_, btn) if cfg.onClick then cfg.onClick(self, btn) end end)
-    end
-    self:SetScript("OnEvent", function(_, event, ...) if cfg.onEvent then cfg.onEvent(self, event, ...) end self:UpdateMicroButton() end)
+
+    -- The template's OnMouseDown pushes the button; resync once the click has acted.
+    self:SetScript("OnClick", function(_, btn)
+        cfg.onClick(self, btn)
+        self:UpdateMicroButton()
+    end)
+    self:SetScript("OnEvent", cfg.update)
     self:SetScript("OnEnter", function()
-        if _G.MainMenuBarMicroButtonMixin and _G.MainMenuBarMicroButtonMixin.OnEnter then
-            _G.MainMenuBarMicroButtonMixin.OnEnter(self)
-        end
-        if self.IconHighlight then self.IconHighlight:Show() end
-        if cfg.onEnter then cfg.onEnter(self) end
+        self.IconHighlight:Show()
+        cfg.onEnter(self)
     end)
     self:SetScript("OnLeave", function()
-        if _G.MainMenuBarMicroButtonMixin and _G.MainMenuBarMicroButtonMixin.OnLeave then
-            _G.MainMenuBarMicroButtonMixin.OnLeave(self)
-        end
-        if self.IconHighlight then self.IconHighlight:Hide() end
-        _G.GameTooltip_Hide()
+        self.IconHighlight:Hide()
+        _G.GameTooltip:Hide()
     end)
     self.Background = self:CreateTexture(nil, "BACKGROUND")
     self.PushedBackground = self:CreateTexture(nil, "BACKGROUND"); self.PushedBackground:Hide()
     self.Background:SetAtlas(cfg.bgAtlasUp or "UI-HUD-MicroMenu-Character-Up", true)
     self.PushedBackground:SetAtlas(cfg.bgAtlasDown or "UI-HUD-MicroMenu-Character-Down", true)
-    
-    -- Standard highlight
-    if self.SetHighlightAtlas then
-        self:SetHighlightAtlas("UI-HUD-MicroMenu-Button-Highlight")
-    else
-        self:SetHighlightTexture("Interface\\Buttons\\UI-MicroButton-Hilight", "ADD")
-        local hl = self.GetHighlightTexture and self:GetHighlightTexture()
-        if hl then hl:ClearAllPoints(); hl:SetAllPoints(self) end
-    end
-    
+    self:SetHighlightAtlas("UI-HUD-MicroMenu-Button-Highlight")
+
     self.Icon = self:CreateTexture(nil, "ARTWORK")
     if cfg.iconAtlas then self.Icon:SetAtlas(cfg.iconAtlas) else self.Icon:SetTexture(cfg.iconPath) end
-    
-    local iconPoint = cfg.iconPoint or "CENTER"
-    local iconRelTo = cfg.iconRelativeTo or self
-    local iconRelPoint = cfg.iconRelativePoint or "CENTER"
-    local iconX = cfg.iconX or 0
-    local iconY = cfg.iconY or 2
-    self.Icon:SetPoint(iconPoint, iconRelTo, iconRelPoint, iconX, iconY)
+    self.Icon:SetPoint("CENTER", self, "CENTER", cfg.iconX or 0, cfg.iconY or 2)
     self.Icon:SetSize(cfg.iconSize or 24, cfg.iconSize or 24)
-    if (cfg.iconPoint or cfg.iconRelativeTo or cfg.iconRelativePoint or cfg.iconX or cfg.iconY) and not cfg.customIconPos then
-        cfg.customIconPos = true
-    end
-    
+
     self.IconHighlight = self:CreateTexture(nil, "OVERLAY")
     if cfg.iconAtlas then self.IconHighlight:SetAtlas(cfg.iconAtlas) else self.IconHighlight:SetTexture(cfg.iconPath) end
     self.IconHighlight:SetAllPoints(self.Icon)
@@ -208,107 +220,59 @@ function RefineMicroButtonMixin:OnLoadCommon(cfg)
     self.IconHighlight:SetAlpha(0.35)
     self.IconHighlight:Hide()
 
-    if cfg.text then
-        self.Text = GetOverlayFrame(self):CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        self.Text:SetFont(RefineUI.Media.Fonts.Default, cfg.text.size or 12, cfg.text.flags or "OUTLINE")
-        self.Text:SetPoint(cfg.text.point or "BOTTOM", cfg.text.x or 0, cfg.text.y or 2)
-    end
+    self.Text = GetOverlayFrame(self):CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    self.Text:SetFont(RefineUI.Media.Fonts.Default, cfg.text.size, "OUTLINE")
+    self.Text:SetPoint("BOTTOM", cfg.text.x, 2)
+
     self:UpdateMicroButton()
+    cfg.update(self)
 end
 
 function RefineMicroButtonMixin:SetNormal()
     self.Background:Show(); self.PushedBackground:Hide()
-    if self.Icon then self.Icon:SetVertexColor(1, 1, 1) end
-    if not (self.cfg and self.cfg.customIconPos) then
-        if self.Icon then self.Icon:ClearAllPoints(); self.Icon:SetPoint("CENTER", self, "CENTER", 0, 2) end
+    self.Icon:SetVertexColor(self.iconR, self.iconG, self.iconB)
+    if not self.cfg.customIconPos then
+        self.Icon:ClearAllPoints(); self.Icon:SetPoint("CENTER", self, "CENTER", 0, 2)
     end
     self:SetButtonState("NORMAL", true)
 end
 
 function RefineMicroButtonMixin:SetPushed()
     self.Background:Hide(); self.PushedBackground:Show()
-    if self.Icon then self.Icon:SetVertexColor(0.5, 0.5, 0.5) end
-    if not (self.cfg and self.cfg.customIconPos) then
-        if self.Icon then self.Icon:ClearAllPoints(); self.Icon:SetPoint("CENTER", self, "CENTER", 1, 1) end
+    self.Icon:SetVertexColor(0.5, 0.5, 0.5)
+    if not self.cfg.customIconPos then
+        self.Icon:ClearAllPoints(); self.Icon:SetPoint("CENTER", self, "CENTER", 1, 1)
     end
     self:SetButtonState("PUSHED", true)
 end
 
 function RefineMicroButtonMixin:EnableButton()
     self:SetAlpha(1)
-    self:Enable(); if self.Icon then self.Icon:SetDesaturated(false); self.Icon:SetAlpha(1) end
-    if self.Text then self.Text:SetAlpha(1) end
+    self:Enable(); self.Icon:SetDesaturated(false); self.Icon:SetAlpha(1)
+    self.Text:SetAlpha(1)
 end
 
 function RefineMicroButtonMixin:DisableButton()
     self:SetAlpha(0.5)
-    self:Disable(); if self.Icon then self.Icon:SetDesaturated(true); self.Icon:SetAlpha(0.5) end
-    if self.Text then self.Text:SetAlpha(0.5) end
+    self:Disable(); self.Icon:SetDesaturated(true); self.Icon:SetAlpha(0.5)
+    self.Text:SetAlpha(0.5)
 end
 
+-- Visual state only; data text refreshes from each button's own events.
 function RefineMicroButtonMixin:UpdateMicroButton()
     local active = self.cfg.isActive and self.cfg.isActive(self)
     if active then self:SetPushed() else self:SetNormal() end
     if MicroButtons_ShouldDisable() then self:DisableButton() else self:EnableButton() end
-    if self.cfg.update then self.cfg.update(self) end
 end
 
 local function CreateRefineMicroButton(name, cfg)
-    local parent
-    if _G.CharacterMicroButton then
-        parent = _G.CharacterMicroButton:GetParent()
-    end
-    if not parent then
-        parent = _G.MicroMenuContainer or _G.UIParent
-    end
-    local template
-    if cfg and cfg.template then
-        template = cfg.template
-    else
-        if cfg and cfg.secure then
-            template = "MainMenuBarMicroButton, SecureActionButtonTemplate"
-        else
-            template = "MainMenuBarMicroButton"
-        end
-    end
-    local b = CreateFrame("Button", name, parent, template)
+    local parent = _G.MicroMenu
+    local b = CreateFrame("Button", name, parent, "MainMenuBarMicroButton")
     Mixin(b, RefineMicroButtonMixin); b:OnLoadCommon(cfg)
-    if parent then b:SetFrameLevel(parent:GetFrameLevel() + 1) end
+    b:SetFrameLevel(parent:GetFrameLevel() + 1)
     b:EnableMouse(true); b:Show()
-    if cfg.commandName then b.commandName = cfg.commandName end
     ExtraMicroButtons[#ExtraMicroButtons + 1] = b
     return b
-end
-
-local function EnsureMicroButtonsTable()
-    local tbl = rawget(_G, "MICRO_BUTTONS")
-    if type(tbl) ~= "table" then
-        tbl = {
-            "CharacterMicroButton",
-            _G.ProfessionMicroButton and "ProfessionMicroButton" or (_G.SpellbookMicroButton and "SpellbookMicroButton" or "ProfessionMicroButton"),
-            _G.PlayerSpellsMicroButton and "PlayerSpellsMicroButton" or (_G.TalentMicroButton and "TalentMicroButton" or "PlayerSpellsMicroButton"),
-            "AchievementMicroButton",
-            "QuestLogMicroButton",
-            "HousingMicroButton",
-            "GuildMicroButton",
-            "LFDMicroButton",
-            "CollectionsMicroButton",
-            "EJMicroButton",
-            "StoreMicroButton",
-            "MainMenuMicroButton",
-            "HelpMicroButton",
-        }
-        _G.MICRO_BUTTONS = tbl
-    end
-    return tbl
-end
-
-local function InsertMicroButton(name, afterName)
-    local buttonsTbl = EnsureMicroButtonsTable()
-    if type(buttonsTbl) ~= 'table' then return end
-    if indexOf(buttonsTbl, name) then return end
-    local idx = indexOf(buttonsTbl, afterName) or #buttonsTbl
-    table.insert(buttonsTbl, idx + 1, name)
 end
 
 -- =========================
@@ -331,187 +295,180 @@ local function MicroButton_OnLeave(self)
     end
 end
 
-local function SkinMicroButton(button)
-    if not button then return end
-    if button.IsSkinned then return end
-
-    -- RefineUI.AddAPI(button) -- REMOVED
-    
-    RefineUI.CreateBorder(button, 0, 0, 12)
-
-    button:HookScript("OnEnter", MicroButton_OnEnter)
-    button:HookScript("OnLeave", MicroButton_OnLeave)
-
-    button.IsSkinned = true
-end
-
 local function SkinMicroButtons()
-    local buttonsTbl = EnsureMicroButtonsTable()
-    if type(buttonsTbl) ~= "table" then return end
-
-    for _, name in ipairs(buttonsTbl) do
+    for _, name in ipairs(MICRO_BUTTON_ORDER) do
         local button = _G[name]
         if button then
-            SkinMicroButton(button)
+            RefineUI.CreateBorder(button, 0, 0, 12)
+            button:HookScript("OnEnter", MicroButton_OnEnter)
+            button:HookScript("OnLeave", MicroButton_OnLeave)
         end
     end
-    -- Also skin our extra buttons if not already
-    for _, button in ipairs(ExtraMicroButtons) do
-        SkinMicroButton(button)
+end
+
+-- =========================
+-- Layout
+-- =========================
+-- Runs after Blizzard's grid layout (also used by the vehicle/pet battle override bar).
+-- Sizing MicroMenu lets Blizzard size MicroMenuContainer, the Edit Mode selection,
+-- and the queue status anchor with its own scale math.
+local function MicroMenu_OnLayout(self)
+    local count = 0
+    for _, name in ipairs(MICRO_BUTTON_ORDER) do
+        local b = _G[name]
+        if b and b:IsShown() then
+            count = count + 1
+            layoutButtons[count] = b
+        end
     end
+    if count == 0 then return end
+
+    -- isStacked is only reset by the next override, so honor it only while overridden.
+    local stacked = self.isStacked and self:GetParent() ~= _G.MicroMenuContainer
+    local perRow = stacked and ceil(count / 2) or count
+    local width, rowWidth, height, rowStart, prev = 0, 0, 0, nil, nil
+    for i = 1, count do
+        local b = layoutButtons[i]
+        layoutButtons[i] = nil
+        b:ClearAllPoints()
+        if not prev then
+            b:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0)
+            rowStart, height = b, b:GetHeight()
+        elseif (i - 1) % perRow == 0 then
+            b:SetPoint("TOPLEFT", rowStart, "BOTTOMLEFT", 0, BUTTON_SPACING)
+            rowStart, rowWidth = b, 0
+            height = height + BUTTON_SPACING + b:GetHeight()
+        else
+            b:SetPoint("TOPLEFT", prev, "TOPRIGHT", BUTTON_SPACING, 0)
+        end
+        rowWidth = rowWidth + b:GetWidth() + (rowWidth > 0 and BUTTON_SPACING or 0)
+        if rowWidth > width then width = rowWidth end
+        prev = b
+    end
+
+    self:SetSize(width, height)
 end
 
 -- =========================
 -- Friends
 -- =========================
-local function GetBNetOnlineCount()
-    local numOnline, total = 0, BNGetNumFriends() or 0
-    for i = 1, total do
-        local acc = C_BattleNet.GetFriendAccountInfo(i)
-        if acc and acc.gameAccountInfo and acc.gameAccountInfo.isOnline then numOnline = numOnline + 1 end
-    end
-    return numOnline, total
-end
-
-local function GetWoWOnlineCount()
-    return C_FriendList.GetNumOnlineFriends() or 0, C_FriendList.GetNumFriends() or 0
-end
-
+-- Battle.net rows follow the friends list: blue account name, class-colored character
+-- when in this game, zone or rich presence on the right.
 local function Friends_OnEnter(self)
-    _G.GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    local cmd = (self and self.commandName) or "TOGGLESOCIAL"
-    if type(_G.MicroButtonTooltipText) == "function" then
-        _G.GameTooltip:SetText(_G.MicroButtonTooltipText(_G.SOCIAL_BUTTON, cmd), 1, 1, 1)
-    else
-        _G.GameTooltip:SetText(_G.SOCIAL_BUTTON, 1, 1, 1)
-    end
+    SetTooltipTitle(self, _G.SOCIAL_BUTTON)
 
-    local numBNetOnline, totalBNet = GetBNetOnlineCount()
-    local numWoWOnline = (GetWoWOnlineCount())
-    local totalOnline = numBNetOnline + numWoWOnline
-
-    _G.GameTooltip:AddLine(" ")
-    _G.GameTooltip:AddDoubleLine("Online:", tostring(totalOnline), 1,1,1, 1,1,1)
+    local numBNet, numBNetOnline = BNGetNumFriends()
+    numBNetOnline = numBNetOnline or 0
+    local numWoWOnline = C_FriendList.GetNumOnlineFriends() or 0
 
     if numBNetOnline > 0 then
-        AddSectionHeader("Battle.net Friends", 0.1, 0.6, 0.8)
+        AddTooltipHeader("Battle.net", numBNetOnline)
         local listed = 0
-        for i = 1, totalBNet do
+        for i = 1, numBNet or 0 do
             local acc = C_BattleNet.GetFriendAccountInfo(i)
             local game = acc and acc.gameAccountInfo
             if game and game.isOnline then
-                local isAFK = ((acc and acc.isAFK) or (game and game.isGameAFK)) and true or false
-                local isDND = ((acc and acc.isDND) or (game and game.isGameBusy)) and true or false
-                local statusIcon = FRIENDS_TEX_ON
-                if isAFK then statusIcon = FRIENDS_TEX_AFK elseif isDND then statusIcon = FRIENDS_TEX_DND end
-                local left = string.format("|T%s:16|t %s", statusIcon, (acc and acc.accountName) or "Battlenet")
-                local charName = (game and game.characterName) or ""
-                local zone = (game and game.areaName) or ""
-                local right
-                if charName ~= "" and zone ~= "" then right = string.format("%s - %s", charName, zone)
-                elseif charName ~= "" then right = charName else right = zone end
-                _G.GameTooltip:AddDoubleLine(left, right, 1,1,1, 1,1,1)
+                if listed == MAX_FRIENDS_TOOLTIP_LIST then
+                    AddTooltipNote(format("+%d more", numBNetOnline - listed))
+                    break
+                end
+                local left = StatusIcon(acc.isAFK or game.isGameAFK, acc.isDND or game.isGameBusy) .. (acc.accountName or "")
+                local right = game.richPresence or ""
+                if game.clientProgram == BNET_CLIENT_WOW and game.wowProjectID == WOW_PROJECT_ID and game.characterName then
+                    left = left .. " " .. ColorText(GetClassColorByName(game.className), game.characterName)
+                    right = game.areaName or right
+                end
+                AddTooltipRow(left, right, _G.FRIENDS_BNET_NAME_COLOR)
                 listed = listed + 1
-                if listed >= MAX_FRIENDS_TOOLTIP_LIST then break end
             end
         end
     end
 
     if numWoWOnline > 0 then
-        AddSectionHeader("World of Warcraft Friends", 0.1, 0.6, 0.8)
-        local _, total = GetWoWOnlineCount()
+        AddTooltipHeader("World of Warcraft", numWoWOnline)
         local listed = 0
-        for i = 1, total do
+        for i = 1, C_FriendList.GetNumFriends() or 0 do
             local info = C_FriendList.GetFriendInfoByIndex(i)
             if info and info.connected then
-                local isAFK = info and info.afk
-                local isDND = info and info.dnd
-                local statusIcon = FRIENDS_TEX_ON
-                if isAFK then statusIcon = FRIENDS_TEX_AFK elseif isDND then statusIcon = FRIENDS_TEX_DND end
-                local classColor = RAID_CLASS_COLORS[info.className] or NORMAL_COLOR
-                local left = string.format("|T%s:16|t %s, %s: %s %s", statusIcon, info.name or "Friend", _G.LEVEL, tostring(info.level or 0), info.className or "")
-                local right = info.area or ""
-                _G.GameTooltip:AddDoubleLine(left, right, classColor.r, classColor.g, classColor.b, 1,1,1)
+                if listed == MAX_FRIENDS_TOOLTIP_LIST then
+                    AddTooltipNote(format("+%d more", numWoWOnline - listed))
+                    break
+                end
+                AddTooltipRow(StatusIcon(info.afk, info.dnd) .. info.name, info.area or "", GetClassColorByName(info.className))
                 listed = listed + 1
-                if listed >= MAX_FRIENDS_TOOLTIP_LIST then break end
             end
         end
     end
 
-    _G.GameTooltip:AddLine(" ")
-    _G.GameTooltip:AddLine("Left-Click: Open Friends List", 0.7, 0.7, 0.7)
+    if numBNetOnline + numWoWOnline == 0 then
+        GameTooltip_AddBlankLineToTooltip(_G.GameTooltip)
+        AddTooltipNote("No friends online")
+    end
     _G.GameTooltip:Show()
 end
 
 local function Friends_Update(self)
-    local bnetOnline = select(1, GetBNetOnlineCount())
-    local wowOnline = select(1, GetWoWOnlineCount())
-    local total = (bnetOnline or 0) + (wowOnline or 0)
-    if self.Text then self.Text:SetText(total > 0 and total or "") end
+    local _, bnetOnline = BNGetNumFriends()
+    local total = (bnetOnline or 0) + (C_FriendList.GetNumOnlineFriends() or 0)
+    self.Text:SetText(total > 0 and total or "")
 end
 
 -- =========================
 -- Great Vault
 -- =========================
+-- Rows follow the vault's own order (raid, dungeons, world).
+local GV_TYPES = {
+    { type = Enum.WeeklyRewardChestThresholdType.Raid, label = "Raid" },
+    { type = Enum.WeeklyRewardChestThresholdType.Activities, label = "Dungeons" },
+    { type = Enum.WeeklyRewardChestThresholdType.World, label = "World" },
+    { type = Enum.WeeklyRewardChestThresholdType.RankedPvP, label = "Rated PvP" },
+}
+
+-- One row per track: unlocked slots on the right, progress toward the next slot in gray.
 local function GV_OnEnter(self)
-    _G.GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
-    _G.GameTooltip:SetText(_G.GREAT_VAULT_REWARDS, 1, 1, 1);
+    SetTooltipTitle(self, _G.GREAT_VAULT_REWARDS)
+    GameTooltip_AddBlankLineToTooltip(_G.GameTooltip)
+
     local activities = C_WeeklyRewards.GetActivities() or {}
-    local types = {
-        [Enum.WeeklyRewardChestThresholdType.Activities] = "Mythic+",
-        [Enum.WeeklyRewardChestThresholdType.Raid] = "Raid",
-        [Enum.WeeklyRewardChestThresholdType.RankedPvP] = "Rated PvP",
-        [Enum.WeeklyRewardChestThresholdType.World] = "World",
-    }
-    
-    local groupedActivities = {}
-    for _, a in ipairs(activities) do
-        local typeName = types[a.type] or "Unknown"
-        if not groupedActivities[typeName] then
-            groupedActivities[typeName] = {}
-        end
-        table.insert(groupedActivities[typeName], a)
-    end
-    
-    local typeOrder = {"Mythic+", "Raid", "Rated PvP", "World"}
-    for _, typeName in ipairs(typeOrder) do
-        local typeActivities = groupedActivities[typeName]
-        if typeActivities then
-            AddSectionHeader(typeName, 0.8, 0.8, 1)
-            table.sort(typeActivities, function(a, b) return (a.index or 0) < (b.index or 0) end)
-            for _, a in ipairs(typeActivities) do
-                local slotText = "Slot " .. (a.index or 1)
-                local statusText, r, g, b
+    local shown = false
+    for _, track in ipairs(GV_TYPES) do
+        local unlocked, total, progress, nextThreshold = 0, 0, 0, nil
+        for _, a in ipairs(activities) do
+            if a.type == track.type then
+                total = total + 1
+                progress = a.progress
                 if a.progress >= a.threshold then
-                    statusText = "Unlocked"
-                    r, g, b = 0.2, 1, 0.2
-                else
-                    statusText = string.format("%d/%d", a.progress or 0, a.threshold or 0)
-                    r, g, b = 1, 1, 1
+                    unlocked = unlocked + 1
+                elseif not nextThreshold or a.threshold < nextThreshold then
+                    nextThreshold = a.threshold
                 end
-                _G.GameTooltip:AddDoubleLine(slotText, statusText, 0.9, 0.9, 0.9, r, g, b)
             end
         end
+        if total > 0 then
+            local slots = unlocked .. "/" .. total
+            if nextThreshold then
+                AddTooltipRow(track.label .. "  " .. ColorText(SUBTEXT_COLOR, format("%d/%d", progress, nextThreshold)), slots, nil, TEXT_COLOR)
+            else
+                AddTooltipRow(track.label, slots, nil, _G.GREEN_FONT_COLOR)
+            end
+            shown = true
+        end
     end
-    _G.GameTooltip:Show();
+
+    if not shown then
+        AddTooltipNote("No vault progress this week")
+    end
+    _G.GameTooltip:Show()
 end
 
-local function GV_GetUnlockedRewards()
-    local activities = C_WeeklyRewards.GetActivities() or {}
+local function GV_Update(self)
     local unlockedCount = 0
-    for _, activity in ipairs(activities) do
+    for _, activity in ipairs(C_WeeklyRewards.GetActivities() or {}) do
         if activity.progress >= activity.threshold then
             unlockedCount = unlockedCount + 1
         end
     end
-    return unlockedCount
-end
-
-local function GV_Update(self)
-    local unlockedCount = GV_GetUnlockedRewards()
-    if self.Text then
-        self.Text:SetText(unlockedCount .. "/" .. GV_TOTAL_SLOTS)
-    end
+    self.Text:SetText(unlockedCount .. "/" .. GV_TOTAL_SLOTS)
 end
 
 -- =========================
@@ -529,7 +486,7 @@ end
 
 local function Durability_Update(self)
     local overall, lowest = Durability_Overall()
-    if self.Text then self.Text:SetText(string.format("%.0f", overall)) end
+    self.Text:SetText(string.format("%.0f", overall))
     local r,g,b = 0.6,0.6,0.6
     if lowest < 20 then
         r,g,b = 1,0,0
@@ -538,68 +495,56 @@ local function Durability_Update(self)
     elseif lowest <= 100 then
         r,g,b = 0,1,0
     end
-    self.Icon:SetVertexColor(r,g,b); if self.Text then self.Text:SetTextColor(r,g,b) end
+    self.iconR, self.iconG, self.iconB = r, g, b
+    self.Icon:SetVertexColor(r,g,b); self.Text:SetTextColor(r,g,b)
 end
 
-local function Durability_OnEnter(self)
-    _G.GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    _G.GameTooltip:ClearLines()
-    local cmd = (self and self.commandName) or "TOGGLECHARACTER0"
-    if type(_G.MicroButtonTooltipText) == "function" then
-        _G.GameTooltip:SetText(_G.MicroButtonTooltipText("Equipment Durability", cmd), 1, 1, 1)
+local function DurabilityGradientColor(p)
+    if p >= 0.5 then
+        local t = (p - 0.5) / 0.5
+        return 1 - t, 1, 0
     else
-        _G.GameTooltip:SetText("Equipment Durability", 1, 1, 1)
+        local t = p / 0.5
+        return 1, t, 0
     end
+end
 
-    local function gradientColor(p)
-        if p >= 0.5 then
-            local t = (p - 0.5) / 0.5
-            return 1 - t, 1, 0
-        else
-            local t = p / 0.5
-            return 1, t, 0
-        end
-    end
+local function SortByPct(a, b)
+    return a.pct < b.pct
+end
 
-    local overall = select(1, Durability_Overall()) or 0
-    local orr, org, orb = gradientColor((overall or 0) / 100)
-    local overallLeft = string.format("%3.0f%%  |TInterface\\Minimap\\Tracking\\Repair:16:16:0:0:64:64:8:56:8:56|t Overall", overall)
-    _G.GameTooltip:AddDoubleLine(overallLeft, " ", orr, org, orb, 1, 1, 1)
-    _G.GameTooltip:AddLine(" ")
+local function AddDurabilityRow(left, pct)
+    local r, g, b = DurabilityGradientColor(pct)
+    _G.GameTooltip:AddDoubleLine(left, format("%.0f%%", pct * 100), TEXT_COLOR.r, TEXT_COLOR.g, TEXT_COLOR.b, r, g, b)
+end
+
+-- Overall first, then damaged items (lowest first) with their quality-colored names.
+local function Durability_OnEnter(self)
+    SetTooltipTitle(self, "Durability")
+    GameTooltip_AddBlankLineToTooltip(_G.GameTooltip)
+    AddDurabilityRow("Overall", Durability_Overall() / 100)
 
     local items = {}
     for slot = 1, 19 do
         if slot ~= 4 and slot ~= 5 then
             local cur, max = GetInventoryItemDurability(slot)
-            if cur and max and max > 0 then
-                local p = cur / max
-                if p < 1 then
-                    local tex = GetInventoryItemTexture("player", slot) or 134400
-                    local link = GetInventoryItemLink("player", slot)
-                    local name, quality
-                    if link then
-                        local iName, _, iQuality = GetItemInfo(link)
-                        name, quality = iName or name, iQuality
-                    end
-                    items[#items + 1] = { pct = p, texture = tex, name = name, quality = quality }
-                end
+            if cur and max and max > 0 and cur < max then
+                local link = GetInventoryItemLink("player", slot)
+                items[#items + 1] = {
+                    pct = cur / max,
+                    texture = GetInventoryItemTexture("player", slot) or 134400,
+                    name = link and link:gsub("[%[%]]", "") or "",
+                }
             end
         end
     end
-    table.sort(items, function(a, b) return (a.pct or 0) < (b.pct or 0) end)
 
-    for _, it in ipairs(items) do
-        local pr, pg, pb = gradientColor(it.pct or 0)
-        local percent = string.format("%3.0f%%", (it.pct or 0) * 100)
-        local left
-        if it.quality and GetItemQualityColor then
-            local _, _, _, hex = GetItemQualityColor(it.quality)
-            local colored = (hex and ("|c"..hex) or "|cffffffff") .. (it.name or "") .. "|r"
-            left = string.format("%s  |T%s:16:16:0:0:64:64:4:60:4:60|t %s", percent, tostring(it.texture), colored)
-        else
-            left = string.format("%s  |T%s:16:16:0:0:64:64:4:60:4:60|t %s", percent, tostring(it.texture), it.name or "")
+    if #items > 0 then
+        table.sort(items, SortByPct)
+        GameTooltip_AddBlankLineToTooltip(_G.GameTooltip)
+        for _, it in ipairs(items) do
+            AddDurabilityRow(format("|T%s:14:14:0:0:64:64:4:60:4:60|t %s", it.texture, it.name), it.pct)
         end
-        _G.GameTooltip:AddDoubleLine(left, " ", pr, pg, pb, 1, 1, 1)
     end
     _G.GameTooltip:Show()
 end
@@ -622,51 +567,21 @@ local function Bags_CountFree()
 end
 
 local function Bags_OnEnter(self)
-    _G.GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    _G.GameTooltip:ClearLines()
-    local title = BAGSLOT or "Bags"
-    local cmd = (self and self.commandName) or "TOGGLEBACKPACK"
-    if type(_G.MicroButtonTooltipText) == "function" then
-        _G.GameTooltip:SetText(_G.MicroButtonTooltipText(title, cmd), 1, 1, 1)
-    else
-        _G.GameTooltip:SetText(title, 1, 1, 1)
-    end
-
-    local totalSlots = Bags_TotalSlots()
-    local totalFree = Bags_CountFree()
-    
-    AddSectionHeader("Capacity", 0.8, 0.8, 1)
-    _G.GameTooltip:AddDoubleLine("Total Free", totalFree, 1, 1, 1, 0, 1, 0)
-    _G.GameTooltip:AddDoubleLine("Total Slots", totalSlots, 1, 1, 1, 1, 1, 1)
-    
-    _G.GameTooltip:AddLine(" ")
-    _G.GameTooltip:AddLine("Left-Click: Toggle Bags", 0.7, 0.7, 0.7)
+    SetTooltipTitle(self, "Bags")
+    GameTooltip_AddBlankLineToTooltip(_G.GameTooltip)
+    local free = Bags_CountFree()
+    AddTooltipRow("Free Slots", free .. "/" .. Bags_TotalSlots(), nil, free > 0 and TEXT_COLOR or _G.RED_FONT_COLOR)
     _G.GameTooltip:Show()
 end
 
 local function Bags_Update(self)
-	-- Throttle updates to once per 0.5s since bag count doesn't need instant updates
-    if RefineUI.Throttle then
-		RefineUI:Throttle("MicroMenu:BagsUpdate", 0.5, function()
-			local free = Bags_CountFree()
-			if self.Text then
-				if free > 0 then
-					self.Text:SetText(tostring(free))
-					self.Text:SetTextColor(1, 1, 1)
-				else
-					self.Text:SetText("0")
-					self.Text:SetTextColor(1, 0, 0)
-				end
-			end
-		end)
-	else
-		-- Fallback if no throttle
-		local free = Bags_CountFree()
-		if self.Text then
-			self.Text:SetText(tostring(free > 0 and free or 0))
-			self.Text:SetTextColor(free > 0 and 1 or 1, free > 0 and 1 or 0, free > 0 and 1 or 0)
-		end
-	end
+    local free = Bags_CountFree()
+    self.Text:SetText(free)
+    if free > 0 then
+        self.Text:SetTextColor(1, 1, 1)
+    else
+        self.Text:SetTextColor(1, 0, 0)
+    end
 end
 
 -- =========================
@@ -674,55 +589,17 @@ end
 -- =========================
 local characterItemLevelText
 
-local function GetPlayerItemLevel()
-    local totalItemLevel = 0
-    local itemCount = 0
-    local slots = {1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
-    
-    for _, slot in ipairs(slots) do
-        local itemLink = GetInventoryItemLink("player", slot)
-        if itemLink then
-            local itemLevel = C_Item.GetCurrentItemLevel(ItemLocation:CreateFromEquipmentSlot(slot))
-            if itemLevel and itemLevel > 0 then
-                totalItemLevel = totalItemLevel + itemLevel
-                itemCount = itemCount + 1
-            end
-        end
-    end
-    
-    if itemCount > 0 then return math.floor(totalItemLevel / itemCount) end
-    return 0
-end
-
+-- Mirrors the character sheet (PaperDollFrame_SetItemLevel).
 local function UpdateCharacterItemLevel()
-    if _G.CharacterMicroButton and not characterItemLevelText then
-        characterItemLevelText = GetOverlayFrame(_G.CharacterMicroButton):CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        characterItemLevelText:SetFont(RefineUI.Media.Fonts.Default, 11, "OUTLINE")
-        characterItemLevelText:SetPoint("BOTTOM", _G.CharacterMicroButton, "BOTTOM", 2, 2)
-        characterItemLevelText:SetJustifyH("CENTER")
-        characterItemLevelText:SetJustifyV("BOTTOM")
-    end
-    
-    if characterItemLevelText then
-        local itemLevel = GetPlayerItemLevel()
-        if itemLevel > 0 then
-            characterItemLevelText:SetText(itemLevel)
-            characterItemLevelText:SetTextColor(1, 1, 1)
-        else
-            characterItemLevelText:SetText("")
-        end
-    end
+    local _, avgItemLevelEquipped = GetAverageItemLevel()
+    local itemLevel = floor(math.max(C_PaperDollInfo.GetMinItemLevel() or 0, avgItemLevelEquipped or 0))
+    characterItemLevelText:SetText(itemLevel > 0 and itemLevel or "")
 end
 
 -- =========================
 -- Latency
 -- =========================
 local latencyText
-
-local function GetLatency()
-    local _, _, homeMS, worldMS = GetNetStats()
-    return worldMS or homeMS or 0
-end
 
 local function LatencyColor(ms)
     if ms <= 60 then return 0, 1, 0 end
@@ -731,141 +608,115 @@ local function LatencyColor(ms)
 end
 
 local function UpdateLatency()
-    if _G.MainMenuMicroButton and not latencyText then
-        latencyText = GetOverlayFrame(_G.MainMenuMicroButton):CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        latencyText:SetFont(RefineUI.Media.Fonts.Default, 11, "OUTLINE")
-        latencyText:SetPoint("BOTTOM", _G.MainMenuMicroButton, "BOTTOM", 2, 2)
-        latencyText:SetJustifyH("CENTER")
-    end
-    if latencyText then
-        local ms = GetLatency()
-        if ms and ms > 0 then
-            local r, g, bcol = LatencyColor(ms)
-            latencyText:SetText(tostring(ms))
-            latencyText:SetTextColor(r, g, bcol)
-            latencyText:Show()
-        else
-            latencyText:SetText("")
-        end
+    local _, _, homeMS, worldMS = GetNetStats()
+    local ms = worldMS or homeMS or 0
+    if ms > 0 then
+        latencyText:SetText(ms)
+        latencyText:SetTextColor(LatencyColor(ms))
+    else
+        latencyText:SetText("")
     end
 end
 
 -- =========================
 -- Extras
 -- =========================
--- Hide Default Buttons (Store, Backpack)
+-- Hide default backpack/bag bar; Edit Mode can show them again.
 local function SuppressDefaultButtons()
-    local store = rawget(_G, "StoreMicroButton") or rawget(_G, "ShopMicroButton")
-    if store then store:Hide(); store:SetShown(false) end
-
     local backpack = rawget(_G, "MainMenuBarBackpackButton")
-    if backpack then backpack:Hide(); backpack:SetShown(false) end
+    if backpack then backpack:Hide() end
 
     local bagsBar = rawget(_G, "BagsBar")
-    if bagsBar then bagsBar:Hide(); bagsBar:SetShown(false) end
-
-    local container = rawget(_G, "MicroButtonAndBagsBar")
-    if container then
-        -- RefineUI.AddAPI(container) -- REMOVED
-        RefineUI.StripTextures(container)
-    end
+    if bagsBar then bagsBar:Hide() end
 end
 
--- =========================
--- Consolidated UpdateMicroButtons Hook
--- =========================
+-- UpdateMicroButtons runs on every panel toggle; keep this to visual state only.
 local function OnUpdateMicroButtons()
-    UpdateGuildOnlineCount()
-    UpdateAllExtraMicroButtons()
-    SkinMicroButtons()
-    UpdateCharacterItemLevel()
-    UpdateLatency()
+    for i = 1, #ExtraMicroButtons do
+        ExtraMicroButtons[i]:UpdateMicroButton()
+    end
     SuppressDefaultButtons()
+end
+
+local function CreateOverlayText(button, size)
+    local text = GetOverlayFrame(button):CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    text:SetFont(RefineUI.Media.Fonts.Default, size, "OUTLINE")
+    text:SetTextColor(1, 1, 1)
+    text:SetPoint("BOTTOM", button, "BOTTOM", 2, 2)
+    text:SetJustifyH("CENTER")
+    return text
 end
 
 ----------------------------------------------------------------------------------------
 -- Initialize
 ----------------------------------------------------------------------------------------
 function MicroMenu:OnEnable()
-    -- Guild Roster Events
-    -- Guild Roster Events
+    -- Blizzard re-shows the store button on every UpdateMicroButtons; reparenting it
+    -- keeps it hidden without Show/Hide forcing MicroMenuContainer relayouts.
+    RefineUI.Kill(_G.StoreMicroButton)
+
+    -- Guild
+    guildCountText = CreateOverlayText(_G.GuildMicroButton, 12)
+    guildCountText:SetPoint("BOTTOM", _G.GuildMicroButton, "BOTTOM", 1, 2)
+
     local function UpdateGuildRoster(event)
-        if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
-            SafeRequestGuildRosterUpdate()
+        if event == "PLAYER_ENTERING_WORLD" then
+            RequestGuildRosterUpdate()
         end
-        SafeUpdateGuildOnlineCount()
+        UpdateGuildOnlineCount()
     end
 
-    RefineUI:RegisterEventCallback("PLAYER_LOGIN", UpdateGuildRoster, "MicroMenu_GuildRoster")
     RefineUI:RegisterEventCallback("GUILD_ROSTER_UPDATE", UpdateGuildRoster, "MicroMenu_GuildRoster")
+    RefineUI:RegisterEventCallback("PLAYER_GUILD_UPDATE", UpdateGuildRoster, "MicroMenu_GuildRoster")
     RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", UpdateGuildRoster, "MicroMenu_GuildRoster")
+    C_Timer.NewTicker(300, RequestGuildRosterUpdate)
+    _G.GuildMicroButton:HookScript("OnEnter", GuildMicroButton_OnEnter)
+    RequestGuildRosterUpdate()
+    UpdateGuildOnlineCount()
 
-    RefineUI:RegisterUpdateJob(UPDATE_JOB_KEY.GUILD_ROSTER, 300, function()
-        SafeRequestGuildRosterUpdate()
-    end)
-    
-    -- Guild Tooltip
-    if _G.GuildMicroButton then
-        _G.GuildMicroButton:HookScript("OnEnter", function()
-            if not IsInGuild() then return end
-            local onlineMembers, numOnlineMembers = GetOnlineGuildMembers()
-            AddSectionHeader("Online Guild Members (" .. numOnlineMembers .. ")")
-            local currentRank
-            for i, member in ipairs(onlineMembers) do
-                if i > MAX_GUILD_TOOLTIP_LIST then
-                    _G.GameTooltip:AddLine("... and " .. (numOnlineMembers - MAX_GUILD_TOOLTIP_LIST) .. " more")
-                    break
-                end
-                if currentRank ~= member.rank then
-                    _G.GameTooltip:AddLine(" ")
-                    _G.GameTooltip:AddLine("----" .. member.rank .. "----")
-                    currentRank = member.rank
-                end
-                local classColor = RAID_CLASS_COLORS[member.class] or RAID_CLASS_COLORS["PRIEST"]
-                local statusIcon = (member.status == 1 and "|T"..FRIENDS_TEX_AFK..":14:14:0:0|t")
-                    or (member.status == 2 and "|T"..FRIENDS_TEX_DND..":14:14:0:0|t") or ""
-                _G.GameTooltip:AddDoubleLine(statusIcon .. member.name, "Level " .. member.level, classColor.r, classColor.g, classColor.b, 1, 1, 1)
-            end
-            _G.GameTooltip:Show()
-        end)
-    end
+    -- Character item level
+    characterItemLevelText = CreateOverlayText(_G.CharacterMicroButton, 11)
+    characterItemLevelText:SetJustifyV("BOTTOM")
+    RefineUI:RegisterEventCallback("PLAYER_AVG_ITEM_LEVEL_UPDATE", UpdateCharacterItemLevel, "MicroMenu_ItemLevel")
+    RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", UpdateCharacterItemLevel, "MicroMenu_ItemLevel")
+    UpdateCharacterItemLevel()
+
+    -- Latency
+    latencyText = CreateOverlayText(_G.MainMenuMicroButton, 11)
+    C_Timer.NewTicker(5, UpdateLatency)
+    UpdateLatency()
 
     -- Create Extra Buttons
     CreateRefineMicroButton("RefineFriendsMicroButton", {
-        events = { "PLAYER_ENTERING_WORLD", "UPDATE_BINDINGS", "FRIENDLIST_UPDATE", "BN_FRIEND_ACCOUNT_ONLINE", "BN_FRIEND_ACCOUNT_OFFLINE", "BN_FRIEND_INFO_CHANGED" },
+        events = { "PLAYER_ENTERING_WORLD", "FRIENDLIST_UPDATE", "BN_FRIEND_ACCOUNT_ONLINE", "BN_FRIEND_ACCOUNT_OFFLINE" },
         iconPath = "Interface\\AddOns\\RefineUI\\Media\\Textures\\Social.blp",
         bgAtlasUp = "UI-HUD-MicroMenu-SocialJournal-Up",
         bgAtlasDown = "UI-HUD-MicroMenu-SocialJournal-Down",
-        text = { size = 12, point = "BOTTOM", x = 1, y = 2 },
+        text = { size = 12, x = 1 },
         commandName = "TOGGLESOCIAL",
         onClick = function() if not IsQuickKeybindMode() then ToggleFriendsFrame(1) end end,
         onEnter = Friends_OnEnter,
         update = Friends_Update,
         isActive = function() return FriendsFrame and FriendsFrame:IsShown() end,
     })
-    InsertMicroButton("RefineFriendsMicroButton", "GuildMicroButton")
 
-    local GreatVaultButton = CreateRefineMicroButton("RefineGreatVaultMicroButton", {
+    local greatVaultButton = CreateRefineMicroButton("RefineGreatVaultMicroButton", {
         events = { "PLAYER_ENTERING_WORLD", "WEEKLY_REWARDS_UPDATE" },
         iconAtlas = "GreatVault-32x32",
         iconSize = 28,
-        iconPoint = "CENTER",
-        iconRelativePoint = "CENTER",
         iconX = 1,
         iconY = -1,
         customIconPos = true,
-        text = { size = 11, point = "BOTTOM", x = 2, y = 2 },
+        text = { size = 11, x = 2 },
         bgAtlasUp = "UI-HUD-MicroMenu-GreatVault-Up",
         bgAtlasDown = "UI-HUD-MicroMenu-GreatVault-Down",
-        onClick = function(self)
-            if not self:IsEnabled() then return end
+        onClick = function()
             local frame = rawget(_G, "WeeklyRewardsFrame")
             if frame and frame:IsShown() then
-                if _G.HideUIPanel then _G.HideUIPanel(frame) else frame:Hide() end
+                HideUIPanel(frame)
             else
                 _G.WeeklyRewards_ShowUI()
             end
-            self:UpdateMicroButton()
         end,
         onEnter = GV_OnEnter,
         update = GV_Update,
@@ -874,100 +725,75 @@ function MicroMenu:OnEnable()
             return frame and frame:IsShown()
         end,
     })
-    InsertMicroButton("RefineGreatVaultMicroButton", "AchievementMicroButton")
 
     CreateRefineMicroButton("RefineDurabilityMicroButton", {
-        events = { "PLAYER_ENTERING_WORLD", "UPDATE_INVENTORY_DURABILITY", "PLAYER_EQUIPMENT_CHANGED", "MERCHANT_CLOSED" },
+        events = { "PLAYER_ENTERING_WORLD", "UPDATE_INVENTORY_DURABILITY", "PLAYER_EQUIPMENT_CHANGED" },
         iconPath = "Interface\\AddOns\\RefineUI\\Media\\Textures\\Anvil.blp",
-        text = { size = 11, point = "BOTTOM", x = 2, y = 2 },
+        text = { size = 11, x = 2 },
         commandName = "TOGGLECHARACTER0",
         onClick = function() ToggleCharacter("PaperDollFrame") end,
         onEnter = Durability_OnEnter,
         update = Durability_Update,
     })
-    InsertMicroButton("RefineDurabilityMicroButton", "CharacterMicroButton")
-    
-    CreateRefineMicroButton("RefineBagsMicroButton", {
-        events = { "PLAYER_ENTERING_WORLD", "BAG_UPDATE", "BAG_UPDATE_DELAYED", "BAG_SLOT_FLAGS_UPDATED" },
+
+    -- WeeklyRewardsFrame is load-on-demand and doesn't call UpdateMicroButtons.
+    local function WatchWeeklyRewardsFrame()
+        local frame = rawget(_G, "WeeklyRewardsFrame")
+        if not frame then return end
+        local function UpdateGreatVaultButton() greatVaultButton:UpdateMicroButton() end
+        RefineUI:HookScriptOnce("MicroMenu:WeeklyRewardsFrame:OnShow", frame, "OnShow", UpdateGreatVaultButton)
+        RefineUI:HookScriptOnce("MicroMenu:WeeklyRewardsFrame:OnHide", frame, "OnHide", UpdateGreatVaultButton)
+    end
+    WatchWeeklyRewardsFrame()
+    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, name)
+        if name == "Blizzard_WeeklyRewards" then WatchWeeklyRewardsFrame() end
+    end, "MicroMenu:ADDON_LOADED")
+
+    -- The RefineUI Bags module replaces Blizzard's bag frames and rebinds the bag keys
+    -- to its own window, so follow that window when the module is on.
+    local bagsModule = RefineUI:IsModuleStartupEnabled("Bags") and RefineUI:GetModule("Bags")
+    local bagWindow = bagsModule and bagsModule.Frame
+
+    -- Toggle on the same state the button shows; ToggleAllBags reopens when any bag
+    -- it counts (e.g. the reagent bag) is closed.
+    local bagsButton = CreateRefineMicroButton("RefineBagsMicroButton", {
+        events = { "PLAYER_ENTERING_WORLD", "BAG_UPDATE_DELAYED" },
         iconPath = "Interface\\AddOns\\RefineUI\\Media\\Textures\\Backpack.blp",
-        text = { size = 11, point = "BOTTOM", x = 2, y = 2 },
-        commandName = "TOGGLEBACKPACK",
+        text = { size = 11, x = 2 },
+        commandName = "OPENALLBAGS",
         onClick = function()
-            if not IsQuickKeybindMode() then
-                if ToggleAllBags then ToggleAllBags() elseif ToggleBackpack then ToggleBackpack() end
+            if IsQuickKeybindMode() then return end
+            if bagWindow then
+                bagsModule.ToggleBags()
+            elseif IsAnyBagOpen() then
+                CloseAllBags()
+            else
+                OpenAllBags()
             end
         end,
         onEnter = Bags_OnEnter,
         update = Bags_Update,
-        isActive = function()
-            local f = rawget(_G, "ContainerFrameCombinedBags")
-            if f and f.IsShown then return f:IsShown() end
-            return false
-        end,
+        isActive = bagWindow and function() return bagWindow:IsShown() end or IsAnyBagOpen,
     })
-    InsertMicroButton("RefineBagsMicroButton", "RefineDurabilityMicroButton")
-
-    -- Layout Hook
-    if _G.MicroMenuContainer then
-        local scale = RefineUI.Config.MicroMenu and RefineUI.Config.MicroMenu.Scale or 1
-        _G.MicroMenuContainer:SetScale(scale)
+    local function UpdateBagsButton() bagsButton:UpdateMicroButton() end
+    if bagWindow then
+        RefineUI:HookScriptOnce("MicroMenu:RefineUI_Bags:OnShow", bagWindow, "OnShow", UpdateBagsButton)
+        RefineUI:HookScriptOnce("MicroMenu:RefineUI_Bags:OnHide", bagWindow, "OnHide", UpdateBagsButton)
+    else
+        -- Every Blizzard bag frame (combined or individual) fires these from OnShow/OnHide.
+        _G.EventRegistry:RegisterCallback("ContainerFrame.OpenBag", UpdateBagsButton, bagsButton)
+        _G.EventRegistry:RegisterCallback("ContainerFrame.CloseBag", UpdateBagsButton, bagsButton)
     end
 
-    if _G.MicroMenuContainer and _G.MicroMenuContainer.Layout then
-        RefineUI:HookOnce("MicroMenu:MicroMenuContainer:LayoutButtons", _G.MicroMenuContainer, "Layout", function(self)
-            local buttonsTbl = EnsureMicroButtonsTable()
-            if type(buttonsTbl) ~= "table" then return end
+    SkinMicroButtons()
 
-            local spacing, width, prev = -2, 0, nil
-            for _, btnName in ipairs(buttonsTbl) do
-                local b = _G[btnName]
-                if b and b:IsShown() then
-                    b:ClearAllPoints()
-                    -- Fix: Ensure we don't anchor to ourselves or create circular dependency
-                    if prev and prev ~= b then 
-                        b:SetPoint("TOPLEFT", prev, "TOPRIGHT", spacing, 0) 
-                    else 
-                        b:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0) 
-                    end
-                    width, prev = width + b:GetWidth() + spacing, b
-                end
-            end
-            local totalWidth = prev and math.max(0, width - spacing) or 0
-            self:SetWidth(totalWidth)
-        end)
-    end
+    -- Layout
+    local scale = RefineUI.Config.MicroMenu and RefineUI.Config.MicroMenu.Scale or 1
+    _G.MicroMenuContainer:SetScale(scale)
+    RefineUI:HookOnce("MicroMenu:MicroMenu:Layout", _G.MicroMenu, "Layout", MicroMenu_OnLayout)
+    MicroMenu_OnLayout(_G.MicroMenu)
 
-    if _G.MicroMenuContainer then
-        local function FixSelectionSize()
-            local f = _G.MicroMenuContainer
-            if f and f.Selection then
-                local extra = (#ExtraMicroButtons * 18)
-                f.Selection:ClearAllPoints()
-                f.Selection:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
-                f.Selection:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", extra, 0)
-            end
-        end
-
-        RefineUI:HookOnce("MicroMenu:MicroMenuContainer:LayoutSelection", _G.MicroMenuContainer, "Layout", FixSelectionSize)
-        if _G.MicroMenuContainer.Selection then
-             RefineUI:HookOnce("MicroMenu:MicroMenuContainerSelection:SetPoint", _G.MicroMenuContainer.Selection, "SetPoint", function(self)
-                if self.changing then return end
-                self.changing = true
-                FixSelectionSize()
-                self.changing = false
-            end)
-        end
-    end
-
-    -- Update Loops
-    RefineUI:RegisterUpdateJob(UPDATE_JOB_KEY.LATENCY, 5, function()
-        UpdateLatency()
-    end)
     RefineUI:After(TIMER_KEY.SUPPRESS_DEFAULT_BUTTONS, 0.1, SuppressDefaultButtons)
-    
-    -- Hook update function
     RefineUI:HookOnce("MicroMenu:UpdateMicroButtons", "UpdateMicroButtons", OnUpdateMicroButtons)
-    
-    -- Initial Update
     OnUpdateMicroButtons()
 end

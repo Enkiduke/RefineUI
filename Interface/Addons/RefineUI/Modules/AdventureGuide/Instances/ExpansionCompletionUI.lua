@@ -6,18 +6,12 @@ local function Enabled(key) return Module:IsGuideOptionEnabled(key) end
 local function ShowCategory(summary, key)
     local count = summary.instance[key]
     if not Enabled(key) or not count or count.total == 0 then return false end
-    local ready = key == "achievements" and summary.achievementsReady
-        or key ~= "achievements" and summary.lootReady
-    return Enabled("ShowCompletedCategories") or not ready
+    return Enabled("ShowCompletedCategories") or not Module:IsCompletionReady(summary, key)
         or count.unknown > 0 or count.earned < count.total
 end
-local BADGES = {
-    { key = "achievements", label = "Achievements", icon = 236507 },
-    { key = "appearances", label = "Appearances", icon = 133743 },
-    { key = "pets", label = "Pets", icon = 132599 },
-    { key = "mounts", label = "Mounts", icon = 132261 },
-    { key = "toys", label = "Toys", icon = 134859 },
-}
+local BADGES = Module.COMPLETION_BADGES
+-- Per-render scratch: whether each category is shown on the card being rendered.
+local shownCategories = {}
 function Module:IsExpansionCompletionVisible()
     local journal = _G.EncounterJournal
     local list = journal and journal.instanceSelect
@@ -40,8 +34,7 @@ function Module:ShowExpansionCompletionTooltip(button, owner, kind)
     for _, badge in ipairs(BADGES) do
         if ShowCategory(summary, badge.key) and (not kind or kind == badge.key) then
             local count = summary.instance[badge.key]
-            local ready = badge.key == "achievements" and summary.achievementsReady or badge.key ~= "achievements" and summary.lootReady
-            local text, r, g, b = self:FormatCompletionCount(count, ready)
+            local text, r, g, b = self:FormatCompletionCount(count, self:IsCompletionReady(summary, badge.key))
             GameTooltip:AddLine(badge.label .. "  " .. text, r, g, b)
             if kind then
                 for index = 1, math.min(10, #count.missing) do
@@ -52,7 +45,7 @@ function Module:ShowExpansionCompletionTooltip(button, owner, kind)
             end
         end
     end
-    if summary.unavailable then
+    if summary.unavailable or summary.partial then
         GameTooltip:AddLine("Some collection data is unavailable. Completion is not yet known.", 0.85, 0.72, 0.45, true)
     end
     GameTooltip:Show()
@@ -79,29 +72,32 @@ function Module:RenderExpansionCompletion(button, summary)
     loading:Hide()
     local available = 0
     for _, badge in ipairs(BADGES) do
-        if ShowCategory(summary, badge.key) then available = available + 1 end
+        local shown = ShowCategory(summary, badge.key)
+        shownCategories[badge.key] = shown
+        if shown then available = available + 1 end
     end
     if available == 0 then overlay:Hide(); return end
     overlay:Show()
     -- Leave a separate bottom row for the bar and percentage below the badges.
     overlay:SetHeight(available <= 3 and 31 or 47)
     local firstRow = available <= 3 and available or math.ceil(available / 2)
+    local cardWidth = button:GetWidth() - 18
     local index = 0
     for _, badge in ipairs(BADGES) do
         local widget = overlay.badges[badge.key]
-        if not ShowCategory(summary, badge.key) then
+        if not shownCategories[badge.key] then
             widget:Hide()
         else
         index = index + 1
         local top = index <= firstRow
         local columns = top and firstRow or available - firstRow
         local column = top and index - 1 or index - firstRow - 1
-        local width = (button:GetWidth() - 18) / columns
+        local width = cardWidth / columns
         widget:ClearAllPoints()
         widget:SetPoint("TOPLEFT", 3 + column * width, top and -3 or -19)
         widget:SetSize(width, 13)
         widget:Show()
-        local ready = badge.key == "achievements" and summary.achievementsReady or badge.key ~= "achievements" and summary.lootReady
+        local ready = self:IsCompletionReady(summary, badge.key)
         local text, r, g, b = self:FormatCompletionCount(summary.instance[badge.key], ready)
         widget.Text:SetText(summary.unavailable and not ready and "--" or text)
         widget.Text:SetTextColor(r, g, b)
@@ -115,7 +111,7 @@ function Module:RenderExpansionCompletion(button, summary)
             if count.unknown > 0 then known = false end
         end
     end
-    local rate = known and total > 0 and earned / total or nil
+    local rate = known and not summary.partial and total > 0 and earned / total or nil
     overlay.Bar:SetValue(rate or 0)
     if rate then
         local r, g, b = self:GetCompletionColor(rate)
@@ -209,7 +205,9 @@ function Module:DecorateExpansionCompletion(button)
             button.RefineExpansionInstanceID = nil
             button.RefineExpansionSummary = nil
         end)
-        button:HookScript("OnShow", function() self:DecorateExpansionCompletion(button) end)
+        -- No OnShow hook: ScrollBox shows recycled cards before their initializer
+        -- assigns the new instanceID. Initialization and the list's OnShow refresh
+        -- already cover every visible card.
     end
     if not self:IsExpansionCompletionVisible() then
         button.RefineCompletionLoading.Sheen:Stop(); button.RefineCompletionLoading:Hide()
@@ -265,7 +263,7 @@ function Module:RequestExpansionCompletion()
     local rows = self:GetGuideBaseRows()
     if not rows then return end
     for _, row in ipairs(rows) do
-        Data:RequestSummary(row.instanceID, self._expansionCompletionOwner, KeepSummaryWarm)
+        Data:RequestSummary(row.instanceID, self._expansionCompletionOwner, KeepSummaryWarm, true)
     end
 end
 
@@ -275,7 +273,9 @@ function Module:InstallExpansionCompletionUI()
     local scrollBox = journal and journal.instanceSelect and journal.instanceSelect.ScrollBox
     if not scrollBox or not ScrollUtil or not ScrollUtil.AddInitializedFrameCallback then return end
     self._expansionCompletionInstalled = true
-    ScrollUtil.AddInitializedFrameCallback(scrollBox, function(_, button) self:DecorateExpansionCompletion(button) end, self)
+    -- Distinct owner: the ScrollBox keeps one callback per owner, and Lockouts shares this list.
+    ScrollUtil.AddInitializedFrameCallback(scrollBox, function(_, button) self:DecorateExpansionCompletion(button) end,
+        self:BuildKey("ExpansionCompletion", "Init"))
     local function Refresh()
         if scrollBox.GetFrames then
             for _, button in ipairs(scrollBox:GetFrames()) do self:DecorateExpansionCompletion(button) end

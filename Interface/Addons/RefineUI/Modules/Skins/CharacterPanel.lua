@@ -10,25 +10,16 @@ if not Skins then
 end
 
 ----------------------------------------------------------------------------------------
--- Shared Aliases
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
-
-----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
 local type = type
-local ipairs = ipairs
-local unpack = unpack
+local pairs = pairs
+local wipe = wipe
 local floor = math.floor
 local max = math.max
+local min = math.min
 local format = string.format
-local tinsert = table.insert
-local tremove = table.remove
 local C_Item = C_Item
 local C_PaperDollInfo = C_PaperDollInfo
 local C_TooltipInfo = C_TooltipInfo
@@ -36,7 +27,6 @@ local GetAverageItemLevel = GetAverageItemLevel
 local GetInventoryItemLink = GetInventoryItemLink
 local UnitHealthMax = UnitHealthMax
 local UnitPowerMax = UnitPowerMax
-local UnitStat = UnitStat
 local InCombatLockdown = InCombatLockdown
 local MenuUtil = MenuUtil
 local GameTooltip = GameTooltip
@@ -48,27 +38,14 @@ local COMPONENT_KEY = "Skins:CharacterPanel"
 local STATE_REGISTRY = "SkinsCharacterPanelState"
 
 local HOOK_KEY = {
-    ITEM_LEVEL = COMPONENT_KEY .. ":Hook:PaperDollFrame_SetItemLevel",
     SLOT_UPDATE = COMPONENT_KEY .. ":Hook:PaperDollItemSlotButton_Update",
-    CHARACTER_ON_SHOW = COMPONENT_KEY .. ":Hook:CharacterFrame:OnShow",
+    CHARACTER_ON_HIDE = COMPONENT_KEY .. ":Hook:CharacterFrame:OnHide",
     STATS_UPDATE = COMPONENT_KEY .. ":Hook:PaperDollFrame_UpdateStats",
 }
 
 local EVENT_KEY = {
-    PLAYER_ENTERING_WORLD = COMPONENT_KEY .. ":Event:PLAYER_ENTERING_WORLD",
-    PLAYER_EQUIPMENT_CHANGED = COMPONENT_KEY .. ":Event:PLAYER_EQUIPMENT_CHANGED",
     UNIT_INVENTORY_CHANGED = COMPONENT_KEY .. ":Event:UNIT_INVENTORY_CHANGED",
     SOCKET_INFO_UPDATE = COMPONENT_KEY .. ":Event:SOCKET_INFO_UPDATE",
-    SPELL_POWER_CHANGED = COMPONENT_KEY .. ":Event:SPELL_POWER_CHANGED",
-    UNIT_MAXHEALTH = COMPONENT_KEY .. ":Event:UNIT_MAXHEALTH",
-}
-
-local TIMER_KEY = {
-    REFRESH = COMPONENT_KEY .. ":Timer:Refresh",
-}
-
-local SLOT_IDS = {
-    1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
 }
 
 local SLOT_FRAME_NAME_BY_ID = {
@@ -88,7 +65,6 @@ local SLOT_FRAME_NAME_BY_ID = {
     [15] = "CharacterBackSlot",
     [16] = "CharacterMainHandSlot",
     [17] = "CharacterSecondaryHandSlot",
-    [18] = "CharacterRangedSlot",
 }
 
 local SLOT_PLACEMENT_BY_ID = {
@@ -110,7 +86,6 @@ local SLOT_PLACEMENT_BY_ID = {
 
     [16] = "LEFT",
     [17] = "RIGHT",
-    [18] = "RIGHT",
 }
 
 local ENCHANT_ELIGIBLE_BY_SLOT = {
@@ -125,42 +100,32 @@ local ENCHANT_ELIGIBLE_BY_SLOT = {
     [17] = true,
 }
 
-local OPTIONAL_SOCKET_ELIGIBLE_BY_SLOT = {
-    [1] = true,  -- Head
-    [2] = true,  -- Neck
-    [6] = true,  -- Waist
-    [9] = true,  -- Wrist
-    [11] = true, -- Ring 1
-    [12] = true, -- Ring 2
-}
-
 local EQUIP_LOC_NO_OFFHAND_ENCHANT = {
     INVTYPE_SHIELD = true,
     INVTYPE_HOLDABLE = true,
 }
 
-local STAT_KEY_HEALTH_TOTAL = "REFINE_HEALTH_TOTAL"
-local STAT_KEY_MANA_TOTAL = "REFINE_MANA_TOTAL"
-local HEALTH_TOTAL_LABEL = "Health"
-local MANA_TOTAL_LABEL = "Mana"
+local STAMINA_LABEL = format(STAT_FORMAT, _G["SPELL_STAT" .. LE_UNIT_STAT_STAMINA .. "_NAME"])
+local HEALTH_LABEL = format(STAT_FORMAT, "Health")
+local MANA_LABEL = format(STAT_FORMAT, "Mana")
+local MANA_TOOLTIP = HIGHLIGHT_FONT_COLOR_CODE .. format(PAPERDOLLFRAME_TOOLTIP_FORMAT, "Mana") .. " "
 local REFINE_GOLD_COLOR = "|cffffd200"
 local COLOR_RESET = "|r"
 local ITEM_LEVEL_SEPARATOR = "|TInterface\\Common\\Indicator-Yellow:8:8:0:0|t"
 local ITEM_LEVEL_HEADER_CURRENT = "Current"
 local ITEM_LEVEL_HEADER_MAX = "Max"
 
-local INDICATOR_SIZE = 14
-local INDICATOR_SPACING = 0
-local INDICATOR_SIDE_OFFSET = 8
+local INDICATOR_SIZE = 12
+local INDICATOR_SPACING = 2
+local INDICATOR_SIDE_OFFSET = 4
 local INDICATOR_TEXT_OFFSET = 4
 local INDICATOR_TEXT_WIDTH = 110
 local INDICATOR_TEXT_MAX_CHARS = 28
 local INDICATOR_MAX_GEMS = 3
 local INDICATOR_MAX_ENTRIES = INDICATOR_MAX_GEMS + 1
-local ENCHANT_PRESENT_ATLAS = "common-icon-checkmark"
-local FILLED_BORDER_COLOR = { 0.6, 0.6, 0.6, 1 }
-local EMPTY_BORDER_COLOR = { 1, 0.2, 0.2, 1 }
-local NO_SOCKET_COLOR = { 1, 0.82, 0, 1 }
+-- READY_CHECK_NOT_READY_TEXTURE's atlas; empty sockets use the art Blizzard's item tooltips use.
+local MISSING_ENCHANT_ATLAS = "UI-LFG-DeclineMark"
+local EMPTY_SOCKET_TEXTURE = "Interface\\ItemSocketingFrame\\UI-EmptySocket-%s"
 
 local SETTINGS_BUTTON_NAME = "RefineUICharacterPanelSettingsButton"
 local SETTINGS_BUTTON_SIZE = 32
@@ -171,10 +136,19 @@ local SETTINGS_BUTTON_SIZE = 32
 RefineUI:CreateDataRegistry(STATE_REGISTRY, "k")
 
 local setupComplete = false
-local refreshQueued = false
-local statsInjected = false
-local eventsRegistered = false
-local slotIdByFrame = setmetatable({}, { __mode = "k" })
+local slotFrameByID = {}
+local slotIDByFrame = {}
+-- Item links carry enchant and gem IDs, so an unchanged link means unchanged indicators.
+local renderedLinkBySlot = {}
+local styledFontStrings = {}
+
+-- Stat overrides are visual only: Blizzard's text is captured after each PaperDollFrame_UpdateStats
+-- so it can be restored, and Blizzard's stat tables and frame fields are never written.
+local blizzardItemLevelText
+local staminaFrame
+local blizzardStaminaValue
+local statOverridesApplied = false
+local manaRow
 
 local function GetState(owner)
     local state = RefineUI:RegistryGet(STATE_REGISTRY, owner)
@@ -185,50 +159,15 @@ local function GetState(owner)
     return state
 end
 
-local function GetModuleState()
-    return GetState(Skins)
-end
-
 ----------------------------------------------------------------------------------------
 -- Config Helpers
 ----------------------------------------------------------------------------------------
 local function GetCharacterPanelConfig()
-    if Skins.GetCharacterPanelConfig then
-        return Skins:GetCharacterPanelConfig()
-    end
-
-    Config.Skins = Config.Skins or {}
-    Config.Skins.CharacterPanel = Config.Skins.CharacterPanel or {}
-    return Config.Skins.CharacterPanel
+    return Skins:GetCharacterPanelConfig()
 end
 
 local function IsFeatureEnabled()
-    local skinsConfig = Config.Skins
-    local characterConfig = GetCharacterPanelConfig()
-    return (skinsConfig and skinsConfig.Enable ~= false) and (characterConfig.Enable ~= false)
-end
-
-local function ShouldShowIndicatorEntryText(characterConfig, isFilled)
-    if isFilled then
-        return characterConfig.ShowIndicatorText == true
-    end
-    return characterConfig.ShowMissingIndicatorText == true
-end
-
-local function IsSlotIndicatorKindEnabled(characterConfig, indicatorKind)
-    if indicatorKind == "ENCHANT" then
-        return characterConfig.ShowEnchantIndicators ~= false
-    elseif indicatorKind == "FILLED_GEM" then
-        return characterConfig.ShowFilledGemIndicators ~= false
-    elseif indicatorKind == "EMPTY_SOCKET" then
-        return characterConfig.ShowEmptySocketIndicators ~= false
-    elseif indicatorKind == "NO_SOCKET" then
-        return characterConfig.ShowNoSocketIndicators ~= false
-    elseif indicatorKind == "NO_ITEM" then
-        return characterConfig.ShowNoItemIndicators ~= false
-    end
-
-    return true
+    return Skins:IsCharacterPanelEnabled()
 end
 
 ----------------------------------------------------------------------------------------
@@ -246,20 +185,6 @@ local function FormatItemLevelValue(value)
         text = "0"
     end
     return text
-end
-
-local function SetTextureAtlas(texture, atlas)
-    if not texture then
-        return false
-    end
-    texture:SetTexture(nil)
-    if texture.SetAtlas then
-        local ok = pcall(texture.SetAtlas, texture, atlas, false)
-        if ok then
-            return true
-        end
-    end
-    return false
 end
 
 local function NormalizeDisplayText(text)
@@ -301,16 +226,14 @@ local function BuildOutlinedFlag(existingFlags)
     return flags .. ",OUTLINE"
 end
 
+-- Blizzard never resets these fonts (stat frames are pooled and reused), so style each once.
 local function ApplyStyledFont(fontString)
-    if not (fontString and fontString.GetFont and fontString.SetFont) then
+    if styledFontStrings[fontString] then
         return
     end
+    styledFontStrings[fontString] = true
 
     local fontPath, fontSize, fontFlags = fontString:GetFont()
-    if type(fontPath) ~= "string" or type(fontSize) ~= "number" then
-        return
-    end
-
     fontString:SetFont(fontPath, fontSize, BuildOutlinedFlag(fontFlags))
     fontString:SetShadowColor(0, 0, 0, 1)
     fontString:SetShadowOffset(1, -1)
@@ -320,14 +243,10 @@ local function FormatCurrentMaxItemLevelText(currentItemLevel, maxItemLevel)
     local currentText = FormatItemLevelValue(currentItemLevel)
     local maxText = FormatItemLevelValue(maxItemLevel)
     local maxColored = REFINE_GOLD_COLOR .. maxText .. COLOR_RESET
-    return currentText .. "  " .. ITEM_LEVEL_SEPARATOR .. " " .. maxColored, currentText .. " / " .. maxText
+    return currentText .. "  " .. ITEM_LEVEL_SEPARATOR .. " " .. maxColored
 end
 
 local function HideItemLevelHeaderLabels(statFrame)
-    if not statFrame then
-        return
-    end
-
     local state = GetState(statFrame)
     if state.currentHeader then
         state.currentHeader:Hide()
@@ -338,10 +257,6 @@ local function HideItemLevelHeaderLabels(statFrame)
 end
 
 local function EnsureItemLevelHeaderLabels(statFrame)
-    if not statFrame then
-        return nil
-    end
-
     local state = GetState(statFrame)
     if state.currentHeader and state.maxHeader then
         return state
@@ -349,10 +264,10 @@ local function EnsureItemLevelHeaderLabels(statFrame)
 
     local currentHeader = statFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     local maxHeader = statFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    if RefineUI.Font then
-        RefineUI.Font(currentHeader, 8, nil, "OUTLINE")
-        RefineUI.Font(maxHeader, 8, nil, "OUTLINE")
-    end
+    RefineUI.Font(currentHeader, 8, nil, "OUTLINE")
+    RefineUI.Font(maxHeader, 8, nil, "OUTLINE")
+    ApplyStyledFont(currentHeader)
+    ApplyStyledFont(maxHeader)
 
     currentHeader:SetText(ITEM_LEVEL_HEADER_CURRENT)
     maxHeader:SetText(ITEM_LEVEL_HEADER_MAX)
@@ -369,271 +284,160 @@ local function EnsureItemLevelHeaderLabels(statFrame)
     return state
 end
 
+local function ApplyCategoryTitleStyle(categoryFrame)
+    ApplyStyledFont(categoryFrame.Title)
+    categoryFrame.Title:SetTextColor(1, 0.82, 0, 1)
+end
+
 local function ApplyCharacterPanelTextStyle()
-    if not (CharacterStatsPane and CharacterStatsPane:IsShown()) then
-        return
-    end
+    ApplyStyledFont(CharacterStatsPane.ItemLevelFrame.Value)
+    ApplyCategoryTitleStyle(CharacterStatsPane.ItemLevelCategory)
+    ApplyCategoryTitleStyle(CharacterStatsPane.AttributesCategory)
+    ApplyCategoryTitleStyle(CharacterStatsPane.EnhancementsCategory)
 
-    if CharacterStatsPane.ItemLevelFrame and CharacterStatsPane.ItemLevelFrame.Value then
-        ApplyStyledFont(CharacterStatsPane.ItemLevelFrame.Value)
-    end
-
-    local categories = {
-        CharacterStatsPane.ItemLevelCategory,
-        CharacterStatsPane.AttributesCategory,
-        CharacterStatsPane.EnhancementsCategory,
-    }
-    for i = 1, #categories do
-        local categoryFrame = categories[i]
-        if categoryFrame and categoryFrame.Title then
-            ApplyStyledFont(categoryFrame.Title)
-            categoryFrame.Title:SetTextColor(1, 0.82, 0, 1)
-        end
-    end
-
-    if CharacterStatsPane.statsFramePool and CharacterStatsPane.statsFramePool.EnumerateActive then
-        for statFrame in CharacterStatsPane.statsFramePool:EnumerateActive() do
-            if statFrame then
-                if statFrame.Label then
-                    ApplyStyledFont(statFrame.Label)
-                end
-                if statFrame.Value then
-                    ApplyStyledFont(statFrame.Value)
-                end
-            end
-        end
+    for statFrame in CharacterStatsPane.statsFramePool:EnumerateActive() do
+        ApplyStyledFont(statFrame.Label)
+        ApplyStyledFont(statFrame.Value)
     end
 end
 
 ----------------------------------------------------------------------------------------
 -- Item Level
 ----------------------------------------------------------------------------------------
-local function ApplyCurrentMaxItemLevel(statFrame, unit)
-    if unit ~= "player" then
-        HideItemLevelHeaderLabels(statFrame)
-        return
-    end
-    if not IsFeatureEnabled() then
-        HideItemLevelHeaderLabels(statFrame)
-        return
-    end
-
-    local characterConfig = GetCharacterPanelConfig()
-    if characterConfig.ShowCurrentMaxItemLevel == false then
+-- Blizzard's own tooltip already lists equipped and maximum item level; only the text changes.
+local function UpdateItemLevelText()
+    local statFrame = CharacterStatsPane.ItemLevelFrame
+    if not (IsFeatureEnabled() and GetCharacterPanelConfig().ShowCurrentMaxItemLevel ~= false) then
+        statFrame.Value:SetText(blizzardItemLevelText)
         HideItemLevelHeaderLabels(statFrame)
         return
     end
 
-    local avgItemLevel, avgItemLevelEquipped, avgItemLevelPvP = GetAverageItemLevel()
-    if type(avgItemLevel) ~= "number" or type(avgItemLevelEquipped) ~= "number" then
-        return
-    end
+    local avgItemLevel, avgItemLevelEquipped = GetAverageItemLevel()
+    local currentItemLevel = max(C_PaperDollInfo.GetMinItemLevel() or 0, avgItemLevelEquipped)
+    statFrame.Value:SetText(FormatCurrentMaxItemLevelText(currentItemLevel, avgItemLevel))
 
-    local minItemLevel = (C_PaperDollInfo and C_PaperDollInfo.GetMinItemLevel and C_PaperDollInfo.GetMinItemLevel()) or 0
-    if type(minItemLevel) ~= "number" then
-        minItemLevel = 0
-    end
-
-    local currentItemLevel = max(minItemLevel, avgItemLevelEquipped)
-    local maxItemLevel = avgItemLevel
-    local displayText, tooltipDisplayText = FormatCurrentMaxItemLevelText(currentItemLevel, maxItemLevel)
-
-    PaperDollFrame_SetLabelAndText(statFrame, STAT_AVERAGE_ITEM_LEVEL, displayText, false, currentItemLevel)
-    if statFrame.Value then
-        ApplyStyledFont(statFrame.Value)
-    end
     local state = EnsureItemLevelHeaderLabels(statFrame)
-    if state and state.currentHeader and state.maxHeader then
-        ApplyStyledFont(state.currentHeader)
-        ApplyStyledFont(state.maxHeader)
-        state.currentHeader:Show()
-        state.maxHeader:Show()
-    end
-
-    statFrame.tooltip = HIGHLIGHT_FONT_COLOR_CODE
-        .. format(PAPERDOLLFRAME_TOOLTIP_FORMAT, STAT_AVERAGE_ITEM_LEVEL)
-        .. " "
-        .. tooltipDisplayText
-        .. FONT_COLOR_CODE_CLOSE
-
-    local tooltip2 = STAT_AVERAGE_ITEM_LEVEL_TOOLTIP
-    if type(avgItemLevelPvP) == "number" and avgItemLevelPvP > 0 then
-        tooltip2 = tooltip2 .. "\n\n" .. STAT_AVERAGE_PVP_ITEM_LEVEL:format(avgItemLevelPvP)
-    end
-    statFrame.tooltip2 = tooltip2
+    state.currentHeader:Show()
+    state.maxHeader:Show()
 end
 
 ----------------------------------------------------------------------------------------
--- Custom Stats
+-- Health / Mana
 ----------------------------------------------------------------------------------------
-local function SetHealthTotal(statFrame, unit)
-    if unit ~= "player" then
-        statFrame:Hide()
-        return
+-- The Stamina row is relabelled as Health (Blizzard's Stamina tooltip already explains the
+-- health it grants), and an addon-owned Mana row is spliced in below it.
+local function FindStatFrameAnchoredTo(anchor)
+    local enhancementsCategory = CharacterStatsPane.EnhancementsCategory
+    local _, relativeTo = enhancementsCategory:GetPoint(1)
+    if relativeTo == anchor then
+        return enhancementsCategory
     end
 
-    if not IsFeatureEnabled() then
-        statFrame:Hide()
-        return
-    end
-
-    local maxHealth = UnitHealthMax("player")
-    if type(maxHealth) ~= "number" or maxHealth <= 0 then
-        statFrame:Hide()
-        return
-    end
-
-    local healthText = BreakUpLargeNumbers(maxHealth)
-    PaperDollFrame_SetLabelAndText(statFrame, HEALTH_TOTAL_LABEL, healthText, false, maxHealth)
-    statFrame.tooltip = HIGHLIGHT_FONT_COLOR_CODE
-        .. format(PAPERDOLLFRAME_TOOLTIP_FORMAT, HEALTH_TOTAL_LABEL)
-        .. " "
-        .. healthText
-        .. FONT_COLOR_CODE_CLOSE
-
-    local staminaStat, effectiveStamina, posBuff, negBuff = UnitStat("player", LE_UNIT_STAT_STAMINA)
-    local tooltip2 = STAT_HEALTH_TOOLTIP
-    if type(staminaStat) == "number" and type(effectiveStamina) == "number" and type(posBuff) == "number" and type(negBuff) == "number" then
-        local baseStamina = staminaStat - posBuff - negBuff
-        local staminaName = _G["SPELL_STAT" .. LE_UNIT_STAT_STAMINA .. "_NAME"] or STAT_STAMINA
-        local staminaSummary = nil
-        if type(PaperDollFormatStat) == "function" then
-            local _, formatted = PaperDollFormatStat(staminaName, baseStamina, posBuff, negBuff)
-            staminaSummary = formatted
-        else
-            staminaSummary = HIGHLIGHT_FONT_COLOR_CODE .. staminaName .. " " .. BreakUpLargeNumbers(effectiveStamina) .. FONT_COLOR_CODE_CLOSE
+    for statFrame in CharacterStatsPane.statsFramePool:EnumerateActive() do
+        _, relativeTo = statFrame:GetPoint(1)
+        if relativeTo == anchor then
+            return statFrame
         end
-
-        local staminaHealthBonus = BreakUpLargeNumbers(((effectiveStamina * UnitHPPerStamina("player"))) * GetUnitMaxHealthModifier("player"))
-        local staminaBenefit = _G["DEFAULT_STAT" .. LE_UNIT_STAT_STAMINA .. "_TOOLTIP"]
-        if type(staminaBenefit) == "string" then
-            staminaBenefit = format(staminaBenefit, staminaHealthBonus)
-        else
-            staminaBenefit = staminaHealthBonus
-        end
-
-        tooltip2 = tooltip2 .. "\n\n" .. staminaSummary .. "\n" .. staminaBenefit
     end
-    statFrame.tooltip2 = tooltip2
-    statFrame:Show()
 end
 
-local function SetManaTotal(statFrame, unit)
-    if unit ~= "player" then
-        statFrame:Hide()
+-- Re-anchors the row below `from` onto `to`, then flips the alternating backgrounds of the
+-- remaining Attributes rows to account for the inserted or removed Mana row.
+local function MoveRowsBelow(from, to)
+    local statFrame = FindStatFrameAnchoredTo(from)
+    if not statFrame then
         return
     end
 
-    if not IsFeatureEnabled() then
-        statFrame:Hide()
-        return
-    end
+    local point, _, relativePoint, x, y = statFrame:GetPoint(1)
+    statFrame:SetPoint(point, to, relativePoint, x, y)
 
-    local maxMana = UnitPowerMax("player", Enum.PowerType.Mana)
-    if type(maxMana) ~= "number" or maxMana <= 0 then
-        statFrame:Hide()
-        return
+    while statFrame and statFrame ~= CharacterStatsPane.EnhancementsCategory do
+        statFrame.Background:SetShown(not statFrame.Background:IsShown())
+        statFrame = FindStatFrameAnchoredTo(statFrame)
+    end
+end
+
+local function CreateManaRow()
+    manaRow = CreateFrame("Frame", nil, CharacterStatsPane, "CharacterStatFrameTemplate")
+    manaRow.Label:SetText(MANA_LABEL)
+    manaRow.tooltip2 = STAT_MANA_TOOLTIP
+    ApplyStyledFont(manaRow.Label)
+    ApplyStyledFont(manaRow.Value)
+    manaRow:Hide()
+end
+
+local function ShowManaRow(maxMana)
+    if not manaRow then
+        CreateManaRow()
     end
 
     local manaText = BreakUpLargeNumbers(maxMana)
-    PaperDollFrame_SetLabelAndText(statFrame, MANA_TOTAL_LABEL, manaText, false, maxMana)
-    statFrame.tooltip = HIGHLIGHT_FONT_COLOR_CODE
-        .. format(PAPERDOLLFRAME_TOOLTIP_FORMAT, MANA_TOTAL_LABEL)
-        .. " "
-        .. manaText
-        .. FONT_COLOR_CODE_CLOSE
-    statFrame.tooltip2 = STAT_MANA_TOOLTIP
-    statFrame:Show()
+    manaRow.Value:SetText(manaText)
+    manaRow.tooltip = MANA_TOOLTIP .. manaText .. FONT_COLOR_CODE_CLOSE
+    manaRow.Background:SetShown(not staminaFrame.Background:IsShown())
+
+    MoveRowsBelow(staminaFrame, manaRow)
+    manaRow:SetPoint("TOP", staminaFrame, "BOTTOM", 0, 0)
+    manaRow:Show()
 end
 
-local function ShouldShowHealthTotalStat()
-    if not IsFeatureEnabled() then
-        return false
-    end
-
-    local maxHealth = UnitHealthMax("player")
-    return type(maxHealth) == "number" and maxHealth > 0
-end
-
-local function ShouldShowManaTotalStat()
-    if not IsFeatureEnabled() then
-        return false
-    end
-
-    local maxMana = UnitPowerMax("player", Enum.PowerType.Mana)
-    return type(maxMana) == "number" and maxMana > 0
-end
-
-local function InsertCustomAttributeStats()
-    if statsInjected then
-        return
-    end
-    if type(PAPERDOLL_STATINFO) ~= "table" or type(PAPERDOLL_STATCATEGORIES) ~= "table" then
+local function HideManaRow()
+    if not (manaRow and manaRow:IsShown()) then
         return
     end
 
-    PAPERDOLL_STATINFO[STAT_KEY_HEALTH_TOTAL] = {
-        updateFunc = function(statFrame, unit)
-            SetHealthTotal(statFrame, unit)
-        end,
-    }
+    MoveRowsBelow(manaRow, staminaFrame)
+    manaRow:Hide()
+    manaRow:ClearAllPoints()
+end
 
-    PAPERDOLL_STATINFO[STAT_KEY_MANA_TOTAL] = {
-        updateFunc = function(statFrame, unit)
-            SetManaTotal(statFrame, unit)
-        end,
-    }
+local function UpdateStatOverrides()
+    UpdateItemLevelText()
 
-    local attributesCategory = PAPERDOLL_STATCATEGORIES[1]
-    local statsList = attributesCategory and attributesCategory.stats
-    if type(statsList) ~= "table" then
+    local enabled = IsFeatureEnabled()
+    if not staminaFrame or enabled == statOverridesApplied then
         return
     end
+    statOverridesApplied = enabled
 
-    local rebuiltStats = {}
-    local insertedAtStamina = false
-    for index = 1, #statsList do
-        local entry = statsList[index]
-        if type(entry) == "table" then
-            if entry.stat == STAT_KEY_HEALTH_TOTAL or entry.stat == STAT_KEY_MANA_TOTAL then
-                -- strip old custom entries before rebuilding
-            elseif entry.stat == "STAMINA" then
-                tinsert(rebuiltStats, {
-                    stat = STAT_KEY_HEALTH_TOTAL,
-                    showFunc = ShouldShowHealthTotalStat,
-                })
-                tinsert(rebuiltStats, {
-                    stat = STAT_KEY_MANA_TOTAL,
-                    showFunc = ShouldShowManaTotalStat,
-                })
-                insertedAtStamina = true
-            else
-                tinsert(rebuiltStats, entry)
-            end
-        else
-            tinsert(rebuiltStats, entry)
+    if enabled then
+        staminaFrame.Label:SetText(HEALTH_LABEL)
+        staminaFrame.Value:SetText(BreakUpLargeNumbers(UnitHealthMax("player")))
+
+        local maxMana = UnitPowerMax("player", Enum.PowerType.Mana)
+        if maxMana > 0 then
+            ShowManaRow(maxMana)
+        end
+    else
+        staminaFrame.Label:SetText(STAMINA_LABEL)
+        staminaFrame.Value:SetText(blizzardStaminaValue)
+        HideManaRow()
+    end
+end
+
+local function OnStatsUpdated()
+    ApplyCharacterPanelTextStyle()
+
+    -- Blizzard just rebuilt the layout, so any previous Mana splice is gone.
+    if manaRow then
+        manaRow:Hide()
+        manaRow:ClearAllPoints()
+    end
+    statOverridesApplied = false
+    blizzardItemLevelText = CharacterStatsPane.ItemLevelFrame.Value:GetText()
+
+    staminaFrame = nil
+    for statFrame in CharacterStatsPane.statsFramePool:EnumerateActive() do
+        if statFrame.Label:GetText() == STAMINA_LABEL then
+            staminaFrame = statFrame
+            blizzardStaminaValue = statFrame.Value:GetText()
+            break
         end
     end
 
-    if not insertedAtStamina then
-        tinsert(rebuiltStats, {
-            stat = STAT_KEY_HEALTH_TOTAL,
-            showFunc = ShouldShowHealthTotalStat,
-        })
-        tinsert(rebuiltStats, {
-            stat = STAT_KEY_MANA_TOTAL,
-            showFunc = ShouldShowManaTotalStat,
-        })
-    end
-
-    for index = #statsList, 1, -1 do
-        tremove(statsList, index)
-    end
-    for index = 1, #rebuiltStats do
-        tinsert(statsList, rebuiltStats[index])
-    end
-
-    statsInjected = true
+    UpdateStatOverrides()
 end
 
 ----------------------------------------------------------------------------------------
@@ -648,24 +452,12 @@ local function IsEnchantEligible(slotID, itemLink)
         return true
     end
 
-    if type(itemLink) ~= "string" or itemLink == "" then
-        return true
-    end
-
-    if not (C_Item and C_Item.GetItemInfoInstant) then
+    if not itemLink then
         return true
     end
 
     local equipLoc = select(4, C_Item.GetItemInfoInstant(itemLink))
-    if type(equipLoc) == "string" and EQUIP_LOC_NO_OFFHAND_ENCHANT[equipLoc] then
-        return false
-    end
-
-    return true
-end
-
-local function IsOptionalSocketEligible(slotID)
-    return OPTIONAL_SOCKET_ELIGIBLE_BY_SLOT[slotID] == true
+    return not EQUIP_LOC_NO_OFFHAND_ENCHANT[equipLoc]
 end
 
 local function GetSlotDetails(slotID, itemLink)
@@ -676,430 +468,213 @@ local function GetSlotDetails(slotID, itemLink)
         sockets = {},
     }
 
-    if not (C_TooltipInfo and C_TooltipInfo.GetInventoryItem) then
-        return details
-    end
-
     local tooltipData = C_TooltipInfo.GetInventoryItem("player", slotID)
     local lines = tooltipData and tooltipData.lines
-    if type(lines) ~= "table" then
+    if not lines then
         return details
     end
 
     for i = 1, #lines do
         local line = lines[i]
-        if type(line) == "table" then
-            if line.type == Enum.TooltipDataLineType.ItemEnchantmentPermanent then
-                details.hasEnchant = true
-                details.enchantText = NormalizeDisplayText(line.leftText or line.rightText)
-            elseif line.type == Enum.TooltipDataLineType.GemSocket then
-                details.socketCount = details.socketCount + 1
-                local socketInfo = {
-                    icon = line.gemIcon,
-                }
+        if line.type == Enum.TooltipDataLineType.ItemEnchantmentPermanent then
+            details.hasEnchant = true
+            details.enchantText = NormalizeDisplayText(line.leftText or line.rightText)
+        elseif line.type == Enum.TooltipDataLineType.GemSocket then
+            local socketIndex = details.socketCount + 1
+            details.socketCount = socketIndex
+            local socketInfo = {
+                icon = line.gemIcon,
+                socketType = line.socketType,
+                text = line.leftText,
+            }
 
-                local lineText = NormalizeDisplayText(line.leftText or line.rightText)
-                if lineText then
-                    socketInfo.text = lineText
-                elseif socketInfo.icon and C_Item and C_Item.GetItemGem and type(itemLink) == "string" then
-                    local gemName = C_Item.GetItemGem(itemLink, details.socketCount)
-                    socketInfo.text = NormalizeDisplayText(gemName)
+            if socketInfo.icon then
+                local _, gemLink = C_Item.GetItemGem(itemLink, socketIndex)
+                if gemLink ~= "" then
+                    socketInfo.link = gemLink
                 end
-
-                if socketInfo.icon and C_Item and C_Item.GetItemGem and type(itemLink) == "string" then
-                    local _, gemLink = C_Item.GetItemGem(itemLink, details.socketCount)
-                    if type(gemLink) == "string" and gemLink ~= "" then
-                        socketInfo.link = gemLink
-                    end
-                end
-
-                details.sockets[details.socketCount] = socketInfo
             end
+
+            details.sockets[socketIndex] = socketInfo
         end
     end
 
     return details
 end
 
-local function GetSlotFrame(slotID)
-    local frameName = SLOT_FRAME_NAME_BY_ID[slotID]
-    if type(frameName) ~= "string" then
-        return nil
+local function OnIndicatorEnter(self)
+    if not (self.tooltipLink or self.tooltipText) then
+        return
     end
-    return _G[frameName]
+
+    GameTooltip:SetOwner(self, self.tooltipAnchor)
+    if self.tooltipLink then
+        GameTooltip:SetHyperlink(self.tooltipLink)
+    else
+        GameTooltip:SetText(self.tooltipText, 1, 1, 1)
+        GameTooltip:Show()
+    end
 end
 
-local function GetConfiguredBorderColor()
-    local borderColor = Config and Config.General and Config.General.BorderColor
-    if type(borderColor) == "table" then
-        return borderColor[1] or FILLED_BORDER_COLOR[1],
-            borderColor[2] or FILLED_BORDER_COLOR[2],
-            borderColor[3] or FILLED_BORDER_COLOR[3],
-            borderColor[4] or FILLED_BORDER_COLOR[4]
-    end
-    return FILLED_BORDER_COLOR[1], FILLED_BORDER_COLOR[2], FILLED_BORDER_COLOR[3], FILLED_BORDER_COLOR[4]
-end
-
-local function CreateIndicatorEntry(container, placement)
+local function CreateIndicatorEntry(container, anchor, placement, offset)
     local entry = CreateFrame("Frame", nil, container)
     entry:SetSize(INDICATOR_SIZE, INDICATOR_SIZE)
     entry:EnableMouse(true)
-
-    RefineUI.SetTemplate(entry, "Icon")
-    RefineUI.CreateBorder(entry, 2, 2, 8)
-
-    local icon = entry:CreateTexture(nil, "ARTWORK")
-    icon:SetPoint("TOPLEFT", entry, "TOPLEFT", 1, -1)
-    icon:SetPoint("BOTTOMRIGHT", entry, "BOTTOMRIGHT", -1, 1)
-    entry.icon = icon
-
-    local label = entry:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    if RefineUI.Font then
-        RefineUI.Font(label, 8, nil, "OUTLINE")
-    end
-    label:ClearAllPoints()
-    label:SetPoint("CENTER", entry, "CENTER", 1, 0)
-    label:SetShadowOffset(0, 0)
-    label:SetShadowColor(0, 0, 0, 0)
-    label:SetJustifyH("CENTER")
-    label:SetJustifyV("MIDDLE")
-    entry.label = label
-
-    local detailText = entry:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    if RefineUI.Font then
-        RefineUI.Font(detailText, 8, nil, "OUTLINE")
-    end
-    detailText:SetWidth(INDICATOR_TEXT_WIDTH)
-    detailText:SetWordWrap(false)
     if placement == "LEFT" then
-        detailText:SetPoint("RIGHT", entry, "LEFT", -INDICATOR_TEXT_OFFSET, 0)
-        detailText:SetJustifyH("RIGHT")
+        entry:SetPoint("RIGHT", anchor, "LEFT", -offset, 0)
+        entry.tooltipAnchor = "ANCHOR_LEFT"
     else
-        detailText:SetPoint("LEFT", entry, "RIGHT", INDICATOR_TEXT_OFFSET, 0)
-        detailText:SetJustifyH("LEFT")
+        entry:SetPoint("LEFT", anchor, "RIGHT", offset, 0)
+        entry.tooltipAnchor = "ANCHOR_RIGHT"
     end
-    detailText:SetJustifyV("MIDDLE")
-    detailText:Hide()
-    entry.detailText = detailText
 
-    entry:SetScript("OnEnter", function(self)
-        if not (self.tooltipLink or self.tooltipText) then
-            return
-        end
+    entry.icon = entry:CreateTexture(nil, "ARTWORK")
+    entry.icon:SetAllPoints()
 
-        GameTooltip:SetOwner(self, self.tooltipAnchor or "ANCHOR_RIGHT")
-        if self.tooltipLink then
-            GameTooltip:SetHyperlink(self.tooltipLink)
-        else
-            local title = self.tooltipTitle or "Details"
-            GameTooltip:SetText(title, 1, 1, 1)
-            GameTooltip:AddLine(self.tooltipText, 0.85, 0.85, 0.85, true)
-            GameTooltip:Show()
-        end
-    end)
-
-    entry:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
-    entry.tooltipAnchor = (placement == "LEFT") and "ANCHOR_LEFT" or "ANCHOR_RIGHT"
-
+    entry:SetScript("OnEnter", OnIndicatorEnter)
+    entry:SetScript("OnLeave", GameTooltip_Hide)
+    entry:Hide()
     return entry
 end
 
-local function ApplyIndicatorEntry(entry, data)
-    if not entry then
-        return
-    end
-
-    local border = entry.border or entry.RefineBorder
-    local missingColor = data.missingColor or EMPTY_BORDER_COLOR
-    if border and border.SetBackdropBorderColor then
-        if data.filled then
-            local br, bg, bb, ba = GetConfiguredBorderColor()
-            border:SetBackdropBorderColor(br, bg, bb, ba)
-        else
-            border:SetBackdropBorderColor(unpack(missingColor))
-        end
-    end
-
-    local iconShown = false
-    if data.iconTexture then
-        entry.icon:SetTexture(data.iconTexture)
-        entry.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        entry.icon:SetVertexColor(1, 1, 1, 1)
-        entry.icon:Show()
-        iconShown = true
-    elseif data.iconAtlas then
-        entry.icon:SetTexCoord(0, 1, 0, 1)
-        entry.icon:SetVertexColor(1, 1, 1, 1)
-        iconShown = SetTextureAtlas(entry.icon, data.iconAtlas)
-        if iconShown then
-            entry.icon:Show()
-        end
-    end
-
-    if iconShown then
-        entry.label:Hide()
-    else
-        entry.icon:Hide()
-        entry.label:SetText(data.letter or "?")
-        if data.filled then
-            entry.label:SetTextColor(1, 1, 1, 1)
-        else
-            entry.label:SetTextColor(unpack(missingColor))
-        end
-        entry.label:Show()
-    end
-
-    if entry.detailText then
-        if data.showDetailText and data.detailText then
-            entry.detailText:SetText(data.detailText)
-            if data.filled then
-                entry.detailText:SetTextColor(0.9, 0.9, 0.9, 1)
-            else
-                entry.detailText:SetTextColor(unpack(missingColor))
-            end
-            entry.detailText:Show()
-        else
-            entry.detailText:Hide()
-        end
-    end
-
-    entry.tooltipLink = nil
-    entry.tooltipTitle = nil
-    entry.tooltipText = nil
-    if data.filled then
-        if type(data.tooltipLink) == "string" and data.tooltipLink ~= "" then
-            entry.tooltipLink = data.tooltipLink
-        elseif type(data.tooltipText) == "string" and data.tooltipText ~= "" then
-            entry.tooltipTitle = data.tooltipTitle
-            entry.tooltipText = data.tooltipText
-        end
-    end
-
-    entry:Show()
-end
-
-local function LayoutIndicatorEntries(state, visibleCount)
-    if not state or not state.entries then
-        return
-    end
-
-    local entries = state.entries
-    local totalHeight = visibleCount * INDICATOR_SIZE + max(visibleCount - 1, 0) * INDICATOR_SPACING
-    local startY = (totalHeight - INDICATOR_SIZE) / 2
-
-    for i = 1, #entries do
-        local entry = entries[i]
-        entry:ClearAllPoints()
-        if i <= visibleCount then
-            local yOffset = startY - (i - 1) * (INDICATOR_SIZE + INDICATOR_SPACING)
-            entry:SetPoint("CENTER", state.container, "CENTER", 0, yOffset)
-            entry:Show()
-        else
-            if entry.detailText then
-                entry.detailText:Hide()
-            end
-            entry:Hide()
-        end
-    end
-end
-
+-- Marks sit in one row beside the slot, growing toward the character model.
 local function EnsureSlotIndicator(slotFrame, slotID)
     local state = GetState(slotFrame)
     if state.container then
         return state
     end
 
-    if InCombatLockdown and InCombatLockdown() then
-        return nil
-    end
-
+    local placement = SLOT_PLACEMENT_BY_ID[slotID]
     local container = CreateFrame("Frame", nil, slotFrame)
-    container:EnableMouse(false)
-    container:SetFrameStrata(slotFrame:GetFrameStrata())
-    container:SetFrameLevel((slotFrame:GetFrameLevel() or 1) + 8)
-    local placement = SLOT_PLACEMENT_BY_ID[slotID] or "RIGHT"
-    local stackHeight = INDICATOR_SIZE * INDICATOR_MAX_ENTRIES + INDICATOR_SPACING * (INDICATOR_MAX_ENTRIES - 1)
-
-    container:SetSize(INDICATOR_SIZE + 2, stackHeight)
-    if placement == "LEFT" then
-        container:SetPoint("RIGHT", slotFrame, "LEFT", -INDICATOR_SIDE_OFFSET, 0)
-    else
-        container:SetPoint("LEFT", slotFrame, "RIGHT", INDICATOR_SIDE_OFFSET, 0)
-    end
+    container:SetAllPoints()
+    container:SetFrameLevel(slotFrame:GetFrameLevel() + 8)
 
     local entries = {}
+    local anchor, offset = slotFrame, INDICATOR_SIDE_OFFSET
     for i = 1, INDICATOR_MAX_ENTRIES do
-        entries[i] = CreateIndicatorEntry(container, placement)
-        entries[i]:Hide()
+        entries[i] = CreateIndicatorEntry(container, anchor, placement, offset)
+        anchor, offset = entries[i], INDICATOR_SPACING
     end
+
+    local enchantText = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    RefineUI.Font(enchantText, 8, nil, "OUTLINE")
+    enchantText:SetWidth(INDICATOR_TEXT_WIDTH)
+    enchantText:SetWordWrap(false)
+    enchantText:SetJustifyH(placement == "LEFT" and "RIGHT" or "LEFT")
+    enchantText:SetTextColor(GREEN_FONT_COLOR:GetRGB())
 
     state.container = container
     state.entries = entries
+    state.enchantText = enchantText
     state.placement = placement
-
-    slotIdByFrame[slotFrame] = slotID
     return state
 end
 
-local function HideSlotIndicator(slotFrame)
-    local state = GetState(slotFrame)
-    if not state.container then
-        return
-    end
+local function SetIndicatorEntry(entry, texture, texCoordInset, tooltipLink, tooltipText)
+    entry.icon:SetTexture(texture)
+    entry.icon:SetTexCoord(texCoordInset, 1 - texCoordInset, texCoordInset, 1 - texCoordInset)
+    entry.tooltipLink = tooltipLink
+    entry.tooltipText = tooltipText
+    entry:Show()
+end
 
-    state.container:Hide()
-
-    for i = 1, INDICATOR_MAX_ENTRIES do
-        local entry = state.entries and state.entries[i]
-        if entry then
-            if entry.detailText then
-                entry.detailText:Hide()
-            end
-            entry:Hide()
-        end
+local function LayoutEnchantText(state, slotFrame, markCount)
+    local text = state.enchantText
+    local anchor = markCount > 0 and state.entries[markCount] or slotFrame
+    local offset = markCount > 0 and INDICATOR_TEXT_OFFSET or INDICATOR_SIDE_OFFSET
+    text:ClearAllPoints()
+    if state.placement == "LEFT" then
+        text:SetPoint("RIGHT", anchor, "LEFT", -offset, 0)
+    else
+        text:SetPoint("LEFT", anchor, "RIGHT", offset, 0)
     end
 end
 
+-- Only actionable states get a mark: missing enchant, filled gem, empty socket.
 local function RenderSlotIndicator(slotFrame, slotID, itemLink)
     local characterConfig = GetCharacterPanelConfig()
-    if not IsFeatureEnabled() or characterConfig.ShowSlotIndicators == false then
-        HideSlotIndicator(slotFrame)
+    if not itemLink or not IsFeatureEnabled() or characterConfig.ShowSlotIndicators == false then
+        local container = GetState(slotFrame).container
+        if container then
+            container:Hide()
+        end
         return
     end
 
     local state = EnsureSlotIndicator(slotFrame, slotID)
-    if not state or not state.container then
-        return
+    local entries = state.entries
+    local details = GetSlotDetails(slotID, itemLink)
+    local markCount = 0
+
+    if characterConfig.ShowEnchantIndicators ~= false and not details.hasEnchant and IsEnchantEligible(slotID, itemLink) then
+        markCount = 1
+        entries[1].icon:SetAtlas(MISSING_ENCHANT_ATLAS)
+        entries[1].tooltipLink = nil
+        entries[1].tooltipText = "Missing enchant"
+        entries[1]:Show()
     end
 
-    local hasItem = type(itemLink) == "string" and itemLink ~= ""
-    local details = hasItem and GetSlotDetails(slotID, itemLink) or { hasEnchant = false, enchantText = nil, socketCount = 0, sockets = {} }
-    local enchantEligible = IsEnchantEligible(slotID, itemLink)
-    local socketCount = details.socketCount or 0
-    local showNoSocketState = hasItem and socketCount <= 0 and IsOptionalSocketEligible(slotID)
-    local gemCount = socketCount
-    if gemCount < 1 and (showNoSocketState or not hasItem) then
-        gemCount = 1
-    end
-    if gemCount > INDICATOR_MAX_GEMS then
-        gemCount = INDICATOR_MAX_GEMS
-    end
-
-    local entryIndex = 1
-
-    if enchantEligible then
-        local enchantFilled = hasItem and details.hasEnchant == true
-        local enchantIndicatorKind = hasItem and "ENCHANT" or "NO_ITEM"
-        local enchantDetailText
-        if enchantFilled then
-            enchantDetailText = details.enchantText or "Enchanted"
-        elseif hasItem then
-            enchantDetailText = "Missing Enchant"
-        else
-            enchantDetailText = "No Item"
-        end
-
-        if IsSlotIndicatorKindEnabled(characterConfig, enchantIndicatorKind) then
-            ApplyIndicatorEntry(state.entries[entryIndex], {
-                filled = enchantFilled,
-                iconAtlas = enchantFilled and ENCHANT_PRESENT_ATLAS or nil,
-                letter = "E",
-                showDetailText = ShouldShowIndicatorEntryText(characterConfig, enchantFilled),
-                detailText = NormalizeDisplayText(enchantDetailText),
-                tooltipTitle = "Enchant",
-                tooltipText = enchantFilled and NormalizeDisplayText(enchantDetailText) or nil,
-            })
-            entryIndex = entryIndex + 1
+    for i = 1, min(details.socketCount, INDICATOR_MAX_GEMS) do
+        local socket = details.sockets[i]
+        if socket.icon then
+            if characterConfig.ShowFilledGemIndicators ~= false then
+                markCount = markCount + 1
+                SetIndicatorEntry(entries[markCount], socket.icon, 0.08, socket.link, socket.text)
+            end
+        elseif characterConfig.ShowEmptySocketIndicators ~= false then
+            markCount = markCount + 1
+            SetIndicatorEntry(entries[markCount], format(EMPTY_SOCKET_TEXTURE, socket.socketType or "Prismatic"), 0, nil, socket.text)
         end
     end
 
-    for gemIndex = 1, gemCount do
-        local socketInfo = details.sockets and details.sockets[gemIndex]
-        local gemFilled = hasItem and socketInfo and socketInfo.icon
-        local isNoSocket = hasItem and socketCount <= 0 and IsOptionalSocketEligible(slotID)
-        local gemIndicatorKind
-        local gemDetailText
-        if gemFilled then
-            gemIndicatorKind = "FILLED_GEM"
-            gemDetailText = (socketInfo and socketInfo.text) or ("Gem " .. gemIndex)
-        elseif hasItem and socketCount > 0 then
-            gemIndicatorKind = "EMPTY_SOCKET"
-            gemDetailText = "Empty Socket"
-        elseif hasItem and isNoSocket then
-            gemIndicatorKind = "NO_SOCKET"
-            gemDetailText = "No Socket"
-        elseif hasItem then
-            break
-        else
-            gemIndicatorKind = "NO_ITEM"
-            gemDetailText = "No Item"
-        end
-
-        if IsSlotIndicatorKindEnabled(characterConfig, gemIndicatorKind) then
-            ApplyIndicatorEntry(state.entries[entryIndex], {
-                filled = gemFilled and true or false,
-                iconTexture = gemFilled and socketInfo.icon or nil,
-                letter = "G",
-                showDetailText = ShouldShowIndicatorEntryText(characterConfig, gemFilled and true or false),
-                detailText = NormalizeDisplayText(gemDetailText),
-                tooltipLink = gemFilled and socketInfo.link or nil,
-                tooltipTitle = "Gem",
-                tooltipText = gemFilled and NormalizeDisplayText(gemDetailText) or nil,
-                missingColor = isNoSocket and NO_SOCKET_COLOR or nil,
-            })
-            entryIndex = entryIndex + 1
-        end
-        if entryIndex > INDICATOR_MAX_ENTRIES then
-            break
-        end
+    for i = markCount + 1, INDICATOR_MAX_ENTRIES do
+        entries[i]:Hide()
     end
 
-    local visibleCount = entryIndex - 1
-    if visibleCount < 1 then
-        HideSlotIndicator(slotFrame)
-        return
+    local enchantText = characterConfig.ShowIndicatorText == true and details.enchantText or nil
+    if enchantText then
+        state.enchantText:SetText(enchantText)
+        LayoutEnchantText(state, slotFrame, markCount)
     end
+    state.enchantText:SetShown(enchantText ~= nil)
 
-    LayoutIndicatorEntries(state, visibleCount)
-
-    state.container:Show()
+    state.container:SetShown(markCount > 0 or enchantText ~= nil)
 end
 
-local function EnsureCharacterSlotBorder(slotFrame)
-    if not slotFrame or not RefineUI.CreateBorder then
+-- PaperDollItemSlotButton_Update also runs on every BAG_UPDATE_COOLDOWN (each GCD) while
+-- the panel is open, so skip the tooltip scan unless the slot's link changed.
+local function UpdateSlotIndicator(slotFrame, slotID)
+    local itemLink = GetInventoryItemLink("player", slotID)
+    local renderKey = itemLink or false
+    if renderedLinkBySlot[slotID] == renderKey then
         return
     end
+    renderedLinkBySlot[slotID] = renderKey
+    RenderSlotIndicator(slotFrame, slotID, itemLink)
+end
 
-    if (not slotFrame.border) and InCombatLockdown and InCombatLockdown() then
+local function RefreshSlotIndicators()
+    if not PaperDollFrame:IsVisible() then
         return
     end
-
-    RefineUI.CreateBorder(slotFrame, 5, 5, 12)
+    for slotID, slotFrame in pairs(slotFrameByID) do
+        UpdateSlotIndicator(slotFrame, slotID)
+    end
 end
 
 ----------------------------------------------------------------------------------------
 -- Settings Menu
 ----------------------------------------------------------------------------------------
-local function QueueCharacterRefresh()
-    if refreshQueued then
-        return
-    end
-
-    refreshQueued = true
-    RefineUI:After(TIMER_KEY.REFRESH, 0, function()
-        refreshQueued = false
-        if Skins.RefreshCharacterPanel then
-            Skins:RefreshCharacterPanel()
-        end
-    end)
+local function RefreshCharacterPanel()
+    wipe(renderedLinkBySlot)
+    RefreshSlotIndicators()
+    UpdateStatOverrides()
 end
 
 local function ToggleCharacterSetting(flagKey)
     local characterConfig = GetCharacterPanelConfig()
     characterConfig[flagKey] = not (characterConfig[flagKey] ~= false)
-    QueueCharacterRefresh()
+    RefreshCharacterPanel()
 end
 
 local function BuildCharacterPanelMenu(ownerRegion, rootDescription)
@@ -1126,7 +701,7 @@ local function BuildCharacterPanelMenu(ownerRegion, rootDescription)
         ToggleCharacterSetting("ShowSlotIndicators")
     end)
 
-    slotIndicatorsMenu:CreateCheckbox("Enchants", function()
+    slotIndicatorsMenu:CreateCheckbox("Missing Enchants", function()
         return characterConfig.ShowEnchantIndicators ~= false
     end, function()
         ToggleCharacterSetting("ShowEnchantIndicators")
@@ -1144,193 +719,77 @@ local function BuildCharacterPanelMenu(ownerRegion, rootDescription)
         ToggleCharacterSetting("ShowEmptySocketIndicators")
     end)
 
-    slotIndicatorsMenu:CreateCheckbox("No Socket", function()
-        return characterConfig.ShowNoSocketIndicators ~= false
-    end, function()
-        ToggleCharacterSetting("ShowNoSocketIndicators")
-    end)
-
-    slotIndicatorsMenu:CreateCheckbox("No Item", function()
-        return characterConfig.ShowNoItemIndicators ~= false
-    end, function()
-        ToggleCharacterSetting("ShowNoItemIndicators")
-    end)
-
-    slotIndicatorsMenu:CreateCheckbox("Indicator Text", function()
+    slotIndicatorsMenu:CreateCheckbox("Enchant Names", function()
         return characterConfig.ShowIndicatorText == true
     end, function()
         ToggleCharacterSetting("ShowIndicatorText")
     end)
+end
 
-    slotIndicatorsMenu:CreateCheckbox("Missing Text", function()
-        return characterConfig.ShowMissingIndicatorText == true
-    end, function()
-        ToggleCharacterSetting("ShowMissingIndicatorText")
+local function CreateSettingsButton()
+    local button = RefineUI.CreateSettingsButton(CharacterFrame, SETTINGS_BUTTON_NAME, SETTINGS_BUTTON_SIZE, "GM-icon-settings")
+
+    button:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Character Panel Settings", 1, 1, 1)
+        GameTooltip:Show()
     end)
 
+    button:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    button:SetScript("OnMouseDown", function(self)
+        if InCombatLockdown() then
+            return
+        end
+        MenuUtil.CreateContextMenu(self, BuildCharacterPanelMenu)
+    end)
+
+    button:SetPoint("RIGHT", CharacterFrame.CloseButton, "LEFT", -4, 0)
+    button:SetFrameStrata("HIGH")
+    button:SetFrameLevel(CharacterFrame:GetFrameLevel() + 20)
 end
 
 ----------------------------------------------------------------------------------------
 -- Public Methods
 ----------------------------------------------------------------------------------------
-function Skins:CreateCharacterPanelSettingsButton()
-    if not CharacterFrame then
-        return
-    end
-
-    local moduleState = GetModuleState()
-    local button = moduleState.settingsButton
-
-    if not button then
-        button = RefineUI.CreateSettingsButton(CharacterFrame, SETTINGS_BUTTON_NAME, SETTINGS_BUTTON_SIZE, "GM-icon-settings")
-        moduleState.settingsButton = button
-
-        button:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetText("Character Panel Settings", 1, 1, 1)
-            GameTooltip:Show()
-        end)
-
-        button:SetScript("OnLeave", function()
-            GameTooltip:Hide()
-        end)
-
-        button:SetScript("OnMouseDown", function(self)
-            if InCombatLockdown and InCombatLockdown() then
-                return
-            end
-            local menuUtil = MenuUtil or _G.MenuUtil
-            if not (menuUtil and menuUtil.CreateContextMenu) then
-                return
-            end
-            menuUtil.CreateContextMenu(self, BuildCharacterPanelMenu)
-        end)
-    end
-
-    button:SetParent(CharacterFrame)
-    button:ClearAllPoints()
-    if CharacterFrame.CloseButton then
-        button:SetPoint("RIGHT", CharacterFrame.CloseButton, "LEFT", -4, 0)
-    else
-        button:SetPoint("TOPRIGHT", CharacterFrame, "TOPRIGHT", -30, -6)
-    end
-    button:SetFrameStrata("HIGH")
-    button:SetFrameLevel((CharacterFrame:GetFrameLevel() or 1) + 20)
-    RefineUI.EnsureSettingsButtonIcon(button, "GM-icon-settings")
-
-    local skinsConfig = Config.Skins
-    button:SetShown(not (skinsConfig and skinsConfig.Enable == false))
-end
-
-function Skins:RefreshItemLevel()
-    if not (CharacterStatsPane and CharacterStatsPane.ItemLevelFrame) then
-        return
-    end
-    PaperDollFrame_SetItemLevel(CharacterStatsPane.ItemLevelFrame, "player")
-end
-
-function Skins:RefreshSlotIndicators()
-    local characterConfig = GetCharacterPanelConfig()
-    local enabled = IsFeatureEnabled() and characterConfig.ShowSlotIndicators ~= false
-
-    for i = 1, #SLOT_IDS do
-        local slotID = SLOT_IDS[i]
-        local slotFrame = GetSlotFrame(slotID)
-        if slotFrame then
-            EnsureCharacterSlotBorder(slotFrame)
-            if enabled then
-                RenderSlotIndicator(slotFrame, slotID, GetInventoryItemLink("player", slotID))
-            else
-                HideSlotIndicator(slotFrame)
-            end
-        end
-    end
-end
-
-function Skins:RefreshCustomAttributes()
-    if CharacterFrame and CharacterFrame:IsShown() and PaperDollFrame and PaperDollFrame:IsShown() and PaperDollFrame_UpdateStats then
-        PaperDollFrame_UpdateStats()
-    end
-end
-
-function Skins:RefreshCharacterPanel()
-    InsertCustomAttributeStats()
-    self:CreateCharacterPanelSettingsButton()
-    self:RefreshItemLevel()
-    self:RefreshSlotIndicators()
-    self:RefreshCustomAttributes()
-    ApplyCharacterPanelTextStyle()
-end
-
 function Skins:SetupCharacterPanel()
     if setupComplete then
         return
     end
     setupComplete = true
 
-    InsertCustomAttributeStats()
+    for slotID, frameName in pairs(SLOT_FRAME_NAME_BY_ID) do
+        local slotFrame = _G[frameName]
+        slotFrameByID[slotID] = slotFrame
+        slotIDByFrame[slotFrame] = slotID
+        -- Shared with the Borders module, which colors this border by item quality.
+        RefineUI.CreateBorder(slotFrame, 5, 5, 12)
+    end
 
-    RefineUI:HookOnce(HOOK_KEY.ITEM_LEVEL, "PaperDollFrame_SetItemLevel", function(statFrame, unit)
-        ApplyCurrentMaxItemLevel(statFrame, unit)
-    end)
+    CreateSettingsButton()
+
+    RefineUI:HookOnce(HOOK_KEY.STATS_UPDATE, "PaperDollFrame_UpdateStats", OnStatsUpdated)
 
     RefineUI:HookOnce(HOOK_KEY.SLOT_UPDATE, "PaperDollItemSlotButton_Update", function(slotFrame)
-        local slotID = slotIdByFrame[slotFrame]
-        if not slotID and slotFrame and slotFrame.GetID then
-            local id = slotFrame:GetID()
-            if SLOT_FRAME_NAME_BY_ID[id] then
-                slotID = id
-                slotIdByFrame[slotFrame] = id
-            end
-        end
-        if slotID and SLOT_FRAME_NAME_BY_ID[slotID] then
-            QueueCharacterRefresh()
+        local slotID = slotIDByFrame[slotFrame]
+        if slotID then
+            UpdateSlotIndicator(slotFrame, slotID)
         end
     end)
 
-    RefineUI:HookOnce(HOOK_KEY.STATS_UPDATE, "PaperDollFrame_UpdateStats", function()
-        ApplyCharacterPanelTextStyle()
+    -- Re-render every slot on the next open, so a scan made before item data arrived self-heals.
+    RefineUI:HookScriptOnce(HOOK_KEY.CHARACTER_ON_HIDE, CharacterFrame, "OnHide", function()
+        wipe(renderedLinkBySlot)
     end)
 
-    if CharacterFrame then
-        RefineUI:HookScriptOnce(HOOK_KEY.CHARACTER_ON_SHOW, CharacterFrame, "OnShow", function()
-            QueueCharacterRefresh()
-        end)
-    end
+    -- Covers enchants and gems applied to already-equipped items.
+    RefineUI:RegisterEventCallback("UNIT_INVENTORY_CHANGED", function(_, unit)
+        if unit == "player" then
+            RefreshSlotIndicators()
+        end
+    end, EVENT_KEY.UNIT_INVENTORY_CHANGED)
 
-    if not eventsRegistered then
-        eventsRegistered = true
-
-        RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
-            QueueCharacterRefresh()
-        end, EVENT_KEY.PLAYER_ENTERING_WORLD)
-
-        RefineUI:RegisterEventCallback("PLAYER_EQUIPMENT_CHANGED", function()
-            QueueCharacterRefresh()
-        end, EVENT_KEY.PLAYER_EQUIPMENT_CHANGED)
-
-        RefineUI:RegisterEventCallback("UNIT_INVENTORY_CHANGED", function(_, unit)
-            if unit == "player" then
-                QueueCharacterRefresh()
-            end
-        end, EVENT_KEY.UNIT_INVENTORY_CHANGED)
-
-        RefineUI:RegisterEventCallback("SOCKET_INFO_UPDATE", function()
-            QueueCharacterRefresh()
-        end, EVENT_KEY.SOCKET_INFO_UPDATE)
-
-        RefineUI:RegisterEventCallback("SPELL_POWER_CHANGED", function(_, unit)
-            if unit == "player" then
-                QueueCharacterRefresh()
-            end
-        end, EVENT_KEY.SPELL_POWER_CHANGED)
-
-        RefineUI:RegisterEventCallback("UNIT_MAXHEALTH", function(_, unit)
-            if unit == "player" then
-                QueueCharacterRefresh()
-            end
-        end, EVENT_KEY.UNIT_MAXHEALTH)
-    end
-
-    QueueCharacterRefresh()
+    RefineUI:RegisterEventCallback("SOCKET_INFO_UPDATE", RefreshSlotIndicators, EVENT_KEY.SOCKET_INFO_UPDATE)
 end

@@ -22,7 +22,6 @@ local Locale = RefineUI.Locale
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
-local GetTime = GetTime
 local GetNumLootItems = GetNumLootItems
 local LootSlot = LootSlot
 local GetCVarBool = GetCVarBool
@@ -31,13 +30,14 @@ local IsModifiedClick = IsModifiedClick
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local LOOT_DELAY = 0.3
 local EVENT_KEY_LOOT_READY = "FasterLoot:LootReady"
+local EVENT_KEY_LOOT_CLOSED = "FasterLoot:LootClosed"
 
 ----------------------------------------------------------------------------------------
 -- State
 ----------------------------------------------------------------------------------------
-local lootDelayTimestamp = 0
+-- LOOT_READY can fire more than once per loot session; loot each session once.
+local lootedThisSession = false
 
 function FasterLoot:OnEnable()
 	if not RefineUI.Config.Loot.FasterLoot or not RefineUI.Config.Loot.Enable then
@@ -51,12 +51,16 @@ function FasterLoot:OnEnable()
 		end
 
 		if GetCVarBool("autoLootDefault") ~= IsModifiedClick("AUTOLOOTTOGGLE") then
-			if (GetTime() - lootDelayTimestamp) >= LOOT_DELAY then
+			if not lootedThisSession then
 				for i = GetNumLootItems(), 1, -1 do
 					LootSlot(i)
 				end
-				lootDelayTimestamp = GetTime()
+				lootedThisSession = true
 			end
 		end
 	end, EVENT_KEY_LOOT_READY)
+
+	RefineUI:RegisterEventCallback("LOOT_CLOSED", function()
+		lootedThisSession = false
+	end, EVENT_KEY_LOOT_CLOSED)
 end

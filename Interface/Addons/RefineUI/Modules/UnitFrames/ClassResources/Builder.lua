@@ -36,7 +36,7 @@ function UnitFrames:CreateClassResources(frame)
     end
 
     local function ResolveResourceAnchor()
-        local anchor = (frame.RefineUF and frame.RefineUF.Texture) or frame
+        local anchor = frame
 
         if frame.PlayerFrameContent and frame.PlayerFrameContent.PlayerFrameContentMain then
             local healthBarContainer = frame.PlayerFrameContent.PlayerFrameContentMain.HealthBarsContainer
@@ -64,7 +64,7 @@ function UnitFrames:CreateClassResources(frame)
             return existing, existing.PulseGlow
         end
 
-        local parent = frame.RefineUF or frame
+        local parent = frame
         local barWidth = width or dataBars.Width or 120
         local barHeight = height or dataBars.Height or 4
         local offset = yOffset or dataBars.YOffset or 4

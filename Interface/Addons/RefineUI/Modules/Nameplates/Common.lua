@@ -30,45 +30,26 @@ local C_NamePlate = C_NamePlate
 ----------------------------------------------------------------------------------------
 -- Shared Utility Table
 ----------------------------------------------------------------------------------------
-RefineUI.NameplatesUtil = RefineUI.NameplatesUtil or {}
-local Util = RefineUI.NameplatesUtil
-Nameplates.Private = Nameplates.Private or {}
-Nameplates.Private.Util = Util
+local Util = {}
+RefineUI.NameplatesUtil = Util
+Nameplates.Private = { Util = Util }
 
 local function CoreIsSecret(v)
-    if RefineUI.IsSecretValue then
-        return RefineUI:IsSecretValue(v)
-    end
-    return issecretvalue and issecretvalue(v)
+    return issecretvalue ~= nil and issecretvalue(v)
 end
 
-local function CoreHasValue(v)
-    if RefineUI.HasValue then
-        return RefineUI:HasValue(v)
-    end
-    if CoreIsSecret(v) then
-        return true
-    end
-    return v ~= nil
-end
-
-function Util.IsSecret(v)
-    return CoreIsSecret(v)
-end
+Util.IsSecret = CoreIsSecret
 
 function Util.HasValue(v)
-    return CoreHasValue(v)
+    return CoreIsSecret(v) or v ~= nil
 end
 
 function Util.IsAccessibleValue(v)
     if CoreIsSecret(v) then
         return false
     end
-    if v ~= nil and canaccessvalue then
-        local ok, accessible = pcall(canaccessvalue, v)
-        if not ok or accessible == false then
-            return false
-        end
+    if v ~= nil and canaccessvalue and canaccessvalue(v) == false then
+        return false
     end
     return true
 end
@@ -169,14 +150,16 @@ function Util.IsTargetNameplateUnitFrame(unitFrame)
     return Util.SafeUnitIsUnit("target", unitFrame.unit)
 end
 
+local function IndexTable(tbl, key)
+    return tbl[key]
+end
+
 function Util.SafeTableIndex(tbl, key)
     if not Util.IsAccessibleValue(tbl) then
         return nil
     end
 
-    local ok, value = pcall(function()
-        return tbl[key]
-    end)
+    local ok, value = pcall(IndexTable, tbl, key)
     if not ok then
         return nil
     end
@@ -274,89 +257,55 @@ function Util.GetNameplateFromUnitFrame(unitFrame)
     return parent
 end
 
-local function IsComparableVisualSignature(signature)
-    return type(signature) == "string" and signature ~= ""
+-- 12.1 moved the nameplate cast bar into UnitFrame.CastBarsContainer and dropped the
+-- unitFrame.castBar alias, so resolve it (and its owning unit frame) through the container.
+function Util.GetNameplateCastBar(unitFrame)
+    if not unitFrame then
+        return nil
+    end
+
+    local container = unitFrame.CastBarsContainer
+    return unitFrame.castBar or unitFrame.CastBar or (container and container.castBar)
 end
 
-local function AreComparableVisualSignaturesEqual(left, right)
-    if not IsComparableVisualSignature(left) or not IsComparableVisualSignature(right) then
-        return false
+function Util.GetCastBarUnitFrame(castBar)
+    local parent = castBar and castBar:GetParent()
+    local grandParent = parent and parent:GetParent()
+    if grandParent and grandParent.CastBarsContainer == parent then
+        return grandParent
     end
-    return left == right
+    return parent
 end
 
 -- Centralized cross-module visual refresh entry point for nameplate unit frames.
--- opts:
---   refreshCrowdControl: bool -> refresh CC model/state, suppressing CC-local portrait/border refresh
---   refreshBorders:      bool -> refresh border colors
---   refreshPortrait:     bool -> refresh dynamic portrait
---   forceCastCheck:      bool|nil -> forwarded to UpdateBorderColors
-function RefineUI:RefreshNameplateVisualState(unitFrame, unit, event, opts)
+--   refreshCrowdControl: re-evaluate the CC display (unit binding, hide-while-casting)
+--   refreshPortrait:     refresh dynamic portrait
+--   refreshBorders:      refresh border colors
+--   forceCastCheck:      forwarded to UpdateBorderColors
+function RefineUI:RefreshNameplateVisualState(unitFrame, unit, event, refreshCrowdControl, refreshPortrait, refreshBorders, forceCastCheck)
     if not unitFrame then
         return
     end
 
-    opts = opts or {}
     local resolvedUnit = Util.ResolveUnitToken(unit, unitFrame.unit)
-    local data = self.NameplateData and self.NameplateData[unitFrame] or nil
-    -- When portrait and borders refresh together, let the shared orchestrator own
-    -- the final border pass so portrait updates do not immediately recompute it again.
-    local suppressPortraitBorderRefresh = opts.refreshPortrait == true and opts.refreshBorders == true
-    local suppressData = suppressPortraitBorderRefresh and data or nil
-    local crowdControlSignatureBefore = data and data.CrowdControlVisualSignature or nil
-    local refreshCrowdControl = opts.refreshCrowdControl == true
-    local refreshPortrait = opts.refreshPortrait == true
-    local refreshBorders = opts.refreshBorders == true
+    local data = self.NameplateData[unitFrame]
 
-    if refreshCrowdControl and self.UpdateNameplateCrowdControl then
-        -- Suppress CC-local portrait/border fan-out; caller owns visual orchestration.
-        self:UpdateNameplateCrowdControl(unitFrame, resolvedUnit, event, true)
+    if refreshCrowdControl then
+        self:UpdateNameplateCrowdControl(unitFrame, resolvedUnit)
     end
 
-    local crowdControlSignatureAfter = data and data.CrowdControlVisualSignature or nil
-    local crowdControlChanged = not AreComparableVisualSignaturesEqual(crowdControlSignatureBefore, crowdControlSignatureAfter)
-
-    if refreshPortrait and self.UpdateDynamicPortrait then
-        local portraitData = suppressData or data
-        if not (portraitData and portraitData.RefineHidden == true) then
-            local comparablePortraitSignature = self.GetPredictedNameplatePortraitVisualSignature
-                and self:GetPredictedNameplatePortraitVisualSignature(unitFrame, resolvedUnit, event)
-                or nil
-            local shouldSkipPortraitRefresh = (not crowdControlChanged)
-                and data ~= nil
-                and AreComparableVisualSignaturesEqual(comparablePortraitSignature, data.PortraitVisualSignature)
-
-            if not shouldSkipPortraitRefresh then
-                local portraitUnit = resolvedUnit
-                if not Util.IsUsableUnitToken(portraitUnit) then
-                    portraitUnit = unitFrame.unit
-                end
-                if Util.IsUsableUnitToken(portraitUnit) then
-                    local nameplate = Util.GetNameplateFromUnitFrame(unitFrame)
-                    if nameplate then
-                        if suppressData then
-                            suppressData.SuppressPortraitBorderRefresh = true
-                        end
-                        self:UpdateDynamicPortrait(nameplate, portraitUnit, event)
-                        if suppressData then
-                            suppressData.SuppressPortraitBorderRefresh = nil
-                        end
-                    end
-                end
-            end
+    if refreshPortrait and resolvedUnit and data and data.RefineHidden ~= true then
+        local nameplate = Util.GetNameplateFromUnitFrame(unitFrame)
+        if nameplate then
+            -- The border pass below owns the final border colors, so the portrait
+            -- update skips its own border refresh when both are requested.
+            data.SuppressPortraitBorderRefresh = refreshBorders or nil
+            self:UpdateDynamicPortrait(nameplate, resolvedUnit, event)
+            data.SuppressPortraitBorderRefresh = nil
         end
     end
 
-    if refreshBorders and self.UpdateBorderColors then
-        local comparableBorderSignature = self.GetPredictedNameplateBorderVisualSignature
-            and self:GetPredictedNameplateBorderVisualSignature(unitFrame, opts.forceCastCheck)
-            or nil
-        local shouldSkipBorderRefresh = (not crowdControlChanged)
-            and data ~= nil
-            and AreComparableVisualSignaturesEqual(comparableBorderSignature, data.BorderVisualSignature)
-
-        if not shouldSkipBorderRefresh then
-            self:UpdateBorderColors(unitFrame, opts.forceCastCheck)
-        end
+    if refreshBorders then
+        self:UpdateBorderColors(unitFrame, forceCastCheck)
     end
 end

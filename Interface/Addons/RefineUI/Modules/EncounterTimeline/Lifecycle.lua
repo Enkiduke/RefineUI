@@ -1,181 +1,86 @@
 ----------------------------------------------------------------------------------------
 -- EncounterTimeline Component: Lifecycle
--- Description: Runtime event wiring and module enable/ready flow
+-- Description: Module enable flow once Blizzard's timeline is loaded
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
 local EncounterTimeline = RefineUI:GetModule("EncounterTimeline")
-if not EncounterTimeline then
-    return
-end
-
--- Lua / WoW Upvalues
-----------------------------------------------------------------------------------------
-local _G = _G
-local type = type
-local issecretvalue = _G.issecretvalue
-local canaccessvalue = _G.canaccessvalue
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local RUNTIME_EVENT_KEY_PREFIX = EncounterTimeline:BuildKey("Runtime")
-local RUNTIME_EVENTS = {
-    "ADDON_LOADED",
-    "ENCOUNTER_TIMELINE_VIEW_ACTIVATED",
-    "ENCOUNTER_TIMELINE_VIEW_DEACTIVATED",
-    "ENCOUNTER_TIMELINE_EVENT_ADDED",
-    "ENCOUNTER_TIMELINE_EVENT_STATE_CHANGED",
-    "ENCOUNTER_TIMELINE_EVENT_TRACK_CHANGED",
-    "ENCOUNTER_TIMELINE_EVENT_BLOCK_STATE_CHANGED",
-    "ENCOUNTER_TIMELINE_LAYOUT_UPDATED",
-    "ENCOUNTER_TIMELINE_STATE_UPDATED",
-    "ENCOUNTER_TIMELINE_EVENT_HIGHLIGHT",
-    "ENCOUNTER_TIMELINE_EVENT_REMOVED",
+local ADDON_LOADED_KEY = "EncounterTimeline:AddonLoaded"
+local IconMask = Enum.EncounterEventIconmask
+local Severity = Enum.EncounterEventSeverity
+
+-- Covers each severity, the long/short/queued tracks, paused, deadly, dispel, and role indicators.
+local TEST_EVENTS = {
+    { spellID = 133, duration = 7, severity = Severity.Low, icons = IconMask.DpsRole },
+    { spellID = 686, duration = 12, severity = Severity.High, icons = bit.bor(IconMask.DeadlyEffect, IconMask.MagicEffect, IconMask.HealerRole) },
+    { spellID = 116, duration = 5, maxQueueDuration = 10, severity = Severity.Medium, icons = IconMask.TankRole },
+    { spellID = 589, duration = 18, severity = Severity.Medium, paused = true, icons = IconMask.PoisonEffect },
+    { spellID = 8921, duration = 40, severity = Severity.Low, icons = IconMask.CurseEffect },
 }
 
 ----------------------------------------------------------------------------------------
--- Helpers
+-- State
 ----------------------------------------------------------------------------------------
-local function IsTimelineAddonLoaded()
-    if C_AddOns and type(C_AddOns.IsAddOnLoaded) == "function" then
-        if C_AddOns.IsAddOnLoaded(EncounterTimeline.BLIZZARD_ADDON_NAME) then
-            return true
-        end
-    end
-
-    return EncounterTimeline:IsTimelineVisible()
-end
-
-local function IsUnreadableValue(value)
-    if value == nil then
-        return false
-    end
-    if issecretvalue and issecretvalue(value) then
-        return true
-    end
-    if canaccessvalue and not canaccessvalue(value) then
-        return true
-    end
-    if RefineUI.IsSecretValue and RefineUI:IsSecretValue(value) then
-        return true
-    end
-    return false
-end
+local testEventIDs = {}
 
 ----------------------------------------------------------------------------------------
--- Runtime Wiring
+-- Test Command
 ----------------------------------------------------------------------------------------
-function EncounterTimeline:RegisterRuntimeEvents()
-    if self.runtimeEventsRegistered then
-        return
-    end
-
-    RefineUI:OnEvents(RUNTIME_EVENTS, function(event, ...)
-        EncounterTimeline:OnRuntimeEvent(event, ...)
-    end, RUNTIME_EVENT_KEY_PREFIX)
-
-    self.runtimeEventsRegistered = true
-end
-
-function EncounterTimeline:OnEncounterTimelineReady()
-    if not IsTimelineAddonLoaded() then
-        return
-    end
-
-    local config = self:GetConfig()
-    if config.SkinEnabled == true or config.BigIconEnable == true then
-        self:InstallSkinHooks()
-    end
-
-    if config.BigIconEnable == true and type(self.PrepareBigIconRuntime) == "function" then
-        self:PrepareBigIconRuntime()
-    end
-
-    if config.SkinEnabled == true then
-        self:RefreshTimelineSkins(true)
-    end
-
-    self:RegisterEncounterTimelineEditModeSettings()
-    self:RefreshBigIconVisualState()
-    self:UpdateBigIconSchedulerState()
-end
-
-function EncounterTimeline:OnRuntimeEvent(event, ...)
-    local function HandleSkinAndBigIconRefresh(forceSkins)
-        if forceSkins and EncounterTimeline:GetConfig().SkinEnabled == true then
-            EncounterTimeline:RefreshTimelineSkins(true)
+-- Cancels only RefineUI's own script events that are still live, so other addons' custom events stay.
+local function ToggleTestEvents()
+    local stopped = false
+    local liveEvents = C_EncounterTimeline.GetEventList()
+    for index = 1, #liveEvents do
+        local eventID = liveEvents[index]
+        if testEventIDs[eventID] then
+            C_EncounterTimeline.CancelScriptEvent(eventID)
+            stopped = true
         end
-        EncounterTimeline:RefreshBigIconVisualState()
-        EncounterTimeline:UpdateBigIconSchedulerState()
     end
+    wipe(testEventIDs)
 
-    if event == "ADDON_LOADED" then
-        local addonName = ...
-        if IsUnreadableValue(addonName) then
-            return
-        end
-        if type(addonName) == "string" and addonName == self.BLIZZARD_ADDON_NAME then
-            self:OnEncounterTimelineReady()
-        end
+    if stopped then
+        RefineUI:Print("Boss timeline test stopped.")
         return
     end
 
-    if not self:IsEnabled() then
-        return
+    for index = 1, #TEST_EVENTS do
+        local request = TEST_EVENTS[index]
+        request.iconFileID = request.iconFileID or C_Spell.GetSpellTexture(request.spellID)
+        testEventIDs[C_EncounterTimeline.AddScriptEvent(request)] = true
     end
-
-    if event == "ENCOUNTER_TIMELINE_VIEW_ACTIVATED" then
-        self:OnEncounterTimelineReady()
-        return
-    elseif event == "ENCOUNTER_TIMELINE_VIEW_DEACTIVATED" then
-        self:ResetRuntimeState()
-        self:HideBigIcon()
-        self:UpdateBigIconSchedulerState()
-        return
-    elseif event == "ENCOUNTER_TIMELINE_EVENT_ADDED" then
-        local eventInfo = ...
-        if not IsUnreadableValue(eventInfo) and type(eventInfo) == "table" then
-            local eventID = eventInfo.id
-            if self:IsValidEventID(eventID) then
-                self:UpdateEventMetadataFromInfo(eventID, eventInfo)
-            end
-        end
-        HandleSkinAndBigIconRefresh(true)
-        return
-    elseif event == "ENCOUNTER_TIMELINE_EVENT_STATE_CHANGED" or event == "ENCOUNTER_TIMELINE_EVENT_TRACK_CHANGED" or event == "ENCOUNTER_TIMELINE_EVENT_BLOCK_STATE_CHANGED" then
-        HandleSkinAndBigIconRefresh(true)
-        return
-    elseif event == "ENCOUNTER_TIMELINE_LAYOUT_UPDATED" or event == "ENCOUNTER_TIMELINE_STATE_UPDATED" then
-        HandleSkinAndBigIconRefresh(true)
-        return
-    elseif event == "ENCOUNTER_TIMELINE_EVENT_HIGHLIGHT" then
-        HandleSkinAndBigIconRefresh(false)
-        return
-    elseif event == "ENCOUNTER_TIMELINE_EVENT_REMOVED" then
-        local eventID = ...
-        if self:IsValidEventID(eventID) then
-            self:ClearEventRuntimeState(eventID)
-        end
-        HandleSkinAndBigIconRefresh(false)
-        return
-    end
+    RefineUI:Print("Boss timeline test started. Type /test again to stop.")
 end
 
 ----------------------------------------------------------------------------------------
 -- Lifecycle
 ----------------------------------------------------------------------------------------
-function EncounterTimeline:OnEnable()
-    self:InitializeState()
+local function SetupTimeline()
+    local config = EncounterTimeline:GetConfig()
+    if config.SkinEnabled then
+        EncounterTimeline:InstallSkin()
+    end
+    if config.BigIconEnable then
+        EncounterTimeline:InstallBigIcon()
+    end
+    EncounterTimeline:RegisterEditModeSettings()
+    RefineUI:RegisterChatCommand("test", ToggleTestEvents)
+end
 
-    if not self:IsEnabled() then
-        self:HideBigIcon()
-        self:ResetRuntimeState()
-        self:UpdateBigIconSchedulerState()
+function EncounterTimeline:OnEnable()
+    if C_AddOns.IsAddOnLoaded(self.BLIZZARD_ADDON_NAME) then
+        SetupTimeline()
         return
     end
 
-    self:RegisterRuntimeEvents()
-    self:InitializeBigIcon()
-    self:OnEncounterTimelineReady()
+    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addonName)
+        if addonName == EncounterTimeline.BLIZZARD_ADDON_NAME then
+            RefineUI:OffEvent("ADDON_LOADED", ADDON_LOADED_KEY)
+            SetupTimeline()
+        end
+    end, ADDON_LOADED_KEY)
 end

@@ -17,8 +17,6 @@ function RadBar:SetupVisuals()
     self.mode = "closed"
     self.isCustomizing = false
     self.cursorTracking = false
-    self.updateAccumulator = 0
-    self.updateInterval = 1 / 120
     self.usabilityAccumulator = 0
     self.usabilityInterval = 0.1
     self.ActiveFades = {}
@@ -29,61 +27,42 @@ function RadBar:SetupVisuals()
 end
 
 function RadBar:EnsureUpdater()
-    if self.Updater and not self.Updater:IsShown() then self.Updater:Show() end
-end
-
-function RadBar:StartUpdate()
-    self.cursorTracking = true
-    self:EnsureUpdater()
-end
-
-function RadBar:StopUpdate()
-    self.cursorTracking = false
-    self.updateAccumulator = 0
-    self.usabilityAccumulator = 0
-    self.Content.Arrow:SetAlpha(0)
-    self:Select(nil)
-    self:UpdateUsabilityVisuals(true)
-    if not next(self.ActiveFades) and not next(self.HighlightAnims) then
-        self.Updater:Hide()
-    end
+    if not self.Updater:IsShown() then self.Updater:Show() end
 end
 
 -- Presentation only: safe to call from a secure bridge during combat.
 -- All protected frame mutations belong to Core/Customization, never fades.
+-- The updater hides itself once tracking and animations have no work left.
 function RadBar:SetPresentationMode(mode)
     self.mode = mode
     self.isCustomizing = mode == "customizing"
-    self:StopUpdate()
-    self:ClearAnimationQueues()
+    self.cursorTracking = false
     self.sel = nil
+    self:ClearAnimationQueues()
+    self.Content.Arrow:SetAlpha(0)
 
-    for index = 0, Private.SLOT_COUNT do
-        local btn = index == 0 and self.CenterButton or self.Buttons[index]
-        if btn then
-            btn:EnableMouse(self.isCustomizing)
-            self:SetSlotHighlight(btn, false, true)
-        end
+    if mode ~= "closed" then
+        -- Cached for pointer tracking; the secure snippet sets these before notifying.
+        self.centerX = self.Core:GetAttribute("centerX")
+        self.centerY = self.Core:GetAttribute("centerY")
+        self.Content:ClearAllPoints()
+        self.Content:SetPoint("CENTER", UIParent, "BOTTOMLEFT", self.centerX, self.centerY)
+        self.Content:Show()
     end
+    self:UpdateSlotVisibility()
+    self:UpdateUsabilityVisuals()
 
     if mode == "closed" then
         self:Fade(self.Content, 0, 0.1, function(frame)
             if self.mode == "closed" then frame:Hide() end
         end)
-        return
-    end
-
-    self.Content:ClearAllPoints()
-    self.Content:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
-        self.Core:GetAttribute("centerX"), self.Core:GetAttribute("centerY"))
-    self.Content:Show()
-    self:UpdateSlotVisibility()
-    if self.isCustomizing and self.Core:GetAttribute("bindMode") then
-        self:ApplyBindModeVisuals()
+    elseif self.isCustomizing and self.Core:GetAttribute("bindMode") then
+        self.Content:SetAlpha(1)
     else
-        self:StartUpdate()
+        self.cursorTracking = true
+        self.usabilityAccumulator = 0
+        self.cursorX = nil
         self:UpdatePointerVisuals()
-        self:UpdateUsabilityVisuals()
         self:Fade(self.Content, 1, mode == "selecting" and 0.05 or 0.1)
     end
 end
@@ -118,21 +97,6 @@ end
 function RadBar:ClearAnimationQueues()
     for frame in pairs(self.ActiveFades) do self.ActiveFades[frame] = nil end
     for btn in pairs(self.HighlightAnims) do self.HighlightAnims[btn] = nil end
-end
-
-function RadBar:ApplyBindModeVisuals()
-    self:ClearAnimationQueues()
-    self.cursorTracking = false
-    self.sel = nil
-    self.Content:SetAlpha(1)
-    self.Content.Arrow:SetAlpha(0)
-    for index = 0, Private.SLOT_COUNT do
-        local btn = index == 0 and self.CenterButton or self.Buttons[index]
-        if btn then self:SetSlotHighlight(btn, false, true) end
-    end
-    self:UpdateSlotVisibility()
-    self:UpdateUsabilityVisuals(true)
-    self.Updater:Hide()
 end
 
 function RadBar:Fade(frame, target, duration, callback)
@@ -195,12 +159,8 @@ end
 
 function RadBar:UpdateVisuals(elapsed)
     if self.cursorTracking then
-        self.updateAccumulator = self.updateAccumulator + elapsed
+        self:UpdatePointerVisuals()
         self.usabilityAccumulator = self.usabilityAccumulator + elapsed
-        if self.updateAccumulator >= self.updateInterval then
-            self.updateAccumulator = self.updateAccumulator % self.updateInterval
-            self:UpdatePointerVisuals()
-        end
         if self.usabilityAccumulator >= self.usabilityInterval then
             self.usabilityAccumulator = self.usabilityAccumulator % self.usabilityInterval
             self:UpdateUsabilityVisuals()
@@ -215,24 +175,25 @@ end
 
 function RadBar:UpdatePointerVisuals()
     local x, y = GetCursorPosition()
-    local scale = self.Core:GetEffectiveScale()
-    if scale <= 0 then return end
+    if x == self.cursorX and y == self.cursorY then return end
+    self.cursorX, self.cursorY = x, y
+    local core = self.Core
+    local scale = core:GetEffectiveScale()
     -- Mirror the restricted GetMousePosition normalization, including its bounds
     -- check and arithmetic order, so exact sector edges agree at every UI scale.
-    local left, bottom, width, height = self.Core:GetRect()
+    local left, bottom, width, height = core:GetRect()
     local angle, radius = 0, 0
     if width and height and width > 0 and height > 0 then
         x, y = x / scale - left, y / scale - bottom
         if x >= 0 and x <= width and y >= 0 and y <= height then
-            local dx = x / width * self.Core:GetWidth() - self.Core:GetAttribute("centerX")
-            local dy = y / height * self.Core:GetHeight() - self.Core:GetAttribute("centerY")
+            local dx = x / width * core:GetWidth() - self.centerX
+            local dy = y / height * core:GetHeight() - self.centerY
             radius = (dx * dx + dy * dy)^0.5
             angle = math.atan2(dx, dy)
             if angle < 0 then angle = angle + Private.TWO_PI end
         end
     end
-    local index = Private.GetSelection(angle, radius,
-        self.Core:GetAttribute("innerRadius"), self.Core:GetAttribute("numSlices") or 0)
+    local index = Private.GetSelection(angle, radius, Private.INNER_RADIUS, Private.SLOT_COUNT)
     local btn = index == 0 and self.CenterButton or self.Buttons[index]
     local arrow = self.Content.Arrow
     if index > 0 and btn and (btn.HasAction or self.isCustomizing) then
@@ -266,11 +227,12 @@ function RadBar:SetSlotHighlight(btn, selected, immediate)
     end
 end
 
+-- Forced reapplication follows a mode or slot change and snaps immediately.
 function RadBar:Select(index, force)
     if self.sel == index and not force then return end
     self.sel = index
     for slot = 0, Private.SLOT_COUNT do
         local btn = slot == 0 and self.CenterButton or self.Buttons[slot]
-        if btn then self:SetSlotHighlight(btn, slot == index) end
+        if btn then self:SetSlotHighlight(btn, slot == index, force) end
     end
 end

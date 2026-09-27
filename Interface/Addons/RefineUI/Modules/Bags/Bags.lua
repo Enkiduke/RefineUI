@@ -32,10 +32,7 @@ local bitband = bit and bit.band
 local CreateFrame = CreateFrame
 local GameTooltip = GameTooltip
 local GetCursorInfo = GetCursorInfo
-local GetMouseFocus = GetMouseFocus
-local GetMouseFoci = GetMouseFoci
 local InCombatLockdown = InCombatLockdown
-local IsMouseButtonDown = IsMouseButtonDown
 local MenuUtil = MenuUtil
 local PutItemInBackpack = PutItemInBackpack
 local PutItemInBag = PutItemInBag
@@ -950,7 +947,6 @@ Bags.ReleaseSubHeader = ReleaseSubHeader
 
 local slotCount = 0
 local hoveredCustomSlot = nil
-local wasRightMouseDown = false
 local pendingLayoutAfterCombat = false
 local pendingSlotPoolWarmAfterCombat = false
 
@@ -970,12 +966,6 @@ local slotBorderHostByFrame = Bags.slotBorderHostByFrame
 if type(slotBorderHostByFrame) ~= "table" then
     slotBorderHostByFrame = setmetatable({}, { __mode = "k" })
     Bags.slotBorderHostByFrame = slotBorderHostByFrame
-end
-
-local refineSlotLookup = Bags.refineSlotLookup
-if type(refineSlotLookup) ~= "table" then
-    refineSlotLookup = setmetatable({}, { __mode = "k" })
-    Bags.refineSlotLookup = refineSlotLookup
 end
 
 local function SetSlotDisplayCategory(slot, categoryKey)
@@ -1144,6 +1134,25 @@ local function ClearCustomCategoryFromSlot(slot)
     return false
 end
 
+local function OnSlotEnter(slot)
+    hoveredCustomSlot = slot
+    UpdateCustomCategoryClearCursor(slot)
+end
+
+local function OnSlotLeave(slot)
+    if hoveredCustomSlot == slot then
+        hoveredCustomSlot = nil
+    end
+    UpdateCustomCategoryClearCursor(slot, true)
+end
+
+local function OnSlotMouseDown(slot, mouseButton)
+    if mouseButton == "RightButton" and IsControlKeyDown() then
+        ClearCustomCategoryFromSlot(slot)
+        UpdateCustomCategoryClearCursor(slot)
+    end
+end
+
 local function AcquireSlot()
     local slot = table.remove(Bags.slotPool)
     if slot then
@@ -1164,7 +1173,9 @@ local function AcquireSlot()
     local name = "RefineUI_BagSlot" .. slotCount
     slot = CreateFrame("ItemButton", name, Frame.ItemContainer, "ContainerFrameItemButtonTemplate")
     slot:SetSize(Bags.SLOT_SIZE, Bags.SLOT_SIZE)
-    refineSlotLookup[slot] = true
+    slot:HookScript("OnEnter", OnSlotEnter)
+    slot:HookScript("OnLeave", OnSlotLeave)
+    slot:HookScript("OnMouseDown", OnSlotMouseDown)
 
     if slot.ItemSlotBackground then
         slot.ItemSlotBackground:Hide()
@@ -1680,92 +1691,52 @@ local BAG_EVENTS = {
 -- Interaction
 ----------------------------------------------------------------------------------------
 
-do
-    local elapsedAccumulator = 0
-    local hadCursorItem = false
+local hadCursorItem = false
+local cursorItemID, cursorFromPlayerBag, cursorPrefersReagentBag
+local wasMouseOverBags = false
+local dropHoverWatcher
 
-    local function FindRefineSlotInFocusChain(focus)
-        while focus do
-            if refineSlotLookup[focus] then
-                return focus
-            end
-            focus = focus:GetParent()
-        end
-        return nil
+local function UpdateCursorItemState()
+    local hasCursorItem
+    hasCursorItem, cursorItemID, cursorFromPlayerBag, cursorPrefersReagentBag = Bags.GetCursorItemContext()
+
+    if hasCursorItem ~= hadCursorItem then
+        hadCursorItem = hasCursorItem
+        RequestUpdate({ renderOnly = true, forceReflow = true, cursorOnly = true })
     end
 
-    local function GetHoveredSlotFromMouseFocus()
-        if type(GetMouseFocus) == "function" then
-            return FindRefineSlotInFocusChain(GetMouseFocus())
-        end
+    wasMouseOverBags = Frame:IsMouseOver()
+    UpdateBagWindowDropOverlay(hasCursorItem, cursorItemID, cursorFromPlayerBag, cursorPrefersReagentBag)
+    dropHoverWatcher:SetShown(hasCursorItem)
+end
 
-        if type(GetMouseFoci) == "function" then
-            local foci = GetMouseFoci()
-            if type(foci) == "table" then
-                for i = 1, #foci do
-                    local slot = FindRefineSlotInFocusChain(foci[i])
-                    if slot then
-                        return slot
-                    end
-                end
-            end
-        end
-
-        return nil
+-- Hover has no event; watch it only while an item is on the cursor and the bags are shown.
+local function WatchDropHover()
+    local isMouseOver = Frame:IsMouseOver()
+    if isMouseOver ~= wasMouseOverBags then
+        wasMouseOverBags = isMouseOver
+        UpdateBagWindowDropOverlay(hadCursorItem, cursorItemID, cursorFromPlayerBag, cursorPrefersReagentBag)
     end
+end
 
-    Frame:HookScript("OnUpdate", function(_, elapsed)
-        elapsedAccumulator = elapsedAccumulator + (elapsed or 0)
-        if elapsedAccumulator < 0.05 then return end
-        elapsedAccumulator = 0
+local function InitializeInteraction()
+    dropHoverWatcher = CreateFrame("Frame", nil, Frame)
+    dropHoverWatcher:Hide()
+    dropHoverWatcher:SetScript("OnUpdate", WatchDropHover)
 
-        local cursorType = GetCursorInfo()
-        if cursorType ~= "item" and not IsMouseButtonDown("LeftButton") then
-            Bags._draggingBagItemActive = false
-            Bags._draggingBagItemID = nil
+    Frame:HookScript("OnShow", UpdateCursorItemState)
+
+    RefineUI:RegisterEventCallback("CURSOR_CHANGED", function()
+        if Frame:IsShown() then
+            UpdateCursorItemState()
         end
+    end, "Bags:CursorChanged")
 
-        local hasCursorItem, cursorItemID, isFromPlayerBag, prefersReagentBag
-        if Bags.GetCursorItemContext then
-            hasCursorItem, cursorItemID, isFromPlayerBag, prefersReagentBag = Bags.GetCursorItemContext()
-        else
-            hasCursorItem = (cursorType == "item")
-                or (Bags._draggingBagItemActive and type(Bags._draggingBagItemID) == "number" and Bags._draggingBagItemID > 0)
-            cursorItemID = nil
-            isFromPlayerBag = false
-            prefersReagentBag = false
-        end
-
-        if hasCursorItem ~= hadCursorItem then
-            hadCursorItem = hasCursorItem
-            if not hasCursorItem then
-                Bags._draggingBagItemActive = false
-                Bags._draggingBagItemID = nil
-            end
-            RequestUpdate({ renderOnly = true, forceReflow = true, cursorOnly = true })
-        end
-
-        if UpdateBagWindowDropOverlay then
-            UpdateBagWindowDropOverlay(hasCursorItem, cursorItemID, isFromPlayerBag, prefersReagentBag)
-        end
-
-        local hoveredNow = GetHoveredSlotFromMouseFocus()
-        if hoveredNow ~= hoveredCustomSlot and hoveredCustomSlot then
-            UpdateCustomCategoryClearCursor(hoveredCustomSlot, true)
-        end
-        hoveredCustomSlot = hoveredNow
-
-        if hoveredCustomSlot and hoveredCustomSlot:IsShown() then
+    RefineUI:RegisterEventCallback("MODIFIER_STATE_CHANGED", function()
+        if hoveredCustomSlot then
             UpdateCustomCategoryClearCursor(hoveredCustomSlot)
         end
-
-        local rightDown = IsMouseButtonDown("RightButton")
-        if rightDown and not wasRightMouseDown and IsControlKeyDown() and hoveredCustomSlot and hoveredCustomSlot:IsShown() then
-            ClearCustomCategoryFromSlot(hoveredCustomSlot)
-            UpdateCustomCategoryClearCursor(hoveredCustomSlot)
-        end
-        wasRightMouseDown = rightDown
-    end)
+    end, "Bags:ModifierState")
 end
 
 ----------------------------------------------------------------------------------------
@@ -1774,6 +1745,7 @@ end
 
 function Bags:OnEnable()
     RefineUI:OnEvents(BAG_EVENTS, OnBagEvent, BAG_EVENT_KEY_PREFIX)
+    InitializeInteraction()
 
     table.insert(UISpecialFrames, "RefineUI_Bags")
 

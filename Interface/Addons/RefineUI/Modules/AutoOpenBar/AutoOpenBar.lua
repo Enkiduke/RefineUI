@@ -21,10 +21,8 @@ local Config = RefineUI.Config
 ----------------------------------------------------------------------------------------
 local _G = _G
 local type = type
-local pairs = pairs
 local ipairs = ipairs
 local tonumber = tonumber
-local tostring = tostring
 local floor = math.floor
 local ceil = math.ceil
 local min = math.min
@@ -41,11 +39,9 @@ local hooksecurefunc = hooksecurefunc
 
 local C_Container = C_Container
 local C_Item = C_Item
+local C_QuestLog = C_QuestLog
+local C_SpellBook = C_SpellBook
 local C_TooltipInfo = C_TooltipInfo
-local C_ToyBox = C_ToyBox
-local C_MountJournal = C_MountJournal
-local C_PetJournal = C_PetJournal
-local PlayerHasToy = PlayerHasToy
 local Enum = _G.Enum
 local issecretvalue = _G.issecretvalue
 
@@ -98,19 +94,24 @@ local CATEGORY_KEYS = {
     QUEST_STARTERS = "quest_starters",
 }
 
-local FIXED_CATEGORY_DEFINITIONS = {
-    { key = CATEGORY_KEYS.CONTAINERS, label = "Openable Containers", defaultEnabled = true },
-    { key = CATEGORY_KEYS.DECOR, label = "Decor", defaultEnabled = true },
-    { key = CATEGORY_KEYS.MOUNTS, label = "Mounts (Uncollected)", defaultEnabled = true },
-    { key = CATEGORY_KEYS.BATTLE_PETS, label = "Battle Pets", defaultEnabled = true },
-    { key = CATEGORY_KEYS.COMPANION_PETS, label = "Companion Pets", defaultEnabled = true },
-    { key = CATEGORY_KEYS.TRADESKILL_RECIPES, label = "Tradeskill Recipes/Patterns", defaultEnabled = true },
-    { key = CATEGORY_KEYS.LEARNABLES, label = "Learnables", defaultEnabled = true },
-    { key = CATEGORY_KEYS.TOYS, label = "Unknown Toys", defaultEnabled = true },
-    { key = CATEGORY_KEYS.TRANSMOG_SETS, label = "Transmog Sets", defaultEnabled = true },
-    { key = CATEGORY_KEYS.TRANSMOG_ILLUSIONS, label = "Transmog Illusions", defaultEnabled = true },
-    { key = CATEGORY_KEYS.QUEST_STARTERS, label = "Quest Starters", defaultEnabled = true },
+local CATEGORY_DEFINITIONS = {
+    { key = CATEGORY_KEYS.CONTAINERS, label = "Openable Containers" },
+    { key = CATEGORY_KEYS.DECOR, label = "Decor" },
+    { key = CATEGORY_KEYS.MOUNTS, label = "Mounts (Uncollected)" },
+    { key = CATEGORY_KEYS.BATTLE_PETS, label = "Battle Pets" },
+    { key = CATEGORY_KEYS.COMPANION_PETS, label = "Companion Pets" },
+    { key = CATEGORY_KEYS.TRADESKILL_RECIPES, label = "Tradeskill Recipes/Patterns" },
+    { key = CATEGORY_KEYS.LEARNABLES, label = "Learnables" },
+    { key = CATEGORY_KEYS.TOYS, label = "Unknown Toys" },
+    { key = CATEGORY_KEYS.TRANSMOG_SETS, label = "Transmog Sets" },
+    { key = CATEGORY_KEYS.TRANSMOG_ILLUSIONS, label = "Transmog Illusions" },
+    { key = CATEGORY_KEYS.QUEST_STARTERS, label = "Quest Starters" },
 }
+
+local CATEGORY_BY_KEY = {}
+for _, definition in ipairs(CATEGORY_DEFINITIONS) do
+    CATEGORY_BY_KEY[definition.key] = definition
+end
 
 local CATEGORY_SCHEMA_VERSION = 4
 
@@ -123,7 +124,6 @@ local ITEM_MISC_SUBCLASS_MOUNT = (Enum and Enum.ItemMiscellaneousSubclass and En
 local ITEM_HOUSING_SUBCLASS_DECOR = (Enum and Enum.ItemHousingSubclass and Enum.ItemHousingSubclass.Decor) or 0
 
 local DEFAULTS = {
-    Enable = true,
     ButtonSize = 36,
     ButtonSpacing = 8,
     ButtonLimit = 10,
@@ -131,25 +131,25 @@ local DEFAULTS = {
     Direction = DIRECTION.DOWN,
 }
 
-local EVENT_KEY = {
-    BAG_UPDATE = "AutoOpenBar:BAG_UPDATE_DELAYED",
-    BAG_COOLDOWN = "AutoOpenBar:BAG_UPDATE_COOLDOWN",
-    ITEM_INFO = "AutoOpenBar:GET_ITEM_INFO_RECEIVED",
-    TOYS_UPDATED = "AutoOpenBar:TOYS_UPDATED",
-    NEW_TOY = "AutoOpenBar:NEW_TOY_ADDED",
-    ENTERING_WORLD = "AutoOpenBar:PLAYER_ENTERING_WORLD",
-    REGEN_ENABLED = "AutoOpenBar:PLAYER_REGEN_ENABLED",
+-- Anything that can change which bag items are usable or already known.
+local UPDATE_EVENTS = {
+    "BAG_UPDATE_DELAYED",
+    "PLAYER_ENTERING_WORLD",
+    "PLAYER_LEVEL_UP",
+    "SKILL_LINES_CHANGED",
+    "QUEST_ACCEPTED",
+    "QUEST_REMOVED",
 }
 
 local DEBOUNCE_KEY = "AutoOpenBar:RequestUpdate"
 local BUTTON_STATE_REGISTRY = "AutoOpenBar:ButtonState"
+local PICK_LOCK_SPELL_ID = 1804
 
 local LINE_TYPE = {
     LEARNABLE_SPELL = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.LearnableSpell or 6,
     ITEM_SPELL_TRIGGER_LEARN = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.ItemSpellTriggerLearn or 38,
     LEARN_TRANSMOG_SET = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.LearnTransmogSet or 39,
     LEARN_TRANSMOG_ILLUSION = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.LearnTransmogIllusion or 40,
-    SPELL_DESCRIPTION = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.SpellDescription or 34,
     DISABLED_LINE = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.DisabledLine or 42,
     ERROR_LINE = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.ErrorLine or 41,
 }
@@ -162,11 +162,18 @@ local KNOWN_HINT_SOURCES = {
     "collected",
 }
 
+local LOCKED_TEXT = _G.LOCKED
+local NOT_HERE_TEXT = _G.SPELL_FAILED_NOT_HERE
+
 ----------------------------------------------------------------------------------------
 -- State / Registries
 ----------------------------------------------------------------------------------------
 local ButtonState = RefineUI:CreateDataRegistry(BUTTON_STATE_REGISTRY, "k")
 local buttons = {}
+-- Item IDs whose class and tooltip can never place them on the bar.
+local ignoredItemIDs = {}
+-- Item IDs scanned before their data loaded; only these rescan on GET_ITEM_INFO_RECEIVED.
+local pendingItemIDs = {}
 
 ----------------------------------------------------------------------------------------
 -- Helpers
@@ -204,6 +211,15 @@ local function NormalizeTooltipText(text)
     end
 
     return normalized
+end
+
+local KNOWN_HINTS = {}
+for _, source in ipairs(KNOWN_HINT_SOURCES) do
+    KNOWN_HINTS[#KNOWN_HINTS + 1] = NormalizeTooltipText(source)
+end
+
+local function ClampRound(value, default, minValue, maxValue)
+    return floor(min(max(tonumber(value) or default, minValue), maxValue) + 0.5)
 end
 
 local function ResolveRelativeFrame(relativeTo)
@@ -280,38 +296,15 @@ end
 -- Config
 ----------------------------------------------------------------------------------------
 function AutoOpenBar:GetConfig()
-    Config.Automation = Config.Automation or {}
-    Config.Automation.AutoOpenBar = Config.Automation.AutoOpenBar or {}
+    return Config.Automation.AutoOpenBar
+end
 
-    local cfg = Config.Automation.AutoOpenBar
+function AutoOpenBar:NormalizeConfig()
+    local cfg = self:GetConfig()
 
-    if cfg.Enable == nil then
-        cfg.Enable = DEFAULTS.Enable
-    end
-
-    local buttonSize = tonumber(cfg.ButtonSize) or DEFAULTS.ButtonSize
-    if buttonSize < 20 then
-        buttonSize = 20
-    elseif buttonSize > 64 then
-        buttonSize = 64
-    end
-    cfg.ButtonSize = floor(buttonSize + 0.5)
-
-    local buttonSpacing = tonumber(cfg.ButtonSpacing) or DEFAULTS.ButtonSpacing
-    if buttonSpacing < 0 then
-        buttonSpacing = 0
-    elseif buttonSpacing > 20 then
-        buttonSpacing = 20
-    end
-    cfg.ButtonSpacing = floor(buttonSpacing + 0.5)
-
-    local buttonLimit = tonumber(cfg.ButtonLimit) or DEFAULTS.ButtonLimit
-    if buttonLimit < 1 then
-        buttonLimit = 1
-    elseif buttonLimit > 20 then
-        buttonLimit = 20
-    end
-    cfg.ButtonLimit = floor(buttonLimit + 0.5)
+    cfg.ButtonSize = ClampRound(cfg.ButtonSize, DEFAULTS.ButtonSize, 20, 64)
+    cfg.ButtonSpacing = ClampRound(cfg.ButtonSpacing, DEFAULTS.ButtonSpacing, 0, 20)
+    cfg.ButtonLimit = ClampRound(cfg.ButtonLimit, DEFAULTS.ButtonLimit, 1, 20)
 
     if cfg.Orientation == nil then
         if cfg.Direction == DIRECTION.UP or cfg.Direction == DIRECTION.DOWN then
@@ -327,67 +320,30 @@ function AutoOpenBar:GetConfig()
 
     cfg.Direction = NormalizeGrowthDirection(cfg.Orientation, cfg.Direction)
 
-    if cfg.ShowQuestStarters == nil then
-        cfg.ShowQuestStarters = true
-    end
-
     if type(cfg.CategoryOrder) ~= "table" then
         cfg.CategoryOrder = {}
     end
     if type(cfg.CategoryEnabled) ~= "table" then
         cfg.CategoryEnabled = {}
     end
-    if type(cfg.CategorySchemaVersion) ~= "number" then
-        cfg.CategorySchemaVersion = 0
-    end
-
-    return cfg
 end
 
 ----------------------------------------------------------------------------------------
 -- Category Model
 ----------------------------------------------------------------------------------------
-function AutoOpenBar:GetCategoryDefaultEnabled(definition)
-    if not definition then
-        return true
-    end
-    return definition.defaultEnabled ~= false
-end
-
-function AutoOpenBar:BuildCategoryDefinitions()
-    if self.categoryDefinitions and self.categoryByKey then
-        return self.categoryDefinitions
+local function ResetCategoryConfig(cfg)
+    cfg.CategoryOrder = {}
+    cfg.CategoryEnabled = {}
+    for _, definition in ipairs(CATEGORY_DEFINITIONS) do
+        tinsert(cfg.CategoryOrder, definition.key)
+        cfg.CategoryEnabled[definition.key] = true
     end
 
-    local definitions = {}
-    local byKey = {}
-
-    for _, data in ipairs(FIXED_CATEGORY_DEFINITIONS) do
-        local def = {
-            key = data.key,
-            label = data.label,
-            defaultEnabled = data.defaultEnabled and true or false,
-        }
-        tinsert(definitions, def)
-        byKey[def.key] = def
+    if cfg.ShowQuestStarters == false then
+        cfg.CategoryEnabled[CATEGORY_KEYS.QUEST_STARTERS] = false
     end
 
-    self.categoryDefinitions = definitions
-    self.categoryByKey = byKey
-    return definitions
-end
-
-function AutoOpenBar:GetCategoryDefinitions()
-    return self:BuildCategoryDefinitions()
-end
-
-function AutoOpenBar:GetCategoryByKey(key)
-    if not key then
-        return nil
-    end
-
-    self:BuildCategoryDefinitions()
-    return self.categoryByKey and self.categoryByKey[key] or nil
+    cfg.CategorySchemaVersion = CATEGORY_SCHEMA_VERSION
 end
 
 function AutoOpenBar:NormalizeCategoryOrder()
@@ -396,7 +352,7 @@ function AutoOpenBar:NormalizeCategoryOrder()
     local disabled = {}
 
     for _, key in ipairs(cfg.CategoryOrder) do
-        if self:GetCategoryByKey(key) then
+        if CATEGORY_BY_KEY[key] then
             if cfg.CategoryEnabled[key] == false then
                 tinsert(disabled, key)
             else
@@ -420,242 +376,64 @@ function AutoOpenBar:NormalizeCategoryOrder()
 end
 
 function AutoOpenBar:EnsureCategoryConfig()
-    if self._categoryConfigInitialized and self.categoryOrderIndex then
-        return
-    end
-
     local cfg = self:GetConfig()
-    local definitions = self:GetCategoryDefinitions()
-    local schemaChanged = cfg.CategorySchemaVersion ~= CATEGORY_SCHEMA_VERSION
 
-    if schemaChanged then
-        cfg.CategoryOrder = {}
-        cfg.CategoryEnabled = {}
-        for _, definition in ipairs(definitions) do
-            tinsert(cfg.CategoryOrder, definition.key)
-            cfg.CategoryEnabled[definition.key] = self:GetCategoryDefaultEnabled(definition)
-        end
-
-        if cfg.ShowQuestStarters == false then
-            cfg.CategoryEnabled[CATEGORY_KEYS.QUEST_STARTERS] = false
-        end
-
-        cfg.CategorySchemaVersion = CATEGORY_SCHEMA_VERSION
+    if cfg.CategorySchemaVersion ~= CATEGORY_SCHEMA_VERSION then
+        ResetCategoryConfig(cfg)
     else
-        local previousOrder = cfg.CategoryOrder
         local mergedOrder = {}
         local seen = {}
 
-        for _, key in ipairs(previousOrder) do
-            if type(key) == "string" and not seen[key] and self:GetCategoryByKey(key) then
+        for _, key in ipairs(cfg.CategoryOrder) do
+            if type(key) == "string" and not seen[key] and CATEGORY_BY_KEY[key] then
                 seen[key] = true
                 tinsert(mergedOrder, key)
             end
         end
 
-        for _, definition in ipairs(definitions) do
+        for _, definition in ipairs(CATEGORY_DEFINITIONS) do
             local key = definition.key
             if not seen[key] then
                 seen[key] = true
                 tinsert(mergedOrder, key)
             end
-
-            if cfg.CategoryEnabled[key] == nil then
-                cfg.CategoryEnabled[key] = self:GetCategoryDefaultEnabled(definition)
-            else
-                cfg.CategoryEnabled[key] = cfg.CategoryEnabled[key] and true or false
-            end
+            cfg.CategoryEnabled[key] = cfg.CategoryEnabled[key] ~= false
         end
 
         cfg.CategoryOrder = mergedOrder
-        cfg.CategorySchemaVersion = CATEGORY_SCHEMA_VERSION
     end
 
     self:NormalizeCategoryOrder()
-    self._categoryConfigInitialized = true
-end
-
-function AutoOpenBar:GetOrderedCategories(includeDisabled)
-    self:EnsureCategoryConfig()
-
-    local cfg = self:GetConfig()
-    local ordered = {}
-
-    for _, key in ipairs(cfg.CategoryOrder) do
-        local def = self:GetCategoryByKey(key)
-        if def then
-            local enabled = cfg.CategoryEnabled[key] ~= false
-            if includeDisabled or enabled then
-                ordered[#ordered + 1] = {
-                    key = key,
-                    label = def.label,
-                    enabled = enabled,
-                    definition = def,
-                }
-            end
-        end
-    end
-
-    return ordered
-end
-
-function AutoOpenBar:IsTrackingCategoryEnabled(categoryKey)
-    if not categoryKey then
-        return false
-    end
-
-    self:EnsureCategoryConfig()
-    local cfg = self:GetConfig()
-    return cfg.CategoryEnabled[categoryKey] ~= false
 end
 
 function AutoOpenBar:SetTrackingCategoryEnabled(categoryKey, enabled)
-    if not categoryKey or not self:GetCategoryByKey(categoryKey) then
+    if not CATEGORY_BY_KEY[categoryKey] then
         return
     end
 
-    self:EnsureCategoryConfig()
-    local cfg = self:GetConfig()
-    cfg.CategoryEnabled[categoryKey] = enabled and true or false
+    self:GetConfig().CategoryEnabled[categoryKey] = enabled and true or false
     self:NormalizeCategoryOrder()
-
-    if self.RefreshCategoryManagerWindow then
-        self:RefreshCategoryManagerWindow()
-    end
+    self:RefreshCategoryManagerWindow()
     self:RequestUpdate()
 end
 
-function AutoOpenBar:GetCategorySortIndex(categoryKey)
-    if not categoryKey then
-        return 99999
-    end
-
-    self:EnsureCategoryConfig()
-    return self.categoryOrderIndex and self.categoryOrderIndex[categoryKey] or 99999
-end
-
 function AutoOpenBar:ResetCategoryManagerDefaults()
-    local cfg = self:GetConfig()
-    local definitions = self:GetCategoryDefinitions()
-
-    cfg.CategoryOrder = {}
-    cfg.CategoryEnabled = {}
-    for _, definition in ipairs(definitions) do
-        tinsert(cfg.CategoryOrder, definition.key)
-        cfg.CategoryEnabled[definition.key] = self:GetCategoryDefaultEnabled(definition)
-    end
-
-    if cfg.ShowQuestStarters == false then
-        cfg.CategoryEnabled[CATEGORY_KEYS.QUEST_STARTERS] = false
-    end
-
-    cfg.CategorySchemaVersion = CATEGORY_SCHEMA_VERSION
-
+    ResetCategoryConfig(self:GetConfig())
     self:NormalizeCategoryOrder()
-
-    if self.RefreshCategoryManagerWindow then
-        self:RefreshCategoryManagerWindow()
-    end
+    self:RefreshCategoryManagerWindow()
     self:RequestUpdate()
 end
 ----------------------------------------------------------------------------------------
 -- Filtering
 ----------------------------------------------------------------------------------------
-function AutoOpenBar:BuildKnownHints()
-    self.knownTextHints = {}
-
-    for _, source in ipairs(KNOWN_HINT_SOURCES) do
-        local normalized = NormalizeTooltipText(source)
-        if normalized then
-            self.knownTextHints[normalized] = true
-        end
-    end
-
-    self.questStarterHint = NormalizeTooltipText(_G.ITEM_STARTS_QUEST)
-end
-
-function AutoOpenBar:IsTradeskillRecipeItem(itemID)
-    if not itemID or not C_Item or type(C_Item.GetItemInfoInstant) ~= "function" then
+local function HasKnownHint(text)
+    local normalized = NormalizeTooltipText(text)
+    if not normalized then
         return false
     end
 
-    local _, _, _, _, _, classID = C_Item.GetItemInfoInstant(itemID)
-    return classID == ITEM_CLASS_RECIPE
-end
-
-function AutoOpenBar:IsDecorItem(itemID)
-    if not itemID then
-        return false
-    end
-
-    if C_Item and type(C_Item.IsDecorItem) == "function" then
-        local ok, isDecor = pcall(C_Item.IsDecorItem, itemID)
-        if ok and isDecor then
-            return true
-        end
-    end
-
-    local classID, subClassID = self:GetItemClassAndSubclass(itemID)
-    return classID == ITEM_CLASS_HOUSING and subClassID == ITEM_HOUSING_SUBCLASS_DECOR
-end
-
-function AutoOpenBar:GetItemClassAndSubclass(itemID)
-    if not itemID or not C_Item or type(C_Item.GetItemInfoInstant) ~= "function" then
-        return nil, nil
-    end
-
-    local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
-    return classID, subClassID
-end
-
-function AutoOpenBar:IsUncollectedMountItem(itemID)
-    if not itemID or not C_MountJournal or type(C_MountJournal.GetMountFromItem) ~= "function" then
-        return false, nil
-    end
-
-    local mountID = C_MountJournal.GetMountFromItem(itemID)
-    if not mountID then
-        return false, nil
-    end
-
-    if type(C_MountJournal.GetMountInfoByID) ~= "function" then
-        return true, nil
-    end
-
-    local _, _, _, _, _, _, _, _, _, _, isCollected = C_MountJournal.GetMountInfoByID(mountID)
-    return true, isCollected == true
-end
-
-function AutoOpenBar:GetPetOwnershipByItem(itemID)
-    if not itemID or not C_PetJournal or type(C_PetJournal.GetPetInfoByItemID) ~= "function" then
-        return false, nil
-    end
-
-    local speciesID, _, _, creatureID = C_PetJournal.GetPetInfoByItemID(itemID)
-    if not speciesID and not creatureID then
-        return false, nil
-    end
-
-    if type(C_PetJournal.GetNumPetsInJournal) == "function" and creatureID then
-        local maxAllowed, numPets = C_PetJournal.GetNumPetsInJournal(creatureID)
-        if type(numPets) == "number" and type(maxAllowed) == "number" then
-            if maxAllowed <= 0 then
-                return true, numPets > 0
-            end
-            return true, numPets >= 1
-        end
-    end
-
-    return true, nil
-end
-
-function AutoOpenBar:HasKnownHint(normalizedText)
-    if not normalizedText or type(self.knownTextHints) ~= "table" then
-        return false
-    end
-
-    for hint in pairs(self.knownTextHints) do
-        if normalizedText:find(hint, 1, true) then
+    for index = 1, #KNOWN_HINTS do
+        if normalized:find(KNOWN_HINTS[index], 1, true) then
             return true
         end
     end
@@ -663,220 +441,198 @@ function AutoOpenBar:HasKnownHint(normalizedText)
     return false
 end
 
-function AutoOpenBar:EvaluateTooltipFlags(bag, slot)
-    local flags = {
-        hasLearnableLine = false,
-        hasLearnableSpellLine = false,
-        hasItemSpellTriggerLearnLine = false,
-        hasLearnTransmogSetLine = false,
-        hasLearnTransmogIllusionLine = false,
-        hasQuestStarterLine = false,
-    }
-
-    if not C_TooltipInfo or type(C_TooltipInfo.GetBagItem) ~= "function" then
-        return flags, false
-    end
-
-    local tooltipData = C_TooltipInfo.GetBagItem(bag, slot)
-    if not tooltipData or type(tooltipData.lines) ~= "table" then
-        return flags, false
-    end
-
-    local isAlreadyKnown = false
-
-    for _, lineData in ipairs(tooltipData.lines) do
-        local lineType = lineData and lineData.type
-
-        if lineType == LINE_TYPE.LEARNABLE_SPELL then
-            flags.hasLearnableLine = true
-            flags.hasLearnableSpellLine = true
-        elseif lineType == LINE_TYPE.ITEM_SPELL_TRIGGER_LEARN then
-            flags.hasLearnableLine = true
-            flags.hasItemSpellTriggerLearnLine = true
-        elseif lineType == LINE_TYPE.LEARN_TRANSMOG_SET then
-            flags.hasLearnableLine = true
-            flags.hasLearnTransmogSetLine = true
-        elseif lineType == LINE_TYPE.LEARN_TRANSMOG_ILLUSION then
-            flags.hasLearnableLine = true
-            flags.hasLearnTransmogIllusionLine = true
-        elseif lineType == LINE_TYPE.SPELL_DESCRIPTION then
-            local normalizedText = NormalizeTooltipText(lineData.leftText)
-            if self.questStarterHint and normalizedText and normalizedText:find(self.questStarterHint, 1, true) then
-                flags.hasQuestStarterLine = true
-            end
-        elseif lineType == LINE_TYPE.DISABLED_LINE or lineType == LINE_TYPE.ERROR_LINE then
-            local normalizedText = NormalizeTooltipText(lineData.leftText)
-            if self:HasKnownHint(normalizedText) then
-                isAlreadyKnown = true
-            end
-        end
-    end
-
-    return flags, isAlreadyKnown
+-- Blizzard colors unmet requirements red (skill, class, race, level, reputation,
+-- specialization, achievement, "already known"). Zone-only restrictions are temporary.
+local function IsUnmetRequirementLine(lineData)
+    local color = lineData.leftColor
+    return color ~= nil and color.r > 0.99 and color.g < 0.2 and color.b < 0.2
+        and lineData.leftText ~= NOT_HERE_TEXT
 end
 
-function AutoOpenBar:GetItemCategoryKey(bag, slot, info)
-    if not info or not info.itemID or not info.hyperlink then
-        return nil
+-- Returns the tooltip-derived category, whether the player cannot use the item now,
+-- and whether it is a locked lockbox.
+local function ScanTooltip(bag, slot)
+    local tooltipData = C_TooltipInfo.GetBagItem(bag, slot)
+    local lines = tooltipData and tooltipData.lines
+    if not lines then
+        return nil, false, false
     end
 
-    if info.hasLoot then
-        return CATEGORY_KEYS.CONTAINERS
-    end
+    local illusion, transmogSet, learnable, locked
 
-    local itemID = info.itemID
-    local classID, subClassID = self:GetItemClassAndSubclass(itemID)
+    for _, lineData in ipairs(lines) do
+        local lineType = lineData.type
 
-    local isMountItem, isMountCollected = self:IsUncollectedMountItem(itemID)
-    if isMountItem then
-        if isMountCollected then
-            return nil
-        end
-        return CATEGORY_KEYS.MOUNTS
-    end
-    if classID == ITEM_CLASS_MISCELLANEOUS and subClassID == ITEM_MISC_SUBCLASS_MOUNT then
-        return CATEGORY_KEYS.MOUNTS
-    end
-
-    if C_ToyBox and type(C_ToyBox.GetToyInfo) == "function" and type(PlayerHasToy) == "function" then
-        local toyID = C_ToyBox.GetToyInfo(itemID)
-        if toyID then
-            if PlayerHasToy(itemID) then
-                return nil
-            end
-            return CATEGORY_KEYS.TOYS
+        if lineData.leftText == LOCKED_TEXT then
+            locked = true
+        elseif IsUnmetRequirementLine(lineData) then
+            return nil, true, false
+        elseif lineType == LINE_TYPE.LEARN_TRANSMOG_ILLUSION then
+            illusion = true
+        elseif lineType == LINE_TYPE.LEARN_TRANSMOG_SET then
+            transmogSet = true
+        elseif lineType == LINE_TYPE.LEARNABLE_SPELL or lineType == LINE_TYPE.ITEM_SPELL_TRIGGER_LEARN then
+            learnable = true
+        elseif (lineType == LINE_TYPE.DISABLED_LINE or lineType == LINE_TYPE.ERROR_LINE) and HasKnownHint(lineData.leftText) then
+            return nil, true, false
         end
     end
 
-    local flags, isAlreadyKnown = self:EvaluateTooltipFlags(bag, slot)
-    if isAlreadyKnown then
-        return nil
+    local categoryKey
+    if illusion then
+        categoryKey = CATEGORY_KEYS.TRANSMOG_ILLUSIONS
+    elseif transmogSet then
+        categoryKey = CATEGORY_KEYS.TRANSMOG_SETS
+    elseif learnable then
+        categoryKey = CATEGORY_KEYS.LEARNABLES
     end
 
-    if self:IsDecorItem(itemID) then
+    return categoryKey, false, locked == true
+end
+
+local function IsDecorItem(itemID, classID, subClassID)
+    if classID == ITEM_CLASS_HOUSING and subClassID == ITEM_HOUSING_SUBCLASS_DECOR then
+        return true
+    end
+
+    local ok, isDecor = pcall(C_Item.IsDecorItem, itemID)
+    return ok and isDecor == true
+end
+
+local function GetClassCategory(itemID, collectible)
+    local _, _, _, _, _, classID, subClassID = C_Item.GetItemInfoInstant(itemID)
+
+    if collectible == "mounts" or (classID == ITEM_CLASS_MISCELLANEOUS and subClassID == ITEM_MISC_SUBCLASS_MOUNT) then
+        return CATEGORY_KEYS.MOUNTS
+    elseif collectible == "toys" then
+        return CATEGORY_KEYS.TOYS
+    elseif IsDecorItem(itemID, classID, subClassID) then
         return CATEGORY_KEYS.DECOR
-    end
-
-    local isPetItem, isPetCollected = self:GetPetOwnershipByItem(itemID)
-    if isPetItem then
-        if isPetCollected then
-            return nil
-        end
-
-        if classID == ITEM_CLASS_BATTLEPET then
-            return CATEGORY_KEYS.BATTLE_PETS
-        end
-
-        if classID == ITEM_CLASS_MISCELLANEOUS and subClassID == ITEM_MISC_SUBCLASS_COMPANION_PET then
-            return CATEGORY_KEYS.COMPANION_PETS
-        end
-
-        return CATEGORY_KEYS.BATTLE_PETS
-    end
-    if classID == ITEM_CLASS_BATTLEPET then
-        return CATEGORY_KEYS.BATTLE_PETS
-    end
-    if classID == ITEM_CLASS_MISCELLANEOUS and subClassID == ITEM_MISC_SUBCLASS_COMPANION_PET then
+    elseif classID == ITEM_CLASS_MISCELLANEOUS and subClassID == ITEM_MISC_SUBCLASS_COMPANION_PET then
         return CATEGORY_KEYS.COMPANION_PETS
-    end
-
-    if self:IsTradeskillRecipeItem(itemID) then
+    elseif collectible == "pets" or classID == ITEM_CLASS_BATTLEPET then
+        return CATEGORY_KEYS.BATTLE_PETS
+    elseif classID == ITEM_CLASS_RECIPE then
         return CATEGORY_KEYS.TRADESKILL_RECIPES
     end
+end
 
-    if flags.hasLearnTransmogIllusionLine then
-        return CATEGORY_KEYS.TRANSMOG_ILLUSIONS
+-- Returns the category key, plus true for a locked lockbox the player can pick.
+local function GetItemCategoryKey(bag, slot, info, canPickLock)
+    local itemID = info.itemID
+    if ignoredItemIDs[itemID] or not info.hyperlink then
+        return nil
     end
 
-    if flags.hasLearnTransmogSetLine then
-        return CATEGORY_KEYS.TRANSMOG_SETS
+    local categoryKey
+    if info.hasLoot then
+        categoryKey = CATEGORY_KEYS.CONTAINERS
+    else
+        -- Journal kinds only; learnable transmog is identified by tooltip lines.
+        local collectible, _, owned = RefineUI.Collections:ClassifyItem(itemID)
+        if owned == true then
+            return nil
+        end
+        categoryKey = GetClassCategory(itemID, collectible)
     end
 
-    if flags.hasLearnableLine then
-        return CATEGORY_KEYS.LEARNABLES
+    local isCached = C_Item.IsItemDataCachedByID(itemID)
+    if not isCached then
+        pendingItemIDs[itemID] = true
     end
 
-    if flags.hasQuestStarterLine then
+    local tooltipCategory, blocked, locked = ScanTooltip(bag, slot)
+    if blocked then
+        return nil
+    end
+
+    if locked and categoryKey == CATEGORY_KEYS.CONTAINERS then
+        if canPickLock then
+            return categoryKey, true
+        end
+        return nil
+    end
+
+    categoryKey = categoryKey or tooltipCategory
+    if categoryKey then
+        return categoryKey
+    end
+
+    -- Same rule as Blizzard's bag quest "!" overlay, minus quests already done.
+    local questInfo = C_Container.GetContainerItemQuestInfo(bag, slot)
+    local questID = questInfo.questID
+    if not questID then
+        if isCached then
+            ignoredItemIDs[itemID] = true
+        end
+        return nil
+    end
+
+    if not questInfo.isActive and not C_QuestLog.IsQuestFlaggedCompleted(questID) then
         return CATEGORY_KEYS.QUEST_STARTERS
     end
 
     return nil
 end
 
-function AutoOpenBar:ScanBags()
-    self:EnsureCategoryConfig()
+local function SortItems(a, b)
+    if a.sortIndex ~= b.sortIndex then
+        return a.sortIndex < b.sortIndex
+    end
+    if a.quality ~= b.quality then
+        return a.quality > b.quality
+    end
+    if a.name ~= b.name then
+        return a.name < b.name
+    end
+    return a.itemID < b.itemID
+end
 
+function AutoOpenBar:ScanBags()
+    local cfg = self:GetConfig()
+    local categoryEnabled = cfg.CategoryEnabled
+    local categoryOrderIndex = self.categoryOrderIndex
+    local canPickLock = C_SpellBook.IsSpellKnown(PICK_LOCK_SPELL_ID)
     local foundItems = {}
-    local itemByID = {}
+    local itemByKey = {}
 
     for bag = BAG_INDEX_START, BAG_INDEX_END do
-        local numSlots = C_Container.GetContainerNumSlots(bag) or 0
-        for slot = 1, numSlots do
+        for slot = 1, C_Container.GetContainerNumSlots(bag) do
             local info = C_Container.GetContainerItemInfo(bag, slot)
             if info then
-                local categoryKey = self:GetItemCategoryKey(bag, slot, info)
-                if categoryKey and self:IsTrackingCategoryEnabled(categoryKey) then
+                local categoryKey, pickLock = GetItemCategoryKey(bag, slot, info, canPickLock)
+                if categoryKey and categoryEnabled[categoryKey] ~= false then
                     local itemID = info.itemID
-                    local entry = itemByID[itemID]
+                    -- Locked copies of a lockbox need a different action than opened ones.
+                    local entryKey = pickLock and -itemID or itemID
+                    local entry = itemByKey[entryKey]
                     local stackCount = info.stackCount or 1
 
                     if entry then
                         entry.count = entry.count + stackCount
-                        entry.bag = bag
-                        entry.slot = slot
-                        entry.link = info.hyperlink or entry.link
-                        entry.icon = info.iconFileID or entry.icon
-                        entry.quality = info.quality or entry.quality
-                        entry.name = info.itemName or entry.name
                     else
                         entry = {
                             itemID = itemID,
                             categoryKey = categoryKey,
+                            pickLock = pickLock,
+                            sortIndex = categoryOrderIndex[categoryKey],
                             bag = bag,
                             slot = slot,
                             link = info.hyperlink,
-                            icon = info.iconFileID or (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(itemID)),
+                            icon = info.iconFileID,
                             quality = info.quality or 0,
-                            name = info.itemName or tostring(itemID),
+                            name = info.itemName or "",
                             count = stackCount,
                         }
-                        itemByID[itemID] = entry
-                        tinsert(foundItems, entry)
+                        itemByKey[entryKey] = entry
+                        foundItems[#foundItems + 1] = entry
                     end
                 end
             end
         end
     end
 
-    for _, entry in ipairs(foundItems) do
-        if C_Item and C_Item.GetItemCount then
-            local totalCount = C_Item.GetItemCount(entry.itemID)
-            if type(totalCount) == "number" then
-                entry.count = totalCount
-            end
-        end
-    end
-
-    tsort(foundItems, function(a, b)
-        local categorySortA = self:GetCategorySortIndex(a.categoryKey)
-        local categorySortB = self:GetCategorySortIndex(b.categoryKey)
-        if categorySortA ~= categorySortB then
-            return categorySortA < categorySortB
-        end
-
-        if (a.quality or 0) ~= (b.quality or 0) then
-            return (a.quality or 0) > (b.quality or 0)
-        end
-
-        local nameA = a.name or ""
-        local nameB = b.name or ""
-        if nameA ~= nameB then
-            return nameA < nameB
-        end
-
-        return (a.itemID or 0) < (b.itemID or 0)
-    end)
-
+    tsort(foundItems, SortItems)
     return foundItems
 end
 ----------------------------------------------------------------------------------------
@@ -955,61 +711,33 @@ function AutoOpenBar:RefreshMoverVisibility(itemCount)
     end
 end
 
+local function SetLayer(frame, strata, level)
+    if frame:GetFrameStrata() ~= strata then
+        frame:SetFrameStrata(strata)
+    end
+    if frame:GetFrameLevel() ~= level then
+        frame:SetFrameLevel(level)
+    end
+end
+
 function AutoOpenBar:UpdateButtonLayering()
     if InCombatLockdown() then
         return
     end
 
     local isEditMode = self.isEditModeActive == true
-    local moverStrata = (self.Mover and self.Mover.GetFrameStrata and self.Mover:GetFrameStrata()) or "DIALOG"
+    local moverStrata = self.Mover:GetFrameStrata()
+    local moverLevel = self.Mover:GetFrameLevel()
     local barStrata = isEditMode and "LOW" or moverStrata
-    local moverLevel = (self.Mover and self.Mover.GetFrameLevel and self.Mover:GetFrameLevel()) or 1
     local barLevel = isEditMode and 1 or (moverLevel + 1)
-    local buttonLevel = barLevel + 1
 
-    if self.BarFrame and self.BarFrame.GetFrameStrata and self.BarFrame.SetFrameStrata then
-        if self.BarFrame:GetFrameStrata() ~= barStrata then
-            self.BarFrame:SetFrameStrata(barStrata)
-        end
-    end
-    if self.BarFrame and self.BarFrame.GetFrameLevel and self.BarFrame.SetFrameLevel then
-        if self.BarFrame:GetFrameLevel() ~= barLevel then
-            self.BarFrame:SetFrameLevel(barLevel)
-        end
-    end
-
+    SetLayer(self.BarFrame, barStrata, barLevel)
     for index = 1, #buttons do
         local button = buttons[index]
-        if button then
-            if button.GetFrameStrata and button.SetFrameStrata then
-                if button:GetFrameStrata() ~= barStrata then
-                    button:SetFrameStrata(barStrata)
-                end
-            end
-            if button.GetFrameLevel and button.SetFrameLevel then
-                if button:GetFrameLevel() ~= buttonLevel then
-                    button:SetFrameLevel(buttonLevel)
-                end
-            end
-            if button.EnableMouse then
-                button:EnableMouse(not isEditMode)
-            end
-        end
+        SetLayer(button, barStrata, barLevel + 1)
+        button:EnableMouse(not isEditMode)
     end
-
-    if self.PreviewFrame then
-        if self.PreviewFrame.GetFrameStrata and self.PreviewFrame.SetFrameStrata then
-            if self.PreviewFrame:GetFrameStrata() ~= moverStrata then
-                self.PreviewFrame:SetFrameStrata(moverStrata)
-            end
-        end
-        if self.PreviewFrame.GetFrameLevel and self.PreviewFrame.SetFrameLevel then
-            local previewLevel = moverLevel + 10
-            if self.PreviewFrame:GetFrameLevel() ~= previewLevel then
-                self.PreviewFrame:SetFrameLevel(previewLevel)
-            end
-        end
-    end
+    SetLayer(self.PreviewFrame, moverStrata, moverLevel + 10)
 end
 
 function AutoOpenBar:CreateButton(index)
@@ -1070,100 +798,77 @@ function AutoOpenBar:GetButton(index)
     return buttons[index]
 end
 
+-- Left and right click share one action; nil arguments clear it.
+local function SetClickAction(button, actionType, item, spell, targetBag, targetSlot)
+    button:SetAttribute("type1", actionType)
+    button:SetAttribute("type2", actionType)
+    button:SetAttribute("item1", item)
+    button:SetAttribute("item2", item)
+    button:SetAttribute("spell1", spell)
+    button:SetAttribute("spell2", spell)
+    button:SetAttribute("target-bag", targetBag)
+    button:SetAttribute("target-slot", targetSlot)
+end
+
+local function UpdateCooldown(state)
+    local startTime, duration = C_Container.GetContainerItemCooldown(state.bag, state.slot)
+    if duration and duration > 0 then
+        state.cooldown:SetCooldown(startTime, duration)
+    else
+        state.cooldown:SetCooldown(0, 0)
+    end
+end
+
 local function ClearButton(button)
-    if not button then
-        return
-    end
-
     local state = GetButtonState(button)
-    if state then
-        state.itemID = nil
-        state.itemLink = nil
-        state.bag = nil
-        state.slot = nil
+    state.itemLink = nil
+    state.bag = nil
+    state.slot = nil
 
-        if state.countText then
-            state.countText:SetText("")
-        end
-
-        if state.cooldown then
-            state.cooldown:SetCooldown(0, 0)
-        end
-    end
-
-    button:SetAttribute("type1", nil)
-    button:SetAttribute("item1", nil)
-    button:SetAttribute("type2", nil)
-    button:SetAttribute("item2", nil)
+    SetClickAction(button, nil)
     button:Hide()
 end
 
 function AutoOpenBar:UpdateButtonFromItem(button, index, itemData)
     local cfg = self:GetConfig()
     local point, relativePoint, xOffset, yOffset = self:GetButtonPoint(index)
+    local bag, slot = itemData.bag, itemData.slot
 
     RefineUI.Size(button, cfg.ButtonSize, cfg.ButtonSize)
     button:ClearAllPoints()
     button:SetPoint(point, self.BarFrame, relativePoint, xOffset, yOffset)
 
-    local useItem = "item:" .. itemData.itemID
-    button:SetAttribute("type1", "item")
-    button:SetAttribute("item1", useItem)
-    button:SetAttribute("type2", "item")
-    button:SetAttribute("item2", useItem)
+    if itemData.pickLock then
+        SetClickAction(button, "spell", nil, PICK_LOCK_SPELL_ID, bag, slot)
+    elseif itemData.categoryKey == CATEGORY_KEYS.CONTAINERS then
+        -- Target the exact slot so a still-locked copy of the same box is never chosen.
+        SetClickAction(button, "item", bag .. " " .. slot)
+    else
+        SetClickAction(button, "item", "item:" .. itemData.itemID)
+    end
 
     local state = GetButtonState(button)
-    state.itemID = itemData.itemID
     state.itemLink = itemData.link
-    state.bag = itemData.bag
-    state.slot = itemData.slot
+    state.bag = bag
+    state.slot = slot
 
-    if state.iconTexture then
-        state.iconTexture:SetTexture(itemData.icon)
-    end
-
-    if state.countText then
-        if itemData.count and itemData.count > 1 then
-            state.countText:SetText(itemData.count)
-        else
-            state.countText:SetText("")
-        end
-    end
-
-    if state.cooldown and type(itemData.bag) == "number" and type(itemData.slot) == "number" then
-        local startTime, duration = C_Container.GetContainerItemCooldown(itemData.bag, itemData.slot)
-        if startTime and duration and duration > 0 then
-            state.cooldown:SetCooldown(startTime, duration)
-        else
-            state.cooldown:SetCooldown(0, 0)
-        end
-    end
+    state.iconTexture:SetTexture(itemData.icon)
+    state.countText:SetText(itemData.count > 1 and itemData.count or "")
+    UpdateCooldown(state)
 
     button:Show()
 end
 
 function AutoOpenBar:UpdateVisibleCooldowns()
-    for i = 1, #buttons do
-        local button = buttons[i]
-        if button and button:IsShown() then
-            local state = GetButtonState(button)
-            if state and state.cooldown and type(state.bag) == "number" and type(state.slot) == "number" then
-                local startTime, duration = C_Container.GetContainerItemCooldown(state.bag, state.slot)
-                if startTime and duration and duration > 0 then
-                    state.cooldown:SetCooldown(startTime, duration)
-                else
-                    state.cooldown:SetCooldown(0, 0)
-                end
-            end
+    for index = 1, #buttons do
+        local button = buttons[index]
+        if button:IsShown() then
+            UpdateCooldown(GetButtonState(button))
         end
     end
 end
 
 function AutoOpenBar:UpdateBar()
-    if not self.Mover or not self.BarFrame then
-        return
-    end
-
     if InCombatLockdown() then
         self.pendingCombatRefresh = true
         return
@@ -1171,7 +876,6 @@ function AutoOpenBar:UpdateBar()
 
     local items = self:ScanBags()
     local itemCount = #items
-    self.lastItemCount = itemCount
 
     local displayCount = itemCount
     if self.isEditModeActive and displayCount == 0 then
@@ -1180,13 +884,11 @@ function AutoOpenBar:UpdateBar()
 
     self:ApplyFrameDimensions(displayCount)
 
-    for i = 1, #buttons do
-        ClearButton(buttons[i])
-    end
-
     for index, itemData in ipairs(items) do
-        local button = self:GetButton(index)
-        self:UpdateButtonFromItem(button, index, itemData)
+        self:UpdateButtonFromItem(self:GetButton(index), index, itemData)
+    end
+    for index = itemCount + 1, #buttons do
+        ClearButton(buttons[index])
     end
 
     self:UpdateButtonLayering()
@@ -1194,10 +896,6 @@ function AutoOpenBar:UpdateBar()
 end
 
 function AutoOpenBar:RequestUpdate()
-    if self:GetConfig().Enable == false then
-        return
-    end
-
     RefineUI:Debounce(DEBOUNCE_KEY, 0.05, function()
         self:UpdateBar()
     end)
@@ -1311,11 +1009,13 @@ end
 
 function AutoOpenBar:RefreshCategoryManagerWindow()
     local window = self:EnsureCategoryManagerWindow()
-    local categories = self:GetOrderedCategories(true)
+    local cfg = self:GetConfig()
+    local categoryOrder = cfg.CategoryOrder
     local rows = window.Rows
     local yOffset = 0
 
-    for index, category in ipairs(categories) do
+    for index, key in ipairs(categoryOrder) do
+        local enabled = cfg.CategoryEnabled[key] ~= false
         local row = rows[index]
         if not row then
             row = CreateFrame("Button", nil, window.Content)
@@ -1377,16 +1077,16 @@ function AutoOpenBar:RefreshCategoryManagerWindow()
         yOffset = yOffset + CATEGORY_ROW_HEIGHT + CATEGORY_ROW_SPACING
 
         row.order:SetText(("%d."):format(index))
-        row.categoryKey = category.key
-        row.text:SetText(category.label)
-        row.check:SetChecked(category.enabled)
+        row.categoryKey = key
+        row.text:SetText(CATEGORY_BY_KEY[key].label)
+        row.check:SetChecked(enabled)
         row.check:Enable()
 
-        UpdateCategoryRowVisual(row, category.enabled)
+        UpdateCategoryRowVisual(row, enabled)
         row:Show()
     end
 
-    for index = #categories + 1, #rows do
+    for index = #categoryOrder + 1, #rows do
         rows[index]:Hide()
         rows[index].categoryKey = nil
     end
@@ -1504,13 +1204,7 @@ function AutoOpenBar:RegisterEditModeSettings()
         end,
         set = function(_, value)
             local cfg = self:GetConfig()
-            local size = tonumber(value) or DEFAULTS.ButtonSize
-            if size < 20 then
-                size = 20
-            elseif size > 64 then
-                size = 64
-            end
-            cfg.ButtonSize = floor(size + 0.5)
+            cfg.ButtonSize = ClampRound(value, DEFAULTS.ButtonSize, 20, 64)
             self:RequestUpdate()
         end,
     }
@@ -1527,13 +1221,7 @@ function AutoOpenBar:RegisterEditModeSettings()
         end,
         set = function(_, value)
             local cfg = self:GetConfig()
-            local spacing = tonumber(value) or DEFAULTS.ButtonSpacing
-            if spacing < 0 then
-                spacing = 0
-            elseif spacing > 20 then
-                spacing = 20
-            end
-            cfg.ButtonSpacing = floor(spacing + 0.5)
+            cfg.ButtonSpacing = ClampRound(value, DEFAULTS.ButtonSpacing, 0, 20)
             self:RequestUpdate()
         end,
     }
@@ -1550,13 +1238,7 @@ function AutoOpenBar:RegisterEditModeSettings()
         end,
         set = function(_, value)
             local cfg = self:GetConfig()
-            local limit = tonumber(value) or DEFAULTS.ButtonLimit
-            if limit < 1 then
-                limit = 1
-            elseif limit > 20 then
-                limit = 20
-            end
-            cfg.ButtonLimit = floor(limit + 0.5)
+            cfg.ButtonLimit = ClampRound(value, DEFAULTS.ButtonLimit, 1, 20)
             self:RequestUpdate()
         end,
     }
@@ -1715,27 +1397,11 @@ end
 -- Lifecycle
 ----------------------------------------------------------------------------------------
 function AutoOpenBar:OnEnable()
-    local cfg = self:GetConfig()
-    if cfg.Enable == false then
-        if self.Mover then
-            self.Mover:Hide()
-        end
-        self:HideCategoryManagerWindow()
-        return
-    end
-
-    if not C_Container or type(C_Container.GetContainerItemInfo) ~= "function" then
-        self:Error("Container APIs are unavailable.")
-        return
-    end
-
     self.pendingCombatRefresh = false
-    self.lastItemCount = 0
     self.isEditModeActive = false
-    self._categoryConfigInitialized = nil
 
+    self:NormalizeConfig()
     self:EnsureCategoryConfig()
-    self:BuildKnownHints()
     self:EnsureFrames()
     self:ApplyMoverPosition()
     self:RegisterEditModeSettings()
@@ -1743,36 +1409,34 @@ function AutoOpenBar:OnEnable()
     self:RegisterEditModeCallbacks()
     self:HookCategoryManagerToDialog()
 
-    RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", function()
+    local function RequestUpdate()
         self:RequestUpdate()
-    end, EVENT_KEY.BAG_UPDATE)
+    end
+
+    for _, event in ipairs(UPDATE_EVENTS) do
+        RefineUI:RegisterEventCallback(event, RequestUpdate, "AutoOpenBar:" .. event)
+    end
+
+    RefineUI:RegisterEventCallback("GET_ITEM_INFO_RECEIVED", function(_, itemID)
+        if pendingItemIDs[itemID] then
+            pendingItemIDs[itemID] = nil
+            self:RequestUpdate()
+        end
+    end, "AutoOpenBar:GET_ITEM_INFO_RECEIVED")
 
     RefineUI:RegisterEventCallback("BAG_UPDATE_COOLDOWN", function()
         self:UpdateVisibleCooldowns()
-    end, EVENT_KEY.BAG_COOLDOWN)
-
-    RefineUI:RegisterEventCallback("GET_ITEM_INFO_RECEIVED", function()
-        self:RequestUpdate()
-    end, EVENT_KEY.ITEM_INFO)
-
-    RefineUI:RegisterEventCallback("TOYS_UPDATED", function()
-        self:RequestUpdate()
-    end, EVENT_KEY.TOYS_UPDATED)
-
-    RefineUI:RegisterEventCallback("NEW_TOY_ADDED", function()
-        self:RequestUpdate()
-    end, EVENT_KEY.NEW_TOY)
-
-    RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
-        self:RequestUpdate()
-    end, EVENT_KEY.ENTERING_WORLD)
+    end, "AutoOpenBar:BAG_UPDATE_COOLDOWN")
 
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
         if self.pendingCombatRefresh then
             self.pendingCombatRefresh = false
             self:RequestUpdate()
         end
-    end, EVENT_KEY.REGEN_ENABLED)
+    end, "AutoOpenBar:PLAYER_REGEN_ENABLED")
+
+    -- Mount, pet, toy, and appearance learning changes "already collected" results.
+    RefineUI.Collections:Subscribe("AutoOpenBar", RequestUpdate)
 
     self:RequestUpdate()
 end

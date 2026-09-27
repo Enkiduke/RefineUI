@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------------------------
 -- CDM Component: State
--- Description: External state registry helpers and reload recommendation prompt UI.
+-- Description: External state registry helpers and cooldown manager switch prompt UI.
 ----------------------------------------------------------------------------------------
 
 local _, RefineUI = ...
@@ -25,7 +25,6 @@ local type = type
 local CreateFrame = CreateFrame
 local UIParent = UIParent
 local ReloadUI = ReloadUI
-local InCombatLockdown = InCombatLockdown
 
 ----------------------------------------------------------------------------------------
 -- Public Methods
@@ -40,10 +39,6 @@ end
 
 function CDM:StateClear(owner, key)
     return RefineUI:RegistryClear(self.STATE_REGISTRY, owner, key)
-end
-
-function CDM:MarkReloadRecommendationPending()
-    self.reloadRecommendationPending = true
 end
 
 function CDM:SetPendingPostReloadSettingsOpen(mode, displayMode)
@@ -88,89 +83,6 @@ function CDM:ClearPendingPostReloadSettingsOpen()
     if type(cfg) == "table" then
         cfg.PendingPostReloadSettingsOpen = nil
     end
-end
-
-function CDM:PrepareReloadRecommendationReload()
-    if self.ApplyPendingBlizzardAssignmentSync
-        and self.IsRefineRuntimeOwnerActive
-        and self:IsRefineRuntimeOwnerActive()
-        and self.NeedsBlizzardAssignmentSync
-        and self:NeedsBlizzardAssignmentSync()
-    then
-        if type(InCombatLockdown) == "function" and InCombatLockdown() then
-            RefineUI:Print("CDM changes are pending. Leave combat before reloading so Blizzard sync can be saved.")
-            return false
-        end
-
-        local applied = self:ApplyPendingBlizzardAssignmentSync()
-        if not applied and self:NeedsBlizzardAssignmentSync() then
-            RefineUI:Print("CDM changes could not be saved to the Blizzard layout yet. Try again out of combat.")
-            return false
-        end
-    end
-
-    return true
-end
-
-function CDM:ShowReloadRecommendationPrompt()
-    if self.ReloadPrompt then
-        self.ReloadPrompt:Show()
-        return
-    end
-
-    local frame = CreateFrame("Frame", "RefineUI_CDM_ReloadPrompt", UIParent)
-    RefineUI:AddAPI(frame)
-    frame:Size(400, 182)
-    frame:Point("CENTER")
-    frame:SetFrameStrata("DIALOG")
-    frame:SetTemplate("Transparent")
-    frame:EnableMouse(true)
-
-    local header = CreateFrame("Frame", nil, frame)
-    RefineUI:AddAPI(header)
-    header:Size(400, 26)
-    header:Point("TOP", frame, "TOP", 0, 0)
-    header:SetTemplate("Overlay")
-
-    local title = header:CreateFontString(nil, "OVERLAY")
-    RefineUI:AddAPI(title)
-    title:Font(14, nil, nil, true)
-    title:SetPoint("CENTER", header, "CENTER", 0, 0)
-    title:SetText("Save CDM Changes")
-    title:SetTextColor(1, 0.82, 0)
-
-    local message = frame:CreateFontString(nil, "OVERLAY")
-    RefineUI:AddAPI(message)
-    message:Font(12, nil, nil, true)
-    message:SetPoint("TOP", header, "BOTTOM", 0, -15)
-    message:SetWidth(360)
-    message:SetJustifyH("CENTER")
-    message:SetText("Your CDM changes are ready, but they will not be saved until the UI reloads.\n\nReload now to save changes and refresh cooldown tracking.")
-
-    local reloadButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    RefineUI:AddAPI(reloadButton)
-    reloadButton:Size(130, 26)
-    reloadButton:Point("BOTTOMRIGHT", frame, "BOTTOM", -12, 15)
-    reloadButton:SkinButton()
-    reloadButton:SetText("Save & Reload")
-    reloadButton:SetScript("OnClick", function()
-        if CDM.PrepareReloadRecommendationReload and not CDM:PrepareReloadRecommendationReload() then
-            return
-        end
-        ReloadUI()
-    end)
-
-    local laterButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    RefineUI:AddAPI(laterButton)
-    laterButton:Size(130, 26)
-    laterButton:Point("BOTTOMLEFT", frame, "BOTTOM", 12, 15)
-    laterButton:SkinButton()
-    laterButton:SetText("Keep Editing")
-    laterButton:SetScript("OnClick", function()
-        frame:Hide()
-    end)
-
-    self.ReloadPrompt = frame
 end
 
 function CDM:ShowCooldownManagerSwitchPrompt(targetMode, options)
@@ -237,6 +149,9 @@ function CDM:ShowCooldownManagerSwitchPrompt(targetMode, options)
                     CDM:SetPendingPostReloadSettingsOpen(requestedMode, requestedDisplayMode)
                 end
                 CDM:SetAuraMode(requestedMode)
+                if requestedMode == "refineui" then
+                    CDM:SyncAssignmentsToBlizzardLayout()
+                end
                 ReloadUI()
             end
         end)
@@ -251,16 +166,3 @@ function CDM:ShowCooldownManagerSwitchPrompt(targetMode, options)
     frame:Show()
 end
 
-function CDM:RequireReloadForBlizzardIsolation()
-    self:MarkReloadRecommendationPending()
-    self:ShowReloadRecommendationIfPending()
-end
-
-function CDM:ShowReloadRecommendationIfPending()
-    if not self.reloadRecommendationPending then
-        return
-    end
-
-    self.reloadRecommendationPending = nil
-    self:ShowReloadRecommendationPrompt()
-end

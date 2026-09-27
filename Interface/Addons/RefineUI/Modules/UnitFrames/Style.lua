@@ -20,8 +20,8 @@ local Config = RefineUI.Config
 local _G = _G
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
-local type = type
-local pairs = pairs
+local UnitIsDeadOrGhost = UnitIsDeadOrGhost
+local ipairs = ipairs
 local unpack = unpack
 
 ----------------------------------------------------------------------------------------
@@ -29,6 +29,9 @@ local unpack = unpack
 ----------------------------------------------------------------------------------------
 local Private = UnitFrames:GetPrivate()
 local C = Private.Constants
+
+local SELECTION_TOP_OFFSET = 6
+local SELECTION_REGION_KEYS = { "TopLeftCorner", "TopRightCorner", "BottomLeftCorner", "BottomRightCorner", "MouseOverHighlight" }
 
 ----------------------------------------------------------------------------------------
 -- Layout Helpers
@@ -91,78 +94,65 @@ local function ApplyRaidTargetIconAnchor(frame, contentContext, hpContainer)
     AnchorRaidIcon(raidTargetIcon)
 end
 
-local function ApplySelectionHighlight(frame, bar)
-    if not frame.Selection or not frame.Selection.TopLeftCorner or not bar then
+local anchoringSelection = false
+
+local function AnchorSelectionRegion(selection, region, bar)
+    if anchoringSelection or InCombatLockdown() then
         return
     end
 
-    local xOffsetLeft = 0
-    local xOffsetRight = 0
-    local yOffsetBottom = 0
-    local yOffsetTop = 6
+    anchoringSelection = true
+    region:ClearAllPoints()
+    if region == selection.TopLeftCorner then
+        region:SetPoint("TOPLEFT", bar, "TOPLEFT", RefineUI:Scale(-16), RefineUI:Scale(15) + SELECTION_TOP_OFFSET)
+    elseif region == selection.TopRightCorner then
+        region:SetPoint("TOPRIGHT", bar, "TOPRIGHT", RefineUI:Scale(15), RefineUI:Scale(15) + SELECTION_TOP_OFFSET)
+    elseif region == selection.BottomLeftCorner then
+        region:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", RefineUI:Scale(-16), RefineUI:Scale(-25))
+    elseif region == selection.BottomRightCorner then
+        region:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", RefineUI:Scale(15), RefineUI:Scale(-25))
+    elseif region == selection.MouseOverHighlight then
+        region:SetPoint("TOPLEFT", selection.TopLeftCorner, "TOPLEFT", RefineUI:Scale(8), RefineUI:Scale(-8))
+        region:SetPoint("BOTTOMRIGHT", selection.BottomRightCorner, "BOTTOMRIGHT", RefineUI:Scale(-8), RefineUI:Scale(8))
+    end
+    anchoringSelection = false
+end
 
-    local function AnchorSelectionRegions()
-        if InCombatLockdown() then
-            return
-        end
-
-        frame.Selection.TopLeftCorner:ClearAllPoints()
-        frame.Selection.TopLeftCorner:SetPoint("TOPLEFT", bar, "TOPLEFT", RefineUI:Scale(-16) + xOffsetLeft, RefineUI:Scale(15) + yOffsetTop)
-        frame.Selection.TopRightCorner:ClearAllPoints()
-        frame.Selection.TopRightCorner:SetPoint("TOPRIGHT", bar, "TOPRIGHT", RefineUI:Scale(15) + xOffsetRight, RefineUI:Scale(15) + yOffsetTop)
-        frame.Selection.BottomLeftCorner:ClearAllPoints()
-        frame.Selection.BottomLeftCorner:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", RefineUI:Scale(-16) + xOffsetLeft, RefineUI:Scale(-25) + yOffsetBottom)
-        frame.Selection.BottomRightCorner:ClearAllPoints()
-        frame.Selection.BottomRightCorner:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", RefineUI:Scale(15) + xOffsetRight, RefineUI:Scale(-25) + yOffsetBottom)
-
-        frame.Selection.MouseOverHighlight:ClearAllPoints()
-        frame.Selection.MouseOverHighlight:SetPoint("TOPLEFT", frame.Selection.TopLeftCorner, "TOPLEFT", RefineUI:Scale(8), RefineUI:Scale(-8))
-        frame.Selection.MouseOverHighlight:SetPoint("BOTTOMRIGHT", frame.Selection.BottomRightCorner, "BOTTOMRIGHT", RefineUI:Scale(-8), RefineUI:Scale(8))
-
-        if frame.Selection.HorizontalLabel then
-            frame.Selection.HorizontalLabel:ClearAllPoints()
-            frame.Selection.HorizontalLabel:SetPoint("CENTER", frame.Selection.MouseOverHighlight, "CENTER", 0, 0)
-        end
+local function HookSelectionHighlight(frame, bar)
+    local selection = frame.Selection
+    if not selection or not selection.TopLeftCorner or not bar then
+        return
     end
 
-    AnchorSelectionRegions()
-
-    local secureHooked = {
-        frame.Selection.TopLeftCorner,
-        frame.Selection.TopRightCorner,
-        frame.Selection.BottomLeftCorner,
-        frame.Selection.BottomRightCorner,
-        frame.Selection.MouseOverHighlight,
-    }
-
-    for _, region in pairs(secureHooked) do
+    for _, key in ipairs(SELECTION_REGION_KEYS) do
+        local region = selection[key]
         RefineUI:HookOnce(UnitFrames:BuildHookKey(region, "SetPoint:Selection"), region, "SetPoint", function(selfRegion)
-            if InCombatLockdown() then
-                return
-            end
-
-            UnitFrames:WithStateGuard(selfRegion, "SelectionAnchor", function()
-                selfRegion:ClearAllPoints()
-                if selfRegion == frame.Selection.TopLeftCorner then
-                    selfRegion:SetPoint("TOPLEFT", bar, "TOPLEFT", RefineUI:Scale(-16) + xOffsetLeft, RefineUI:Scale(15) + yOffsetTop)
-                elseif selfRegion == frame.Selection.TopRightCorner then
-                    selfRegion:SetPoint("TOPRIGHT", bar, "TOPRIGHT", RefineUI:Scale(15) + xOffsetRight, RefineUI:Scale(15) + yOffsetTop)
-                elseif selfRegion == frame.Selection.BottomLeftCorner then
-                    selfRegion:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", RefineUI:Scale(-16) + xOffsetLeft, RefineUI:Scale(-25) + yOffsetBottom)
-                elseif selfRegion == frame.Selection.BottomRightCorner then
-                    selfRegion:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", RefineUI:Scale(15) + xOffsetRight, RefineUI:Scale(-25) + yOffsetBottom)
-                elseif selfRegion == frame.Selection.MouseOverHighlight then
-                    selfRegion:SetPoint("TOPLEFT", frame.Selection.TopLeftCorner, "TOPLEFT", RefineUI:Scale(8), RefineUI:Scale(-8))
-                    selfRegion:SetPoint("BOTTOMRIGHT", frame.Selection.BottomRightCorner, "BOTTOMRIGHT", RefineUI:Scale(-8), RefineUI:Scale(8))
-                end
-            end)
+            AnchorSelectionRegion(selection, selfRegion, bar)
         end)
+    end
+end
+
+local function ApplySelectionHighlight(frame, bar)
+    local selection = frame.Selection
+    if not selection or not selection.TopLeftCorner or not bar then
+        return
+    end
+
+    for _, key in ipairs(SELECTION_REGION_KEYS) do
+        AnchorSelectionRegion(selection, selection[key], bar)
+    end
+
+    if selection.HorizontalLabel then
+        selection.HorizontalLabel:ClearAllPoints()
+        selection.HorizontalLabel:SetPoint("CENTER", selection.MouseOverHighlight, "CENTER", 0, 0)
     end
 end
 
 ----------------------------------------------------------------------------------------
 -- Dynamic Styling
 ----------------------------------------------------------------------------------------
+-- Caches the unit colors so the per-update SetStatusBarColor hooks stay cheap.
+-- Blizzard calls this path on unit, faction, and art changes.
 function UnitFrames:ApplyDynamicStyle(frame)
     if not frame then
         return
@@ -173,27 +163,313 @@ function UnitFrames:ApplyDynamicStyle(frame)
         return
     end
 
-    local unit = frame.unit or "player"
     local _, contentMain, hpContainer, manaBar = self:GetFrameContainers(frame)
     if not hpContainer or not manaBar then
         return
     end
 
-    if hpContainer.HealthBar then
-        hpContainer.HealthBar:SetStatusBarTexture(C.TEXTURE_HEALTH_BAR)
-        hpContainer.HealthBar:SetStatusBarDesaturated(true)
-        local hr, hg, hb = self.GetUnitHealthColor(unit)
-        hpContainer.HealthBar:SetStatusBarColor(hr, hg, hb)
-    end
+    local data = self:GetFrameData(frame)
+    local unit = frame.unit or "player"
+    local hr, hg, hb = self.GetUnitHealthColor(unit)
+    data.hr, data.hg, data.hb = hr, hg, hb
+    data.isDead = UnitIsDeadOrGhost(unit)
+
+    local healthBar = hpContainer.HealthBar
+    healthBar:SetStatusBarTexture(C.TEXTURE_HEALTH_BAR)
+    healthBar:SetStatusBarDesaturated(true)
+    healthBar:SetStatusBarColor(hr, hg, hb)
 
     manaBar:SetStatusBarTexture(C.TEXTURE_POWER_BAR)
     manaBar:SetStatusBarDesaturated(true)
-    local pr, pg, pb = self.GetUnitPowerColor(unit)
-    manaBar:SetStatusBarColor(pr, pg, pb)
+    manaBar:SetStatusBarColor(self.GetUnitPowerColor(unit))
 
-    if contentMain and frame ~= PlayerFrame and contentMain.Name then
-        local nr, ng, nb = self.GetUnitHealthColor(unit)
-        contentMain.Name:SetTextColor(nr, ng, nb)
+    if frame ~= PlayerFrame and contentMain.Name then
+        contentMain.Name:SetTextColor(hr, hg, hb)
+    end
+end
+
+----------------------------------------------------------------------------------------
+-- Bar Shape
+----------------------------------------------------------------------------------------
+-- Blizzard resets masks and bar art in CheckClassification and PlayerFrame_To*Art,
+-- often in combat. Everything here is a region, so it is safe to reapply in combat.
+function UnitFrames:ApplyBarShape(frame)
+    local refineUF = self:GetFrameData(frame).RefineUF
+    if not refineUF then
+        return
+    end
+
+    local _, _, hpContainer, manaBar = self:GetFrameContainers(frame)
+    if not hpContainer or not manaBar then
+        return
+    end
+
+    local isPlayer = frame == PlayerFrame
+    local healthBar = hpContainer.HealthBar
+    local showMana = manaBar:IsShown()
+
+    local texture = refineUF.Texture
+    texture:SetTexture(showMana and C.TEXTURE_FRAME or C.TEXTURE_FRAME_SMALL)
+    RefineUI:SetPixelSize(texture, Config.UnitFrames.Layout.Width, 45)
+    texture:ClearAllPoints()
+    if isPlayer then
+        texture:SetPoint("TOPLEFT", RefineUI:Scale(66), RefineUI:Scale(-38))
+    elseif frame.isBossFrame or self:IsBossUnit(frame.unit) then
+        texture:SetPoint("TOPLEFT", RefineUI:Scale(2), RefineUI:Scale(-26))
+    else
+        texture:SetPoint("TOPLEFT", RefineUI:Scale(2), RefineUI:Scale(-38))
+    end
+
+    local healthMask = hpContainer.HealthBarMask
+    if healthMask then
+        healthMask:SetTexture(C.MASK_HEALTH)
+        healthMask:ClearAllPoints()
+        if isPlayer then
+            healthMask:SetPoint("TOPLEFT", healthBar, "TOPLEFT", RefineUI:Scale(-33), RefineUI:Scale(9))
+            healthMask:SetSize(RefineUI:Scale(190), RefineUI:Scale(34))
+        else
+            healthMask:SetPoint("TOPLEFT", healthBar, "TOPLEFT", RefineUI:Scale(-35), RefineUI:Scale(5))
+            healthMask:SetSize(RefineUI:Scale(193), RefineUI:Scale(30))
+        end
+        healthBar:GetStatusBarTexture():AddMaskTexture(healthMask)
+    end
+
+    local manaMask = manaBar.ManaBarMask
+    if manaMask then
+        manaMask:SetTexture(C.MASK_MANA)
+        manaMask:ClearAllPoints()
+        if isPlayer then
+            manaMask:SetPoint("TOPLEFT", manaBar, "TOPLEFT", RefineUI:Scale(-34), RefineUI:Scale(7))
+            manaMask:SetSize(RefineUI:Scale(192), RefineUI:Scale(25))
+        else
+            manaMask:SetPoint("TOPLEFT", manaBar, "TOPLEFT", RefineUI:Scale(-33), RefineUI:Scale(8))
+            manaMask:SetSize(RefineUI:Scale(190), RefineUI:Scale(28))
+        end
+        manaBar:GetStatusBarTexture():AddMaskTexture(manaMask)
+    end
+
+    local background = refineUF.Background
+    background:ClearAllPoints()
+    background:SetPoint("TOPLEFT", healthBar, "TOPLEFT", 0, 0)
+    background:SetPoint("BOTTOMRIGHT", manaBar, "BOTTOMRIGHT", isPlayer and 0 or RefineUI:Scale(-10), showMana and 0 or RefineUI:Scale(11))
+end
+
+----------------------------------------------------------------------------------------
+-- One-Time Setup
+----------------------------------------------------------------------------------------
+local function SetupFrame(frame, data, content, contentMain, hpContainer, manaBar)
+    local hiddenFrame = RefineUI.HiddenFrame
+    local contentContext = content.PlayerFrameContentContextual or content.TargetFrameContentContextual
+    local healthBar = hpContainer.HealthBar
+    local isPlayer = frame == PlayerFrame
+    local isTargetOrFocus = frame == TargetFrame or frame == FocusFrame
+
+    RefineUI:HookOnce(UnitFrames:BuildHookKey(healthBar, "SetStatusBarColor:Health"), healthBar, "SetStatusBarColor", function(selfBar, r, g, b)
+        local hr, hg, hb = data.hr, data.hg, data.hb
+        if hr and (r ~= hr or g ~= hg or b ~= hb) then
+            selfBar:SetStatusBarColor(hr, hg, hb)
+        end
+    end)
+    RefineUI:HookOnce(UnitFrames:BuildHookKey(manaBar, "SetStatusBarColor:Power"), manaBar, "SetStatusBarColor", function(selfBar, r, g, b)
+        local pr, pg, pb = UnitFrames.GetUnitPowerColor(frame.unit or "player")
+        if r ~= pr or g ~= pg or b ~= pb then
+            selfBar:SetStatusBarColor(pr, pg, pb)
+        end
+    end)
+    RefineUI:HookOnce(UnitFrames:BuildHookKey(manaBar, "SetStatusBarTexture:Power"), manaBar, "SetStatusBarTexture", function(selfBar, texture)
+        if texture ~= C.TEXTURE_POWER_BAR then
+            selfBar:SetStatusBarTexture(C.TEXTURE_POWER_BAR)
+            selfBar:SetStatusBarDesaturated(true)
+        end
+    end)
+    RefineUI:HookOnce(UnitFrames:BuildHookKey(healthBar, "SetStatusBarTexture:Health"), healthBar, "SetStatusBarTexture", function(selfBar, texture)
+        if texture ~= C.TEXTURE_HEALTH_BAR then
+            selfBar:SetStatusBarTexture(C.TEXTURE_HEALTH_BAR)
+            selfBar:SetStatusBarDesaturated(true)
+        end
+    end)
+
+    if isPlayer then
+        frame.PlayerFrameContainer:SetParent(hiddenFrame)
+    end
+
+    -- StatusTexture keeps its Show hook so Blizzard's per-frame rest/combat pulse stays idle.
+    UnitFrames:EnforceHiddenRegion(contentMain.StatusTexture, nil)
+    UnitFrames:EnforceHiddenRegion(contentMain.ReputationColor, hiddenFrame)
+    UnitFrames:EnforceHiddenRegion(contentMain.HitIndicator, hiddenFrame)
+
+    if contentContext then
+        UnitFrames:EnforceHiddenRegion(contentContext.PlayerPortraitCornerIcon, hiddenFrame)
+        UnitFrames:EnforceHiddenRegion(contentContext.AttackIcon, hiddenFrame)
+        UnitFrames:EnforceHiddenRegion(contentContext.PrestigeBadge, hiddenFrame)
+        UnitFrames:EnforceHiddenRegion(contentContext.PrestigePortrait, hiddenFrame)
+        UnitFrames:EnforceHiddenRegion(contentContext.LeaderIcon, nil)
+        UnitFrames:EnforceHiddenRegion(contentContext.GuideIcon, nil)
+
+        if isPlayer then
+            UnitFrames:EnforceHiddenRegion(contentContext.GroupIndicator, hiddenFrame)
+            UnitFrames:EnforceHiddenRegion(contentContext.RoleIcon, hiddenFrame)
+
+            if contentContext.PlayerRestLoop then
+                contentContext.PlayerRestLoop:ClearAllPoints()
+                contentContext.PlayerRestLoop:SetPoint("CENTER", healthBar, "CENTER", 0, 0)
+                contentContext.PlayerRestLoop:SetScale(0.5)
+            end
+        elseif isTargetOrFocus then
+            UnitFrames:EnforceHiddenRegion(contentContext.QuestIcon, hiddenFrame)
+            UnitFrames:EnforceHiddenRegion(contentContext.HighLevelTexture, hiddenFrame)
+        end
+    end
+
+    ApplyRaidTargetIconAnchor(frame, contentContext, hpContainer)
+    UnitFrames:EnsureTooltipHooks(frame)
+
+    local refineUF = CreateFrame("Frame", nil, frame)
+    refineUF:SetFrameStrata("HIGH")
+    refineUF:SetAllPoints(frame)
+
+    refineUF.Texture = refineUF:CreateTexture(nil, "OVERLAY")
+    if Config.General.BorderColor then
+        refineUF.Texture:SetVertexColor(unpack(Config.General.BorderColor))
+    end
+
+    refineUF.Background = frame:CreateTexture(nil, "BACKGROUND")
+    refineUF.Background:SetTexture(C.TEXTURE_BACKGROUND)
+    refineUF.Background:SetVertexColor(0.5, 0.5, 0.5, 1)
+
+    local bgMask = refineUF:CreateMaskTexture()
+    bgMask:SetAllPoints(refineUF.Background)
+    bgMask:SetTexture(C.MASK_FRAME, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    refineUF.Background:AddMaskTexture(bgMask)
+
+    data.RefineUF = refineUF
+
+    if UnitFrames.CreateCustomText then
+        UnitFrames.CreateCustomText(frame)
+    end
+
+    local level = contentMain.LevelText
+    if isPlayer and not level then
+        level = _G.PlayerLevelText
+    end
+    if level then
+        UnitFrames:EnforceHiddenRegion(level, hiddenFrame)
+        if isPlayer then
+            RefineUI:HookOnce(UnitFrames:BuildHookKey(level, "SetParent:Hidden"), level, "SetParent", function(selfLevel, parent)
+                if parent ~= hiddenFrame then
+                    selfLevel:SetParent(hiddenFrame)
+                end
+            end)
+        end
+    end
+
+    local name = contentMain.Name or (isPlayer and frame.name)
+    if name then
+        if isPlayer then
+            UnitFrames:EnforceHiddenRegion(name, hiddenFrame)
+        else
+            local cfg = Config.UnitFrames.Fonts
+            name:SetParent(refineUF)
+            name:ClearAllPoints()
+            name:SetPoint("BOTTOM", hpContainer, "TOP", 0, 0)
+            name:SetJustifyH("CENTER")
+            name:SetWordWrap(false)
+            if cfg.NameWidth then
+                name:SetWidth(cfg.NameWidth)
+            end
+            if cfg.NameSize then
+                RefineUI.Font(name, cfg.NameSize)
+            end
+
+            RefineUI:HookOnce(UnitFrames:BuildHookKey(name, "SetWidth:Styled"), name, "SetWidth", function(selfName, width)
+                if cfg.NameWidth and width ~= cfg.NameWidth then
+                    selfName:SetWidth(cfg.NameWidth)
+                end
+            end)
+            RefineUI:HookOnce(UnitFrames:BuildHookKey(name, "SetWordWrap:Styled"), name, "SetWordWrap", function(selfName, wrap)
+                if wrap ~= false then
+                    selfName:SetWordWrap(false)
+                end
+            end)
+            RefineUI:HookOnce(UnitFrames:BuildHookKey(name, "SetPoint:Styled"), name, "SetPoint", function(selfName)
+                UnitFrames:WithStateGuard(selfName, "NameAnchor", function()
+                    selfName:ClearAllPoints()
+                    selfName:SetPoint("BOTTOM", hpContainer, "TOP", 0, 0)
+                end)
+            end)
+            RefineUI:HookOnce(UnitFrames:BuildHookKey(name, "SetTextColor:Styled"), name, "SetTextColor", function(selfName, r, g, b)
+                local hr, hg, hb = data.hr, data.hg, data.hb
+                if hr and (r ~= hr or g ~= hg or b ~= hb) then
+                    selfName:SetTextColor(hr, hg, hb)
+                end
+            end)
+        end
+    end
+
+    HookSelectionHighlight(frame, healthBar)
+
+    local castBar
+    if isPlayer then
+        castBar = PlayerCastingBarFrame
+    else
+        castBar = frame.spellbar
+        if not castBar and frame.GetName then
+            local frameName = frame:GetName()
+            if frameName and frameName ~= "" then
+                castBar = _G[frameName .. "SpellBar"]
+            end
+        end
+    end
+    if castBar and UnitFrames.StyleCastBar then
+        UnitFrames:StyleCastBar(castBar, frame)
+    end
+
+    if isTargetOrFocus and UnitFrames.UpdateUnitAuras then
+        RefineUI:HookOnce(UnitFrames:BuildHookKey(frame, "ConfigureAuraContainer:Styled"), frame, "ConfigureAuraContainer", UnitFrames.UpdateUnitAuras)
+        RefineUI:HookOnce(UnitFrames:BuildHookKey(frame, "UpdateAuras:Styled"), frame, "UpdateAuras", UnitFrames.RefreshUnitAuras)
+    end
+end
+
+----------------------------------------------------------------------------------------
+-- Static Layout
+----------------------------------------------------------------------------------------
+local function ApplyStaticLayout(frame, hpContainer, manaBar)
+    local isPlayer = frame == PlayerFrame
+    local ownsScaleViaEditMode = isPlayer or frame == TargetFrame or frame == FocusFrame
+    if not ownsScaleViaEditMode and Config.UnitFrames.Scale and frame:GetScale() ~= Config.UnitFrames.Scale then
+        frame:SetScale(Config.UnitFrames.Scale)
+    end
+
+    if not isPlayer then
+        local frameContainer = frame.TargetFrameContainer
+        if frame.isBossFrame or UnitFrames:IsBossUnit(frame.unit) then
+            ApplyBossBarLayout(frameContainer, hpContainer, manaBar)
+        end
+        frameContainer:SetAlpha(0)
+        frameContainer:Hide()
+    end
+
+    ApplySelectionHighlight(frame, hpContainer.HealthBar)
+
+    if isPlayer then
+        UnitFrames:EnsurePlayerSecondaryManaOverlay(frame, manaBar)
+
+        if UnitFrames.UpdatePlayerRestPresentation then
+            UnitFrames:UpdatePlayerRestPresentation(frame)
+        end
+
+        if UnitFrames.CreateClassResources then
+            UnitFrames:CreateClassResources(frame)
+        end
+
+        local managed = _G.PlayerBottomManagedFrameContainer
+        if managed then
+            managed:SetParent(RefineUI.HiddenFrame)
+            managed:SetAlpha(0)
+            managed:Hide()
+        end
+    elseif (frame == TargetFrame or frame == FocusFrame) and UnitFrames.UpdateUnitAuras then
+        UnitFrames.UpdateUnitAuras(frame)
     end
 end
 
@@ -210,357 +486,31 @@ function UnitFrames:StyleFrame(frame)
         return
     end
 
-    if InCombatLockdown() then
-        self:QueueStaticStyle(frame)
-        self:ApplyDynamicStyle(frame)
-        return
-    end
-
-    Private.PendingStaticStyleFrames[frame] = nil
-    local data = self:GetFrameData(frame)
-    local unit = frame.unit or "player"
-    local isBossFrame = frame.isBossFrame or self:IsBossUnit(unit)
-
-    local ownsScaleViaEditMode = frame == PlayerFrame or frame == TargetFrame or frame == FocusFrame
-    if not ownsScaleViaEditMode and Config.UnitFrames.Scale and frame:GetScale() ~= Config.UnitFrames.Scale then
-        frame:SetScale(Config.UnitFrames.Scale)
-    end
-
-    local cfg = Config.UnitFrames.Fonts
-    local frameContainer = frame.PlayerFrameContainer or frame.TargetFrameContainer
     local content, contentMain, hpContainer, manaBar = self:GetFrameContainers(frame)
     if not hpContainer or not manaBar then
         return
     end
 
-    local contentContext = content and (content.PlayerFrameContentContextual or content.TargetFrameContentContextual)
-    local hiddenFrame = RefineUI.HiddenFrame
+    self:ApplyDynamicStyle(frame)
 
-    if isBossFrame then
-        ApplyBossBarLayout(frameContainer, hpContainer, manaBar)
-    end
-
-    if hpContainer.HealthBar then
-        hpContainer.HealthBar:SetStatusBarTexture(C.TEXTURE_HEALTH_BAR)
-        hpContainer.HealthBar:SetStatusBarDesaturated(true)
-    end
-    manaBar:SetStatusBarTexture(C.TEXTURE_POWER_BAR)
-    manaBar:SetStatusBarDesaturated(true)
-
-    local hr, hg, hb = self.GetUnitHealthColor(unit)
-    hpContainer.HealthBar:SetStatusBarColor(hr, hg, hb)
-    RefineUI:HookOnce(self:BuildHookKey(hpContainer.HealthBar, "SetStatusBarColor:Health"), hpContainer.HealthBar, "SetStatusBarColor", function(selfBar, r1, g1, b1)
-        local r2, g2, b2 = UnitFrames.GetUnitHealthColor(unit)
-        if r1 ~= r2 or g1 ~= g2 or b1 ~= b2 then
-            selfBar:SetStatusBarColor(r2, g2, b2)
+    if InCombatLockdown() then
+        self:ApplyBarShape(frame)
+        if self.RefreshCustomText then
+            self.RefreshCustomText(frame)
         end
-    end)
-
-    local pr, pg, pb = self.GetUnitPowerColor(unit)
-    manaBar:SetStatusBarColor(pr, pg, pb)
-    RefineUI:HookOnce(self:BuildHookKey(manaBar, "SetStatusBarColor:Power"), manaBar, "SetStatusBarColor", function(selfBar, r1, g1, b1)
-        local r2, g2, b2 = UnitFrames.GetUnitPowerColor(unit)
-        if r1 ~= r2 or g1 ~= g2 or b1 ~= b2 then
-            selfBar:SetStatusBarColor(r2, g2, b2)
-        end
-    end)
-    RefineUI:HookOnce(self:BuildHookKey(manaBar, "SetStatusBarTexture:Power"), manaBar, "SetStatusBarTexture", function(selfBar, texture)
-        if texture ~= C.TEXTURE_POWER_BAR then
-            selfBar:SetStatusBarTexture(C.TEXTURE_POWER_BAR)
-            selfBar:SetStatusBarDesaturated(true)
-        end
-    end)
-    RefineUI:HookOnce(self:BuildHookKey(hpContainer.HealthBar, "SetStatusBarTexture:Health"), hpContainer.HealthBar, "SetStatusBarTexture", function(selfBar, texture)
-        if texture ~= C.TEXTURE_HEALTH_BAR then
-            selfBar:SetStatusBarTexture(C.TEXTURE_HEALTH_BAR)
-            selfBar:SetStatusBarDesaturated(true)
-        end
-    end)
-
-    if data.RefineStyle then
-        data.RefineStyle:SetAlpha(0)
-        data.RefineStyle:Hide()
+        self:QueueStaticStyle(frame)
+        return
     end
 
-    if frame == PlayerFrame then
-        if not InCombatLockdown() then
-            frameContainer:SetParent(hiddenFrame)
-        end
-    else
-        frameContainer:SetAlpha(0)
-        frameContainer:Hide()
-    end
-
-    if contentMain and contentMain.StatusTexture then
-        self:EnforceHiddenRegion(contentMain.StatusTexture, hiddenFrame)
-    end
-    if contentContext and contentContext.PlayerPortraitCornerIcon then
-        self:EnforceHiddenRegion(contentContext.PlayerPortraitCornerIcon, hiddenFrame)
-    end
-    if frame == PlayerFrame and contentContext and contentContext.GroupIndicator then
-        self:EnforceHiddenRegion(contentContext.GroupIndicator, hiddenFrame)
-    end
-    if contentMain and contentMain.ReputationColor then
-        self:EnforceHiddenRegion(contentMain.ReputationColor, hiddenFrame)
-    end
-    if contentMain and contentMain.HitIndicator then
-        self:EnforceHiddenRegion(contentMain.HitIndicator, hiddenFrame)
-    end
-
-    if contentContext then
-        for _, icon in pairs({ contentContext.LeaderIcon, contentContext.GuideIcon }) do
-            if icon then
-                self:EnforceHiddenRegion(icon, nil)
-            end
-        end
-    end
-
-    ApplyRaidTargetIconAnchor(frame, contentContext, hpContainer)
-
-    if contentContext then
-        self:EnforceHiddenRegion(contentContext.AttackIcon, hiddenFrame)
-        if frame == TargetFrame or frame == FocusFrame then
-            self:EnforceHiddenRegion(contentContext.QuestIcon, hiddenFrame)
-        end
-    end
-
-    if contentContext then
-        self:EnforceHiddenRegion(contentContext.PrestigeBadge, hiddenFrame)
-        self:EnforceHiddenRegion(contentContext.PrestigePortrait, hiddenFrame)
-
-        if frame == TargetFrame or frame == FocusFrame then
-            self:EnforceHiddenRegion(contentContext.HighLevelTexture, hiddenFrame)
-        end
-    end
-
-    self:EnsureTooltipHooks(frame)
-
+    Private.PendingStaticStyleFrames[frame] = nil
+    local data = self:GetFrameData(frame)
     if not data.RefineUF then
-        data.RefineUF = CreateFrame("Frame", nil, frame)
-        data.RefineUF:SetFrameStrata("HIGH")
-        data.RefineUF:SetAllPoints(frame)
-
-        data.RefineUF.Texture = data.RefineUF:CreateTexture(nil, "OVERLAY")
-        RefineUI:SetPixelSize(data.RefineUF.Texture, Config.UnitFrames.Layout.Width, 46)
-
-        data.RefineUF.Background = frame:CreateTexture(nil, "BACKGROUND")
-        data.RefineUF.Background:SetTexture(C.TEXTURE_BACKGROUND)
-        data.RefineUF.Background:SetVertexColor(0.5, 0.5, 0.5, 1)
+        SetupFrame(frame, data, content, contentMain, hpContainer, manaBar)
     end
 
-    local refineUF = data.RefineUF
-    local showMana = manaBar:IsShown()
-    local bgYOffset = 0
-
-    if not showMana then
-        refineUF.Texture:SetTexture(C.TEXTURE_FRAME_SMALL)
-        RefineUI:SetPixelSize(refineUF.Texture, Config.UnitFrames.Layout.Width, 46)
-        bgYOffset = RefineUI:Scale(11)
-    else
-        refineUF.Texture:SetTexture(C.TEXTURE_FRAME)
-        RefineUI:SetPixelSize(refineUF.Texture, Config.UnitFrames.Layout.Width, 46)
-    end
-
-    if Config.General.BorderColor then
-        refineUF.Texture:SetVertexColor(unpack(Config.General.BorderColor))
-    end
-
-    RefineUI:SetPixelSize(refineUF.Texture, Config.UnitFrames.Layout.Width, 45)
-
-    if frame == PlayerFrame then
-        refineUF.Texture:ClearAllPoints()
-        refineUF.Texture:SetPoint("TOPLEFT", RefineUI:Scale(66), RefineUI:Scale(-38))
-        if hpContainer.HealthBarMask then
-            hpContainer.HealthBarMask:SetTexture(C.MASK_HEALTH)
-            hpContainer.HealthBarMask:ClearAllPoints()
-            hpContainer.HealthBarMask:SetPoint("TOPLEFT", hpContainer.HealthBar, "TOPLEFT", RefineUI:Scale(-33), RefineUI:Scale(9))
-            hpContainer.HealthBarMask:SetSize(RefineUI:Scale(190), RefineUI:Scale(34))
-            if hpContainer.HealthBar:GetStatusBarTexture() then
-                hpContainer.HealthBar:GetStatusBarTexture():AddMaskTexture(hpContainer.HealthBarMask)
-            end
-        end
-
-        if manaBar.ManaBarMask then
-            manaBar.ManaBarMask:SetTexture(C.MASK_MANA)
-            manaBar.ManaBarMask:SetSize(RefineUI:Scale(192), RefineUI:Scale(25))
-            manaBar.ManaBarMask:ClearAllPoints()
-            manaBar.ManaBarMask:SetPoint("TOPLEFT", manaBar, "TOPLEFT", RefineUI:Scale(-34), RefineUI:Scale(7))
-            if manaBar:GetStatusBarTexture() then
-                manaBar:GetStatusBarTexture():AddMaskTexture(manaBar.ManaBarMask)
-            end
-        end
-
-        if contentContext and contentContext.RoleIcon then
-            contentContext.RoleIcon:SetParent(hiddenFrame)
-            contentContext.RoleIcon:Hide()
-        end
-
-        if contentContext and contentContext.PlayerRestLoop then
-            contentContext.PlayerRestLoop:ClearAllPoints()
-            contentContext.PlayerRestLoop:SetPoint("CENTER", hpContainer.HealthBar, "CENTER", 0, 0)
-            contentContext.PlayerRestLoop:SetScale(0.5)
-        end
-    else
-        refineUF.Texture:ClearAllPoints()
-        if isBossFrame then
-            refineUF.Texture:SetPoint("TOPLEFT", RefineUI:Scale(2), RefineUI:Scale(-26))
-        else
-            refineUF.Texture:SetPoint("TOPLEFT", RefineUI:Scale(2), RefineUI:Scale(-38))
-        end
-
-        if hpContainer.HealthBarMask then
-            hpContainer.HealthBarMask:SetTexture(C.MASK_HEALTH)
-            hpContainer.HealthBarMask:SetSize(RefineUI:Scale(193), RefineUI:Scale(30))
-            hpContainer.HealthBarMask:ClearAllPoints()
-            hpContainer.HealthBarMask:SetPoint("TOPLEFT", hpContainer.HealthBar, "TOPLEFT", RefineUI:Scale(-35), RefineUI:Scale(5))
-            if hpContainer.HealthBar:GetStatusBarTexture() then
-                hpContainer.HealthBar:GetStatusBarTexture():AddMaskTexture(hpContainer.HealthBarMask)
-            end
-        end
-
-        if manaBar.ManaBarMask then
-            manaBar.ManaBarMask:SetTexture(C.MASK_MANA)
-            manaBar.ManaBarMask:SetSize(RefineUI:Scale(190), RefineUI:Scale(28))
-            manaBar.ManaBarMask:ClearAllPoints()
-            manaBar.ManaBarMask:SetPoint("TOPLEFT", manaBar, "TOPLEFT", RefineUI:Scale(-33), RefineUI:Scale(8))
-            if manaBar:GetStatusBarTexture() then
-                manaBar:GetStatusBarTexture():AddMaskTexture(manaBar.ManaBarMask)
-            end
-        end
-    end
-
-    refineUF.Background:ClearAllPoints()
-    refineUF.Background:SetPoint("TOPLEFT", hpContainer.HealthBar, "TOPLEFT", 0, 0)
-    refineUF.Background:SetPoint("BOTTOMRIGHT", manaBar, "BOTTOMRIGHT", (frame == PlayerFrame and 0 or RefineUI:Scale(-10)), bgYOffset)
-
-    if not data.BgMask then
-        data.BgMask = refineUF:CreateMaskTexture()
-        data.BgMask:SetAllPoints(refineUF.Background)
-        data.BgMask:SetTexture(C.MASK_FRAME, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-        refineUF.Background:AddMaskTexture(data.BgMask)
-    end
-
-    if frame == PlayerFrame then
-        self:EnsurePlayerSecondaryManaOverlay(frame, manaBar)
-    end
-
-    if self.CreateCustomText and not data.customTextCreated then
-        self.CreateCustomText(frame)
-        data.customTextCreated = true
-    end
-
-    if frame == PlayerFrame and self.UpdatePlayerRestPresentation then
-        self:UpdatePlayerRestPresentation(frame)
-    end
-
-    local level = contentMain.LevelText
-    if frame == PlayerFrame and not level then
-        level = _G.PlayerLevelText
-    end
-
-    if level then
-        if frame == PlayerFrame then
-            if not InCombatLockdown() then
-                level:SetParent(hiddenFrame)
-            end
-            level:Hide()
-            RefineUI:HookOnce(self:BuildHookKey(level, "Show:Hidden"), level, "Show", function(selfLevel)
-                selfLevel:Hide()
-            end)
-            if not InCombatLockdown() then
-                RefineUI:HookOnce(self:BuildHookKey(level, "SetParent:Hidden"), level, "SetParent", function(selfLevel, parent)
-                    if parent ~= hiddenFrame then
-                        selfLevel:SetParent(hiddenFrame)
-                    end
-                end)
-            end
-        else
-            self:EnforceHiddenRegion(level, hiddenFrame)
-        end
-    end
-
-    local name = contentMain.Name or (frame == PlayerFrame and frame.name)
-    if name then
-        if frame == PlayerFrame then
-            self:EnforceHiddenRegion(name, hiddenFrame)
-            RefineUI:HookOnce(self:BuildHookKey(name, "SetText:Hidden"), name, "SetText", function(selfName)
-                selfName:SetAlpha(0)
-            end)
-        else
-            local r, g, b = self.GetUnitHealthColor(unit)
-            name:SetTextColor(r, g, b)
-            name:SetParent(refineUF)
-            name:ClearAllPoints()
-            name:SetPoint("BOTTOM", hpContainer, "TOP", 0, 0)
-            name:SetJustifyH("CENTER")
-            name:SetWordWrap(false)
-            if cfg.NameWidth then
-                name:SetWidth(cfg.NameWidth)
-            end
-            if cfg.NameSize then
-                RefineUI.Font(name, cfg.NameSize)
-            end
-
-            RefineUI:HookOnce(self:BuildHookKey(name, "SetWidth:Styled"), name, "SetWidth", function(selfName, width)
-                if cfg.NameWidth and width ~= cfg.NameWidth then
-                    selfName:SetWidth(cfg.NameWidth)
-                end
-            end)
-            RefineUI:HookOnce(self:BuildHookKey(name, "SetWordWrap:Styled"), name, "SetWordWrap", function(selfName, wrap)
-                if wrap ~= false then
-                    selfName:SetWordWrap(false)
-                end
-            end)
-            RefineUI:HookOnce(self:BuildHookKey(name, "SetPoint:Styled"), name, "SetPoint", function(selfName)
-                UnitFrames:WithStateGuard(selfName, "NameAnchor", function()
-                    selfName:ClearAllPoints()
-                    selfName:SetPoint("BOTTOM", hpContainer, "TOP", 0, 0)
-                end)
-            end)
-            RefineUI:HookOnce(self:BuildHookKey(name, "SetTextColor:Styled"), name, "SetTextColor", function(selfName, r1, g1, b1)
-                local r2, g2, b2 = UnitFrames.GetUnitHealthColor(unit)
-                if r1 ~= r2 or g1 ~= g2 or b1 ~= b2 then
-                    selfName:SetTextColor(r2, g2, b2)
-                end
-            end)
-        end
-    end
-
-    ApplySelectionHighlight(frame, hpContainer.HealthBar)
-
-    local castBar
-    if frame == PlayerFrame then
-        castBar = PlayerCastingBarFrame
-    else
-        castBar = frame.spellbar
-        if not castBar and frame.GetName then
-            local frameName = frame:GetName()
-            if frameName and frameName ~= "" then
-                castBar = _G[frameName .. "SpellBar"]
-            end
-        end
-    end
-    if castBar and self.StyleCastBar then
-        self:StyleCastBar(castBar, frame)
-    end
-
-    if frame == PlayerFrame then
-        if self.CreateClassResources then
-            self:CreateClassResources(frame)
-        end
-
-        local managed = _G.PlayerFrameBottomManagedFramesContainer
-        if managed then
-            if not InCombatLockdown() then
-                managed:SetParent(hiddenFrame)
-            end
-            managed:SetAlpha(0)
-            managed:Hide()
-        end
-    end
-
-    if (frame == TargetFrame or frame == FocusFrame) and self.UpdateUnitAuras then
-        self.UpdateUnitAuras(frame)
-        RefineUI:HookOnce(self:BuildHookKey(frame, "UpdateAuras:Styled"), frame, "UpdateAuras", UnitFrames.UpdateUnitAuras)
+    ApplyStaticLayout(frame, hpContainer, manaBar)
+    self:ApplyBarShape(frame)
+    if self.RefreshCustomText then
+        self.RefreshCustomText(frame)
     end
 end

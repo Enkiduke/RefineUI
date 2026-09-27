@@ -38,11 +38,16 @@ function Maps:WaypointCommand(message)
         RefineUI:Print("Usage: /way [mapID] x, y (0-100), or /way clear")
         return
     end
+    self:PlaceUserWaypoint(mapID, x / 100, y / 100)
+end
+
+-- Places and super-tracks a waypoint from normalized (0-1) map coordinates.
+function Maps:PlaceUserWaypoint(mapID, x, y)
     if not C_Map.CanSetUserWaypointOnMap(mapID) then
         RefineUI:Print("A waypoint cannot be placed on that map.")
         return
     end
-    C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(mapID, x / 100, y / 100))
+    C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(mapID, x, y))
     C_SuperTrack.SetSuperTrackedUserWaypoint(true)
 end
 

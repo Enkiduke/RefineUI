@@ -1,4 +1,4 @@
-## Interface: 120100, 120005, 120001, 120000
+## Interface: 120100
 ## Title: |cffffd200Refine|rUI
 ## Notes: A Refined User Interface.
 ## Author: Enkiduke

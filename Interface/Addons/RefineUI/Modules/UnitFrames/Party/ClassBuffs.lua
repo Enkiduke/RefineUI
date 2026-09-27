@@ -1,6 +1,7 @@
 ----------------------------------------------------------------------------------------
 -- UnitFrames Party: Class Buffs
--- Description: Class healer-buff tracking data, config accessors, sort/order logic.
+-- Description: Tracked group-buff data and settings (Important / Tracked / Untracked,
+--              manual order, border color, frame color).
 ----------------------------------------------------------------------------------------
 local _, RefineUI = ...
 local Config = RefineUI.Config
@@ -13,44 +14,48 @@ local UF = UnitFrames
 local P = UnitFrames:GetPrivate().Party
 if not P then return end
 
+local CDM = RefineUI:GetModule("CDM")
+
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
-local type = type
+local ipairs = ipairs
 local tostring = tostring
-local tonumber = tonumber
-local GetSpellInfo = C_Spell and C_Spell.GetSpellInfo
-local GetTime = GetTime
-local issecretvalue = _G.issecretvalue
-
-local IsUnreadableNumber = P.IsUnreadableNumber
+local tinsert = table.insert
+local tremove = table.remove
+local tsort = table.sort
+local band = bit.band
+local IsPlayerSpell = IsPlayerSpell
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
 local QUESTION_MARK_ICON = 134400
 
-local IMPORTANT_SORT_MODE = {
-    MANUAL = "MANUAL",
-    ASCENDING = "ASCENDING",
-    DESCENDING = "DESCENDING",
+local SECTION = {
+    IMPORTANT = "Important",
+    TRACKED = "Tracked",
+    UNTRACKED = "Untracked",
 }
 
-local CLASS_HEALER_BUFFS = {
+local CLASS_GROUP_BUFFS = {
     EVOKER = {
-        { key = "evoker_dream_breath", spellIDs = { 355941 } },
-        { key = "evoker_dream_flight", spellIDs = { 363502 } },
+        { key = "evoker_dream_breath", spellIDs = { 355941 }, knownSpellIDs = { 355936 } },
+        { key = "evoker_dream_flight", spellIDs = { 363502 }, knownSpellIDs = { 359816 } },
         { key = "evoker_echo", spellIDs = { 364343 } },
         { key = "evoker_reversion", spellIDs = { 366155 } },
-        { key = "evoker_echo_reversion", spellIDs = { 367364 } },
-        { key = "evoker_lifebind", spellIDs = { 373267 } },
-        { key = "evoker_echo_dream_breath", spellIDs = { 376788 } },
+        { key = "evoker_echo_reversion", spellIDs = { 367364 }, knownSpellIDs = { 364343 } },
+        { key = "evoker_lifebind", spellIDs = { 373267 }, knownSpellIDs = { 373270, 373267 } },
+        { key = "evoker_echo_dream_breath", spellIDs = { 376788 }, knownSpellIDs = { 364343 } },
         { key = "evoker_blistering_scales", spellIDs = { 360827 } },
         { key = "evoker_ebon_might", spellIDs = { 395152 } },
-        { key = "evoker_prescience", spellIDs = { 410089 } },
-        { key = "evoker_infernos_blessing", spellIDs = { 410263 } },
+        { key = "evoker_prescience", spellIDs = { 410089 }, knownSpellIDs = { 409311 } },
+        { key = "evoker_infernos_blessing", spellIDs = { 410263 }, knownSpellIDs = { 410261 } },
         { key = "evoker_symbiotic_bloom", spellIDs = { 410686 } },
         { key = "evoker_shifting_sands", spellIDs = { 413984 } },
+        { key = "evoker_source_of_magic", spellIDs = { 369459, 1289630 } },
+        { key = "evoker_time_dilation", spellIDs = { 357170 } },
+        { key = "evoker_spatial_paradox", spellIDs = { 406732 } },
     },
     DRUID = {
         { key = "druid_rejuvenation", spellIDs = { 774 } },
@@ -58,20 +63,28 @@ local CLASS_HEALER_BUFFS = {
         { key = "druid_lifebloom", spellIDs = { 33763 } },
         { key = "druid_wild_growth", spellIDs = { 48438 } },
         { key = "druid_germination", spellIDs = { 155777 } },
+        { key = "druid_innervate", spellIDs = { 29166 } },
+        { key = "druid_ironbark", spellIDs = { 102342 } },
     },
     PRIEST = {
         { key = "priest_power_word_shield", spellIDs = { 17 } },
         { key = "priest_atonement", spellIDs = { 194384 } },
         { key = "priest_void_shield", spellIDs = { 1253593 } },
         { key = "priest_renew", spellIDs = { 139 } },
-        { key = "priest_prayer_of_mending", spellIDs = { 41635 } },
-        { key = "priest_echo_of_light", spellIDs = { 77489 } },
+        { key = "priest_prayer_of_mending", spellIDs = { 41635 }, knownSpellIDs = { 33076 } },
+        { key = "priest_echo_of_light", spellIDs = { 77489 }, knownSpellIDs = { 77485 } },
+        { key = "priest_power_infusion", spellIDs = { 10060 } },
+        { key = "priest_pain_suppression", spellIDs = { 33206 } },
+        { key = "priest_guardian_spirit", spellIDs = { 47788 } },
+        { key = "priest_angelic_feather", spellIDs = { 121557, 121536 } },
     },
     MONK = {
         { key = "monk_soothing_mist", spellIDs = { 115175 } },
-        { key = "monk_renewing_mist", spellIDs = { 119611 } },
+        { key = "monk_renewing_mist", spellIDs = { 119611 }, knownSpellIDs = { 115151 } },
         { key = "monk_enveloping_mist", spellIDs = { 124682 } },
-        { key = "monk_aspect_of_harmony", spellIDs = { 450769 } },
+        { key = "monk_aspect_of_harmony", spellIDs = { 450769 }, knownSpellIDs = { 450508 } },
+        { key = "monk_life_cocoon", spellIDs = { 116849 } },
+        { key = "monk_tigers_lust", spellIDs = { 116841 } },
     },
     SHAMAN = {
         { key = "shaman_earth_shield", spellIDs = { 974, 383648 } },
@@ -83,297 +96,186 @@ local CLASS_HEALER_BUFFS = {
         { key = "paladin_beacon_of_faith", spellIDs = { 156910 } },
         { key = "paladin_beacon_of_the_savior", spellIDs = { 1244893 } },
         { key = "paladin_beacon_of_virtue", spellIDs = { 200025 } },
+        { key = "paladin_blessing_of_freedom", spellIDs = { 1044 } },
+        { key = "paladin_blessing_of_protection", spellIDs = { 1022 } },
+        { key = "paladin_blessing_of_spellwarding", spellIDs = { 204018 } },
+        { key = "paladin_blessing_of_sacrifice", spellIDs = { 6940 } },
+        { key = "paladin_holy_bulwark", spellIDs = { 432496, 432459, 432607 } },
+        { key = "paladin_sacred_weapon", spellIDs = { 432502 } },
+    },
+    WARRIOR = {
+        { key = "warrior_intervene", spellIDs = { 3411 } },
+    },
+    WARLOCK = {
+        { key = "warlock_soulstone", spellIDs = { 20707 } },
+    },
+    HUNTER = {
+        { key = "hunter_roar_of_sacrifice", spellIDs = { 53480 } },
     },
 }
 
 ----------------------------------------------------------------------------------------
--- Buff Entry Builder
+-- Settings
 ----------------------------------------------------------------------------------------
-local PlayerClassBuffEntries
-local PlayerClassBuffLookup
-
-local function ClampColorComponent(value, fallback)
-    local n = tonumber(value)
-    if type(n) ~= "number" then
-        return fallback
-    end
-    if n < 0 then
-        return 0
-    elseif n > 1 then
-        return 1
-    end
-    return n
+-- The previous module saved the generic buff color on every entry; treat it as unset
+-- so the per-ability defaults apply.
+local function IsLegacyDefaultColor(color)
+    local legacy = Config.Auras.TimedBuffBorderColor
+    return color[1] == legacy[1] and color[2] == legacy[2] and color[3] == legacy[3]
 end
 
-local function GetDefaultTrackedBuffColorRGBA()
-    local color = Config and Config.Auras and Config.Auras.TimedBuffBorderColor
-    if type(color) == "table" then
-        return ClampColorComponent(color[1], 0.12), ClampColorComponent(color[2], 0.9), ClampColorComponent(color[3], 0.12), 1
+local function GetSettings(entry)
+    local spellSettings = Config.UnitFrames.ClassBuffs.SpellSettings
+    local settings = spellSettings[entry.key]
+    if not settings then
+        settings = { Untracked = entry.hideByDefault }
+        spellSettings[entry.key] = settings
+    elseif settings.BorderColor and IsLegacyDefaultColor(settings.BorderColor) then
+        settings.BorderColor = nil
     end
-    return 0.12, 0.9, 0.12, 1
+    return settings
 end
 
-local function NormalizeTrackedBuffColorTable(color)
-    local r, g, b, a = GetDefaultTrackedBuffColorRGBA()
-    if type(color) ~= "table" then
-        return { r, g, b, a }
-    end
-    return {
-        ClampColorComponent(color[1], r),
-        ClampColorComponent(color[2], g),
-        ClampColorComponent(color[3], b),
-        ClampColorComponent(color[4], a),
-    }
-end
-
-local function GetSpellNameAndIcon(spellID)
-    if type(GetSpellInfo) == "function" then
-        local info = GetSpellInfo(spellID)
-        if type(info) == "table" then
-            local name = info.name or ("Spell " .. tostring(spellID))
-            local icon = info.iconID or info.originalIconID or QUESTION_MARK_ICON
-            return name, icon
+local function GetDefaultBorderColor(entry)
+    for _, spellID in ipairs(entry.spellIDs) do
+        local color = CDM:GetDefaultAbilityBorderColor(nil, spellID)
+        if color then
+            return color
         end
     end
-    return "Spell " .. tostring(spellID), QUESTION_MARK_ICON
+    return Config.Auras.TimedBuffBorderColor
 end
 
-local function BuildPlayerClassBuffEntries()
-    if PlayerClassBuffEntries and PlayerClassBuffLookup then
-        return PlayerClassBuffEntries, PlayerClassBuffLookup
+local function SortEntriesByManualOrder(entries)
+    local manualOrder = Config.UnitFrames.ClassBuffs.ManualOrder
+    local rank = {}
+    for index, key in ipairs(manualOrder) do
+        rank[key] = index
+    end
+    for _, entry in ipairs(entries) do
+        if not rank[entry.key] then
+            manualOrder[#manualOrder + 1] = entry.key
+            rank[entry.key] = #manualOrder
+        end
+    end
+    tsort(entries, function(a, b)
+        return rank[a.key] < rank[b.key]
+    end)
+end
+
+local function IsAnySpellKnown(spellIDs)
+    for _, spellID in ipairs(spellIDs) do
+        if IsPlayerSpell(spellID) then
+            return true
+        end
+    end
+    return false
+end
+
+----------------------------------------------------------------------------------------
+-- Public Methods
+----------------------------------------------------------------------------------------
+-- Class list plus Blizzard's Group Buffs list for the current spec, in manual order.
+function UF.GetGroupBuffEntries()
+    local entries = {}
+    local entryBySpellID = {}
+
+    for _, template in ipairs(CLASS_GROUP_BUFFS[RefineUI.MyClass] or {}) do
+        local info = C_Spell.GetSpellInfo(template.spellIDs[1])
+        local entry = {
+            key = template.key,
+            spellIDs = template.spellIDs,
+            name = info and info.name or tostring(template.spellIDs[1]),
+            icon = info and info.iconID or QUESTION_MARK_ICON,
+            hideByDefault = false,
+            isKnown = IsAnySpellKnown(template.knownSpellIDs or template.spellIDs),
+        }
+        entries[#entries + 1] = entry
+        for _, spellID in ipairs(template.spellIDs) do
+            entryBySpellID[spellID] = entry
+        end
     end
 
-    local class = RefineUI.MyClass
-    local source = CLASS_HEALER_BUFFS[class] or {}
-    local entries = {}
-    local lookup = {}
-
-    for i = 1, #source do
-        local template = source[i]
-        local spellIDs = template and template.spellIDs
-        if type(spellIDs) == "table" and #spellIDs > 0 then
-            local primarySpellID = spellIDs[1]
-            local name, icon = GetSpellNameAndIcon(primarySpellID)
-            local entry = {
-                key = template.key,
-                spellIDs = spellIDs,
-                primarySpellID = primarySpellID,
-                name = name,
-                icon = icon,
+    for _, item in ipairs(C_CooldownViewer.GetGroupBuffItems()) do
+        local existing = entryBySpellID[item.spellID]
+        if existing then
+            existing.isKnown = existing.isKnown or item.isKnown
+        else
+            entries[#entries + 1] = {
+                key = "spell:" .. item.spellID,
+                spellIDs = { item.spellID },
+                name = item.name,
+                icon = item.iconID,
+                hideByDefault = band(item.flags, Enum.GroupBuffItemFlags.HideByDefault) ~= 0,
+                isKnown = item.isKnown,
             }
-            entries[#entries + 1] = entry
+        end
+    end
 
-            for spellIndex = 1, #spellIDs do
-                local id = spellIDs[spellIndex]
-                if type(id) == "number" then
-                    lookup[id] = entry
-                end
+    SortEntriesByManualOrder(entries)
+    return entries
+end
+
+function UF.GetGroupBuffSection(entry)
+    local settings = GetSettings(entry)
+    if settings.Untracked then
+        return SECTION.UNTRACKED
+    elseif settings.Important then
+        return SECTION.IMPORTANT
+    end
+    return SECTION.TRACKED
+end
+
+function UF.GetGroupBuffBorderColor(entry)
+    local color = GetSettings(entry).BorderColor or GetDefaultBorderColor(entry)
+    return color[1], color[2], color[3], color[4] or 1
+end
+
+function UF.SetGroupBuffBorderColor(entry, r, g, b, a)
+    GetSettings(entry).BorderColor = { r, g, b, a }
+    UF.RefreshGroupBuffs()
+end
+
+function UF.ResetGroupBuffBorderColor(entry)
+    GetSettings(entry).BorderColor = nil
+    UF.RefreshGroupBuffs()
+end
+
+function UF.IsGroupBuffFrameColor(entry)
+    return GetSettings(entry).FrameColor == true
+end
+
+function UF.SetGroupBuffFrameColor(entry, enabled)
+    GetSettings(entry).FrameColor = enabled and true or false
+    UF.RefreshGroupBuffs()
+end
+
+-- Moves an entry into a section, optionally placing it before/after another entry.
+function UF.MoveGroupBuff(entry, section, anchorEntry, placeAfter)
+    local settings = GetSettings(entry)
+    settings.Important = section == SECTION.IMPORTANT
+    settings.Untracked = section == SECTION.UNTRACKED
+
+    if anchorEntry and anchorEntry ~= entry then
+        local manualOrder = Config.UnitFrames.ClassBuffs.ManualOrder
+        for index, key in ipairs(manualOrder) do
+            if key == entry.key then
+                tremove(manualOrder, index)
+                break
+            end
+        end
+        for index, key in ipairs(manualOrder) do
+            if key == anchorEntry.key then
+                tinsert(manualOrder, placeAfter and index + 1 or index, entry.key)
+                break
             end
         end
     end
 
-    PlayerClassBuffEntries = entries
-    PlayerClassBuffLookup = lookup
-    return PlayerClassBuffEntries, PlayerClassBuffLookup
-end
-
-local function GetPlayerClassBuffEntries()
-    local entries = BuildPlayerClassBuffEntries()
-    return entries
-end
-
-local function GetTrackedClassBuffEntryBySpellID(spellID)
-    if type(spellID) ~= "number" then
-        return nil
-    end
-    if issecretvalue and issecretvalue(spellID) then
-        return nil
-    end
-    local _, lookup = BuildPlayerClassBuffEntries()
-    return lookup[spellID]
-end
-
-----------------------------------------------------------------------------------------
--- Config Accessors
-----------------------------------------------------------------------------------------
-local function GetClassBuffConfig()
-    if not Config or type(Config.UnitFrames) ~= "table" then
-        return nil
-    end
-
-    local cfg = Config.UnitFrames.ClassBuffs
-    if type(cfg) ~= "table" then
-        cfg = {}
-        Config.UnitFrames.ClassBuffs = cfg
-    end
-
-    if type(cfg.SpellSettings) ~= "table" then
-        cfg.SpellSettings = {}
-    end
-
-    if type(cfg.ManualOrder) ~= "table" then
-        cfg.ManualOrder = {}
-    end
-
-    if cfg.ImportantSort ~= IMPORTANT_SORT_MODE.MANUAL
-        and cfg.ImportantSort ~= IMPORTANT_SORT_MODE.ASCENDING
-        and cfg.ImportantSort ~= IMPORTANT_SORT_MODE.DESCENDING then
-        cfg.ImportantSort = IMPORTANT_SORT_MODE.MANUAL
-    end
-
-    return cfg
-end
-
-local function EnsureManualOrderIncludesAllEntries()
-    local cfg = GetClassBuffConfig()
-    if not cfg then return end
-
-    local entries = GetPlayerClassBuffEntries()
-    local seen = {}
-    local ordered = {}
-
-    for i = 1, #cfg.ManualOrder do
-        local key = cfg.ManualOrder[i]
-        if type(key) == "string" and not seen[key] then
-            seen[key] = true
-            ordered[#ordered + 1] = key
-        end
-    end
-
-    for i = 1, #entries do
-        local key = entries[i].key
-        if key and not seen[key] then
-            seen[key] = true
-            ordered[#ordered + 1] = key
-        end
-    end
-
-    cfg.ManualOrder = ordered
-end
-
-local function GetTrackedClassBuffSettings(entryKey)
-    local cfg = GetClassBuffConfig()
-    if not cfg or type(entryKey) ~= "string" or entryKey == "" then
-        return nil
-    end
-
-    local settings = cfg.SpellSettings[entryKey]
-    if type(settings) ~= "table" then
-        settings = {}
-        cfg.SpellSettings[entryKey] = settings
-    end
-
-    if settings.Important == nil then
-        settings.Important = false
-    else
-        settings.Important = settings.Important and true or false
-    end
-
-    if settings.FrameColor == nil then
-        settings.FrameColor = false
-    else
-        settings.FrameColor = settings.FrameColor and true or false
-    end
-
-    settings.BorderColor = NormalizeTrackedBuffColorTable(settings.BorderColor)
-    return settings
-end
-
-local function GetTrackedClassBuffSortMode()
-    local cfg = GetClassBuffConfig()
-    if not cfg then
-        return IMPORTANT_SORT_MODE.MANUAL
-    end
-    return cfg.ImportantSort
-end
-
-local function SetTrackedClassBuffSortMode(mode)
-    local cfg = GetClassBuffConfig()
-    if not cfg then
-        return
-    end
-
-    if mode ~= IMPORTANT_SORT_MODE.MANUAL
-        and mode ~= IMPORTANT_SORT_MODE.ASCENDING
-        and mode ~= IMPORTANT_SORT_MODE.DESCENDING then
-        mode = IMPORTANT_SORT_MODE.MANUAL
-    end
-
-    cfg.ImportantSort = mode
-end
-
-local function GetTrackedClassBuffColor(entryKey)
-    local settings = GetTrackedClassBuffSettings(entryKey)
-    if not settings then
-        return GetDefaultTrackedBuffColorRGBA()
-    end
-    local color = settings.BorderColor
-    return color[1], color[2], color[3], color[4] or 1
-end
-
-local function GetTrackedClassBuffManualOrderRank(entryKey)
-    local cfg = GetClassBuffConfig()
-    if not cfg or type(entryKey) ~= "string" then
-        return 9999
-    end
-
-    for i = 1, #cfg.ManualOrder do
-        if cfg.ManualOrder[i] == entryKey then
-            return i
-        end
-    end
-
-    return 9999
-end
-
-local function GetConfiguredBuffBorderColorRGB()
-    local r, g, b = GetDefaultTrackedBuffColorRGBA()
-    return r, g, b
-end
-
-----------------------------------------------------------------------------------------
--- Aura Duration Helper
-----------------------------------------------------------------------------------------
-local function GetAuraRemainingSecondsFromData(auraData)
-    if not auraData then
-        return nil
-    end
-
-    local expirationTime = auraData.auraExpirationTime
-    local duration = auraData.auraDuration
-    if IsUnreadableNumber(expirationTime) or IsUnreadableNumber(duration) then
-        return nil
-    end
-    if type(expirationTime) ~= "number" or expirationTime <= 0 then
-        return nil
-    end
-
-    local now = type(GetTime) == "function" and GetTime() or 0
-    local remaining = expirationTime - now
-    if remaining < 0 then
-        remaining = 0
-    end
-    return remaining
+    UF.RefreshGroupBuffs()
 end
 
 ----------------------------------------------------------------------------------------
 -- Shared Internal Exports
 ----------------------------------------------------------------------------------------
-P.QUESTION_MARK_ICON                    = QUESTION_MARK_ICON
-P.IMPORTANT_SORT_MODE                   = IMPORTANT_SORT_MODE
-
-P.GetPlayerClassBuffEntries             = GetPlayerClassBuffEntries
-P.GetTrackedClassBuffEntryBySpellID     = GetTrackedClassBuffEntryBySpellID
-P.GetClassBuffConfig                    = GetClassBuffConfig
-P.EnsureManualOrderIncludesAllEntries   = EnsureManualOrderIncludesAllEntries
-P.GetTrackedClassBuffSettings           = GetTrackedClassBuffSettings
-P.GetTrackedClassBuffSortMode           = GetTrackedClassBuffSortMode
-P.SetTrackedClassBuffSortMode           = SetTrackedClassBuffSortMode
-P.GetTrackedClassBuffColor              = GetTrackedClassBuffColor
-P.GetTrackedClassBuffManualOrderRank    = GetTrackedClassBuffManualOrderRank
-P.GetConfiguredBuffBorderColorRGB       = GetConfiguredBuffBorderColorRGB
-
-P.GetDefaultTrackedBuffColorRGBA        = GetDefaultTrackedBuffColorRGBA
-P.NormalizeTrackedBuffColorTable        = NormalizeTrackedBuffColorTable
-P.ClampColorComponent                   = ClampColorComponent
-P.GetAuraRemainingSecondsFromData       = GetAuraRemainingSecondsFromData
+UF.GROUP_BUFF_SECTION = SECTION

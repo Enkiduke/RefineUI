@@ -84,50 +84,29 @@ function RadBar:OnInitialize()
     local private = self.Private
     local bindingAction = private.CLICK_BINDING_ACTION
 
-    RefineUI.DB = RefineUI.DB or {}
-    self.db = type(RefineUI.DB.RadBar) == "table" and RefineUI.DB.RadBar or {}
-    RefineUI.DB.RadBar = self.db
-
-    if self.db.Enable == nil then
-        self.db.Enable = true
-    end
-
-    self.db.Rings = type(self.db.Rings) == "table" and self.db.Rings or {}
-    if type(self.db.Rings.Main) ~= "table" or private.IsLegacyDefaultMainRing(self.db.Rings.Main) then
+    -- Profile defaults are merged before modules initialize.
+    self.db = RefineUI.DB.RadBar
+    if private.IsLegacyDefaultMainRing(self.db.Rings.Main) then
         self.db.Rings.Main = private.GetDefaultMainRing()
     end
-    local main = self.db.Rings.Main
-    main.Slices = type(main.Slices) == "table" and main.Slices or {}
 
-    self.Buttons = self.Buttons or {}
+    self.Buttons = {}
 
     -- Default Bind (only if not set)
-    if not InCombatLockdown() then
-        local key = GetBindingKey(bindingAction)
-        if not key then
-            local f8Binding = GetBindingAction and GetBindingAction("F8")
-            if not f8Binding or f8Binding == "" then
-                SetBinding("F8", bindingAction)
-                if SaveBindings and GetCurrentBindingSet then
-                    SaveBindings(GetCurrentBindingSet())
-                end
-            end
+    if not InCombatLockdown() and not GetBindingKey(bindingAction) then
+        local f8Binding = GetBindingAction("F8")
+        if not f8Binding or f8Binding == "" then
+            SetBinding("F8", bindingAction)
+            SaveBindings(GetCurrentBindingSet())
         end
     end
 
-    if not self.ChatCommandRegistered then
-        RefineUI:RegisterChatCommand("radbar", function(msg)
-            RadBar:HandleSlash(msg)
-        end)
-        self.ChatCommandRegistered = true
-    end
+    RefineUI:RegisterChatCommand("radbar", function(msg)
+        RadBar:HandleSlash(msg)
+    end)
 end
 
 function RadBar:OnEnable()
-    if not self.db.Enable then
-        return
-    end
-
     self:SetupCore()
     self:SetupVisuals()
     self:BuildRing("Main")

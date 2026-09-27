@@ -1,589 +1,718 @@
 local _, RefineUI = ...
-local Planner = RefineUI.AdventurePlanner
-local Registry, Model = RefineUI.PlannerRegistry, RefineUI.PlannerModel
-local Number = RefineUI.PlannerEvidence.Number
-local function Base(self, id, provider, kind, title, category, bucket, order)
-    return { id = id, provider = provider, kind = kind, title = title, category = category, bucket = bucket,
-        cadence = bucket, registryOrder = order, scope = "character", ownerKey = self.owner,
-        observedAt = self:Now(), verification = "live", source = provider, state = "available" }
+local Planner, Data = RefineUI.AdventurePlanner, RefineUI.PlannerData
+local Safe, WEIGHTS = Planner.Safe, Data.weights
+
+-- Priority tiers: 1 collect, 2 pick up, 3 expiring, 4 weekly core, 5 useful, 6 optional.
+local REASONS = { spark = "Spark Dust for crafted gear (season cap applies)", sparkCatchUp = "One-time Spark catch-up",
+    worldBoss = "Weekly world boss loot", knowledge = "Profession Knowledge", assignment = "Special Assignment reward" }
+
+local function Record(id, section, kind, title, category, icon)
+    return { id = id, section = section, kind = kind, title = title, category = category, icon = icon or 134400, state = "available" }
 end
 
--- Expansion is relevance metadata, never availability evidence. The optional
--- global getter is not part of C_QuestLog; unavailable metadata stays unknown.
-function Planner:ClassifyQuest(record, observed)
-    local expansion
-    if type(GetQuestExpansion) == "function" then expansion = self:Call(_G, "GetQuestExpansion", record.questID) end
-    if not Number(expansion) or expansion < 0 or expansion % 1 ~= 0 then expansion = nil end
-    if expansion == nil and observed then expansion = observed.expansionID end
-    local metadata = Registry.quests[record.questID]
-    if expansion == nil and metadata then expansion = metadata.expansion end
-    local current = LE_EXPANSION_LEVEL_CURRENT
-    record.expansionID = expansion
-    if Number(current) and Number(expansion) and expansion <= current then
-        record.contentEra = expansion < current and "legacy" or "current"
-        local name = _G["EXPANSION_NAME" .. expansion]
-        if RefineUI.PlannerEvidence.Accessible(name) and type(name) == "string" then record.expansionName = name end
-        if observed then observed.expansionID = expansion end
-    else record.contentEra = "unknown" end
-    if record.contentEra ~= "current" then record.importance = "optional" end
+local function Done(self, id) return self:Call(C_QuestLog, "IsQuestFlaggedCompleted", id) == true end
+
+local function Count(self, ids)
+    local count = 0
+    for _, id in ipairs(ids or {}) do if Done(self, id) then count = count + 1 end end
+    return count
 end
 
-function Planner:ObserveQuests()
-    local periods = { daily = self:Period("daily"), weekly = self:Period("weekly") }
-    local logged = {}
-    local read = self:Read(C_QuestLog, "GetNumQuestLogEntries")
-    local count = read.values and read.values[1]
-    self.questCoverage = read.status == "known" and Number(count)
-    count = Number(count) and count or 0
-    for index = 1, count do
-        local info = self:Call(C_QuestLog, "GetInfo", index)
-        if not info or info._restricted then self.questCoverage = false end
-        if info and Number(info.questID) and not info.isHeader then
-            logged[info.questID] = true
-            local cadence = info.frequency == Enum.QuestFrequency.Daily and "daily"
-                or info.frequency == Enum.QuestFrequency.Weekly and "weekly"
-                or Registry.quests[info.questID] and (Registry.quests[info.questID].cadence
-                    or Registry.quests[info.questID].observationCadence)
-            local scope = self:Call(C_QuestLog, "IsAccountQuest", info.questID) == true and "account" or "character"
-            local period = cadence and (scope == "account" and self:Period(cadence, scope) or periods[cadence])
-            if period then
-                local entry = period.quests[info.questID] or {}
-                entry.title, entry.observedAt = info.title, self:Now()
-                entry.scope = scope
-                entry.cadenceVerified = info.frequency == Enum.QuestFrequency.Daily or info.frequency == Enum.QuestFrequency.Weekly
-                period.quests[info.questID] = entry
-            end
-        end
+local function AtMaxLevel(self)
+    local level, maxLevel = self:Call(_G, "UnitLevel", "player"), self:Call(_G, "GetMaxLevelForPlayerExpansion")
+    return level and maxLevel and level >= maxLevel
+end
+
+function Planner:QuestTitle(id)
+    local title = self:Call(C_QuestLog, "GetTitleForQuestID", id) or self:Call(C_TaskQuest, "GetQuestInfoByQuestID", id)
+    -- Request once per session: a failed load must not re-trigger refreshes.
+    if not title and not self.requested["quest" .. id] then
+        self.requested["quest" .. id] = true
+        self:Call(C_QuestLog, "RequestLoadQuestByID", id)
     end
-    return logged
+    return title
 end
 
-function Planner:ObserveTurnIn(questID)
-    if not Number(questID) then return end
-    for _, scope in ipairs({ "character", "account" }) do
-    for _, cadence in ipairs({ "daily", "weekly" }) do
-        local period = self:Period(cadence, scope)
-        local entry = period and period.quests[questID]
-        if entry then entry.completed = true; entry.completedAt = self:Now(); entry.observedAt = self:Now() end
-    end
-    end
+function Planner:RequestItem(itemID)
+    if self.requested[itemID] then return end
+    self.requested[itemID], self.pendingItems[itemID] = true, true
+    self:Call(C_Item, "RequestLoadItemDataByID", itemID)
 end
 
-local function QuestObjectives(self, id)
-    local objectives = self:Call(C_QuestLog, "GetQuestObjectives", id) or {}
-    local lines, current, target = {}, 0, 0
-    local actions, known, unfinishedText = 0, #objectives > 0 and not objectives._incomplete, nil
+function Planner:GetMapTasks(mapID)
+    local cache = self.mapTasks
+    if cache and cache[mapID] then return cache[mapID] end
+    local tasks = self:Call(C_TaskQuest, "GetQuestsOnMap", mapID) or {}
+    if cache then cache[mapID] = tasks end
+    return tasks
+end
+
+function Planner:CurrencyInfo(id)
+    local info = self:Call(C_CurrencyInfo, "GetCurrencyInfo", id)
+    if not info then return end
+    return { name = Safe(info.name), quantity = Safe(info.quantity), icon = Safe(info.iconFileID),
+        weeklyEarned = Safe(info.quantityEarnedThisWeek), weeklyCap = Safe(info.maxWeeklyQuantity),
+        totalEarned = Safe(info.totalEarned), maxQuantity = Safe(info.maxQuantity), description = Safe(info.description),
+        discovered = Safe(info.discovered), unused = Safe(info.isTypeUnused), accountWide = Safe(info.isAccountWide),
+        useTotal = Safe(info.useTotalEarnedForMaxQty) }
+end
+
+local function Objectives(self, r)
+    local objectives = self:Call(C_QuestLog, "GetQuestObjectives", r.questID) or {}
+    r.lines = {}
     for _, objective in ipairs(objectives) do
-        if objective.text then lines[#lines + 1] = objective.text end
-        if Number(objective.numFulfilled) and Number(objective.numRequired) then
-            current = current + math.min(objective.numFulfilled, objective.numRequired)
-            target = target + objective.numRequired
-        end
-        if objective._restricted then known = false end
-        if not objective.finished then
-            -- Kill/object interactions count discrete actions. Item/currency,
-            -- percentage and opaque progress objectives do not: one missing
-            -- item or percentage point is not necessarily one gameplay action.
-            local discrete = objective.type == "monster" or objective.type == "object"
-            if discrete and Number(objective.numFulfilled) and Number(objective.numRequired)
-                and objective.numRequired > objective.numFulfilled then
-                actions = actions + objective.numRequired - objective.numFulfilled
-                unfinishedText = objective.text
-            else known = false end
+        local text, have, need = Safe(objective.text), Safe(objective.numFulfilled), Safe(objective.numRequired)
+        if text then r.lines[#r.lines + 1] = text end
+        if not Safe(objective.finished) and text and not r.detail then r.detail = text end
+        if #objectives == 1 and type(have) == "number" and type(need) == "number" and need > 1 then
+            r.current, r.target = math.min(have, need), need
         end
     end
-    if #objectives == 0 or objectives._incomplete then current, target = nil, nil end
-    return lines, current, target, known and actions > 0 and actions or nil, unfinishedText
 end
 
-local function NeedsDiscovery(self, questIDs, offered, logged, oneTime)
-    -- A missing log entry is not evidence of an available quest. This only
-    -- decides whether a labelled check-the-giver lead is still useful.
-    if not self.questCoverage then return false end
-    for _, id in ipairs(questIDs) do
-        -- A one-time catch-up lead needs an explicit lifetime-incomplete answer.
-        -- Nil/restricted data must not resurface it every weekly reset.
-        if oneTime and self:Call(C_QuestLog, "IsQuestFlaggedCompleted", id) ~= false then return false end
-        if offered[id] or logged[id] or self:Call(C_QuestLog, "IsOnQuest", id) == true then return false end
-        for _, scope in ipairs({ "character", "account" }) do
-            local period = self:Period("weekly", scope)
-            local observed = period and period.quests[id]
-            if observed and observed.completed then return false end
-        end
+-- Expansion identity decides relevance only; registry entries are Midnight quests.
+local function Classify(self, r, meta)
+    local expansion = type(GetQuestExpansion) == "function" and self:Call(_G, "GetQuestExpansion", r.questID) or nil
+    if expansion == nil and meta then expansion = 11 end
+    local current = LE_EXPANSION_LEVEL_CURRENT
+    if type(expansion) ~= "number" or type(current) ~= "number" then r.era = "unknown"
+    elseif expansion < current then
+        r.era = "legacy"
+        local name = Safe(_G["EXPANSION_NAME" .. expansion])
+        if type(name) == "string" then r.expansionName = name end
+    else r.era = "current" end
+    if r.era ~= "current" or (meta and meta.optional) then r.section, r.tier, r.optional = "optional", 6, true end
+end
+
+local function FactionReason(self, r)
+    for _, reward in ipairs(self:Call(C_QuestLog, "GetQuestLogMajorFactionReputationRewards", r.questID) or {}) do
+        local factionID, amount = Safe(reward.factionID), Safe(reward.rewardAmount)
+        local info = factionID and amount and amount > 0 and self:Call(C_MajorFactions, "GetMajorFactionData", factionID)
+        local name = info and Safe(info.name)
+        if name then r.lines = r.lines or {}; r.lines[#r.lines + 1] = "Rewards " .. amount .. " " .. name .. " reputation"; return end
     end
-    return true
 end
 
-local function Discovery(self, definition, title, detail, icon)
-    local r = Base(self, "discovery:" .. definition.key, "quests", "Discovery", title,
-        definition.category, "weekly", 500)
-    r.state, r.verification = "candidate", "registry"
-    if definition.oneTime then r.cadence, r.oneTime = "none", true end
-    r.questIDs, r.minLevel = definition.questIDs, definition.minLevel
-    local period = self:Period("weekly")
-    r.resetKey, r.validUntil = period and period.reset, period and period.reset
-    r.icon, r.recommendationWeight = icon or 134400, definition.weight
-    r.destination = { type = "map", id = definition.mapID, position = definition.position,
-        label = definition.position and "Pin quest giver" or "Open zone map" }
-    r.detail = detail .. (definition.accessNote and " • " .. definition.accessNote or "")
-    r.source = definition.source or "MidnightHelper ResetRoutine catalogue"
+-- status: "log" (accepted), "offered", "task" (visible world quest), "complete" or "missing".
+local function QuestRecord(self, id, title, meta, cadence, status, mapID, expiresAt)
+    local category = meta and meta.category or (cadence == "daily" and "Daily quests" or "Weekly quests")
+    local r = Record("quest:" .. id, "weekly", "task", title or ("Quest " .. id), category, meta and meta.icon)
+    local reward = meta and meta.reward
+    r.questID, r.cadence, r.expiresAt = id, meta and meta.oneTime and "once" or cadence, expiresAt
+    r.weight = WEIGHTS[reward] or cadence == "daily" and WEIGHTS.daily or cadence == "weekly" and WEIGHTS.weekly or WEIGHTS.quest
+    r.reason = REASONS[reward] or (cadence == "daily" and "Daily quest" or "Weekly quest")
+    if status == "complete" then
+        r.state, r.detail = "complete", meta and meta.oneTime and "Completed" or "Completed this reset"
+    elseif status == "log" then
+        r.destination = { type = "quest", id = id, label = "Track quest" }
+        if self:Call(C_QuestLog, "ReadyForTurnIn", id) then
+            r.state, r.tier, r.weight = "ready", 1, WEIGHTS.turnIn
+            r.actionTitle, r.detail = "Turn in " .. r.title, "Ready to turn in"
+        else
+            r.state, r.tier = "active", cadence == "daily" and 5 or 4
+            Objectives(self, r)
+            local total, elapsed = self:Call(C_QuestLog, "GetTimeAllowed", id)
+            if type(total) == "number" and type(elapsed) == "number" and total > elapsed then r.expiresAt = self:Now() + total - elapsed end
+        end
+    elseif status == "offered" then
+        local giver = Data.pickupByQuestID[id]
+        local position = giver and giver.mapID == mapID and giver.position or nil
+        r.state, r.tier, r.actionTitle = "available", 2, "Pick up " .. r.title
+        r.detail = "Available now" .. (giver and " from " .. giver.giver or "") .. " • pick up before playing so progress counts"
+        r.destination = { type = "map", id = mapID, position = position, label = position and "Pin quest giver" or "Open map" }
+    elseif status == "task" then
+        r.state, r.tier = "available", 4
+        r.destination = { type = "map", id = mapID, label = "Track quest" }
+    else
+        r.state, r.detail = "missing", "Not in quest log"
+        if meta and meta.mapID then r.destination = { type = "map", id = meta.mapID, label = "Open map" } end
+    end
+    r.recommend = r.state == "ready" or r.state == "active" or r.state == "available"
+    Classify(self, r, meta)
+    if r.state ~= "complete" then FactionReason(self, r) end
     return r
 end
 
+function Planner:ObserveQuest(id, info)
+    if not id then return end
+    if not info then
+        local index = self:Call(C_QuestLog, "GetLogIndexForQuestID", id)
+        info = index and self:Call(C_QuestLog, "GetInfo", index)
+        if not info then return end
+    end
+    local frequency, meta = Safe(info.frequency), Data.quests[id]
+    local cadence = frequency == Enum.QuestFrequency.Daily and "daily" or frequency == Enum.QuestFrequency.Weekly and "weekly"
+        or meta and meta.weekly and "weekly"
+    if not cadence then return end
+    local scope = self:Call(C_QuestLog, "IsAccountQuest", id) == true and "account" or "character"
+    local period = self:Period(cadence, scope)
+    if period then
+        local entry = period.quests[id] or {}
+        entry.title, entry.scope, entry.observedAt = Safe(info.title) or entry.title, scope, self:Now()
+        entry.completed, entry.completedAt = nil, nil
+        period.quests[id] = entry
+    end
+    return cadence
+end
+
+function Planner:ObserveTurnIn(id)
+    if not id then return end
+    for _, scope in ipairs({ "character", "account" }) do
+        for _, cadence in ipairs({ "daily", "weekly" }) do
+            local period = self:Period(cadence, scope)
+            local entry = period and period.quests[id]
+            if entry then entry.completed, entry.completedAt = true, self:Now() end
+        end
+    end
+end
+
 Planner.providers.quests = function(self)
-    local logged = self:ObserveQuests()
-    local offered = {}
-    for _, mapID in ipairs({ 2393, 2395, 2437, 2413, 2405, 2509, 2512 }) do
-        local quests = self:Call(C_QuestLine, "GetAvailableQuestLines", mapID)
-        if type(quests) == "table" and not (HasSecretValues and HasSecretValues(quests)) then
-            for _, info in ipairs(quests) do
-                local id = info.questID
-                local metadata = Number(id) and Registry.quests[id]
-                if metadata and (metadata.weeklyQuest or metadata.oneTime) and not info._restricted and not info.isHidden then
-                    local scope = self:Call(C_QuestLog, "IsAccountQuest", id) == true and "account" or "character"
-                    local period = self:Period("weekly", scope)
-                    local title = self:Call(C_QuestLog, "GetTitleForQuestID", id)
-                    if period and title then
-                        offered[id] = mapID
-                        period.quests[id] = period.quests[id] or { title = title,
-                            scope = scope, observedAt = self:Now() }
-                    end
-                end
-            end
-        end
-    end
-    -- A small registered world-quest set can be offered before acceptance, but
-    -- only when the client's visible map tasks also include it. Global rotation
-    -- alone does not establish availability for this character.
-    local worldActive, mapTasks = {}, {}
-    for id, metadata in pairs(Registry.quests) do
-        if metadata.activeWorldQuest and self:Call(C_TaskQuest, "IsActive", id) == true then
-            local mapID = metadata.mapID
-            if mapID and not mapTasks[mapID] then
-                local visible = {}
-                for _, poi in ipairs(self:GetMapTasks(mapID) or {}) do
-                    if poi.questID and not poi._restricted and not poi.isHidden then visible[poi.questID] = true end
-                end
-                mapTasks[mapID] = visible
-            end
-            local minutes = self:Call(C_TaskQuest, "GetQuestTimeLeftSeconds", id)
-            local title = self:Call(C_TaskQuest, "GetQuestInfoByQuestID", id)
-            local period = self:Period(metadata.cadence)
-            if mapID and mapTasks[mapID][id] and period and title and Number(minutes) and minutes > 0 then
-                worldActive[id] = { title = title, expiresAt = self:Now() + minutes }
-                period.quests[id] = period.quests[id] or { title = title, scope = "character", observedAt = self:Now() }
-            end
-        end
-    end
-    local records = {}
-    local keyQuests = {}
-    for _, mapID in ipairs({ 2395, 2437, 2413, 2405, 2509, 2512 }) do
-        local tasks = self:GetMapTasks(mapID)
-        if type(tasks) == "table" and not (HasSecretValues and HasSecretValues(tasks)) then
-            for _, poi in ipairs(tasks) do
-                local id = poi.questID
-                if Number(id) and not keyQuests[id] and not poi._restricted and not poi.isHidden and self:Call(C_TaskQuest, "IsActive", id) == true then
-                    self:Call(C_TaskQuest, "RequestPreloadRewardData", id)
-                    local rewards = self:Call(C_QuestLog, "GetQuestRewardCurrencies", id) or {}
-                    for _, reward in ipairs(rewards) do
-                        if Number(reward.currencyID) and (reward.currencyID == 3028 or reward.currencyID == 3310) then
-                            local minutes = self:Call(C_TaskQuest, "GetQuestTimeLeftSeconds", id)
-                            local title = self:Call(C_TaskQuest, "GetQuestInfoByQuestID", id)
-                            if title and Number(minutes) and minutes > 0 then
-                                local r = Base(self, "quest:" .. id, "quests", "Activity", title, "Delves", "weekly", 205)
-                                r.cadence, r.questID, r.icon = "explicit-expiry", id, 134241
-                                r.expiryVerified = true
-                                r.expiresAt = self:Now() + minutes
-                                r.validUntil, r.rewardAvailable = r.expiresAt, true
-                                r.detail = reward.currencyID == 3028 and "Rewards a Restored Coffer Key" or "Rewards Coffer Key Shards"
-                                r.rewardReason = r.detail
-                                r.destination = { type = "map", id = mapID, label = "Track quest" }
-                                r.recommendable, r.recommendationWeight, r.rewardClass = true, 72, "cofferKey"
-                                keyQuests[id] = r
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
+    local records, handled = {}, {}
     local activePrey = self:Call(C_QuestLog, "GetActivePreyQuest")
-    for _, scope in ipairs({ "account", "character" }) do
-    for _, cadence in ipairs({ "daily", "weekly" }) do
-        local period = self:Period(cadence, scope)
-        for id, observed in pairs(period and period.quests or {}) do
-            local metadata = Registry.quests[id]
-            local onQuest = self:Call(C_QuestLog, "IsOnQuest", id)
-            local r = Base(self, "quest:" .. id, "quests", "Activity", observed.title or ("Quest " .. id),
-                metadata and metadata.category or "Quests", cadence, 200)
-            r.scope, r.questID, r.icon = observed.scope or "character", id, metadata and metadata.icon or 134400
-            r.ownerKey = scope == "account" and "account" or self.owner
-            r.rewardClass = metadata and metadata.rewardClass
-            r.oneTime = metadata and metadata.oneTime
-            r.importance = metadata and metadata.optional and "optional" or nil
-            r.professionSkillLineID = metadata and metadata.professionSkillLineID
-            if id == activePrey then r.category, r.contentType = "Prey", "prey" end
-            r.validUntil, r.resetKey = period.reset, period.reset
-            r.cadence = not (metadata and metadata.oneTime) and observed.cadenceVerified and cadence or "none"
-            r.weeklyQuest = not (metadata and metadata.oneTime) and observed.cadenceVerified
-                and cadence == "weekly" and not (metadata and metadata.activeWorldQuest)
-            r.destination = onQuest and { type = "quest", id = id, label = "Track quest" } or nil
-            r.rewardReason = observed.cadenceVerified and (cadence == "daily" and "Daily quest reward" or "Weekly quest reward") or "Quest reward"
-            if metadata and metadata.rewardClass == "spark" then
-                r.rewardReason = "Potential Spark Dust • season cap applies"
-            elseif metadata and metadata.oneTime then
-                r.rewardReason = "One-time Spark catch-up • season cap applies"
-            end
-            r.source = "C_QuestLog.IsOnQuest / ReadyForTurnIn"
-            r.rewardAvailable = onQuest == true
-            local completion, verification = Model.Resolve({
-                { ownerKey = r.ownerKey, resetKey = r.resetKey, validUntil = r.validUntil,
-                    completed = nil, verification = "live", source = "C_QuestLog.IsOnQuest" },
-                { ownerKey = r.ownerKey, resetKey = r.resetKey, validUntil = r.validUntil,
-                    completed = observed.completed, verification = "observed", source = "QUEST_TURNED_IN" },
-            }, "completed", r.ownerKey, r.resetKey, self:Now())
-            if metadata and metadata.oneTime and self:Call(C_QuestLog, "IsQuestFlaggedCompleted", id) == true then
-                completion, verification = true, "live"
-            end
-            if completion then
-                r.state, r.verification, r.detail = "complete", verification,
-                    metadata and metadata.oneTime and "Completed" or "Completed this reset"
-                r.source, r.observedAt = metadata and metadata.oneTime and verification == "live"
-                    and "C_QuestLog.IsQuestFlaggedCompleted" or "QUEST_TURNED_IN", observed.completedAt or observed.observedAt
-                r.destination = nil
-            elseif onQuest or worldActive[id] then
-                local ready = self:QuestReady(id)
-                r.state = ready == true and "ready" or ready == false and "inProgress" or "unknown"
-                local objectiveText
-                r.objectives, r.current, r.target, r.remainingActions, objectiveText = QuestObjectives(self, id)
-                r.detail = r.state == "ready" and "Reward ready • Turn in this quest" or table.concat(r.objectives, " • ")
-                if r.detail == "" then r.detail = "In progress" end
-                local total, elapsed = self:Call(C_QuestLog, "GetTimeAllowed", id)
-                if Number(total) and Number(elapsed) and total > elapsed then r.expiresAt = self:Now() + total - elapsed; r.expiryVerified = true end
-                r.actionTitle = r.state == "ready" and ("Turn in " .. r.title) or r.title
-                if r.state ~= "ready" and r.remainingActions == 1 and objectiveText then
-                    r.rewardReason = "One action remaining • " .. objectiveText
-                end
-                if ready == nil then
-                    r.verification, r.detail, r.remainingActions = "unknown", "Progress unavailable", nil
-                end
-                if worldActive[id] then
-                    r.expiryVerified = true
-                    r.expiresAt = worldActive[id].expiresAt
-                    r.destination = { type = "map", id = metadata.mapID, label = "Track quest" }
-                    if ready == false and not onQuest then r.state = "available" end
-                    r.rewardAvailable = ready ~= nil
-                end
-            elseif offered[id] then
-                r.state, r.verification, r.detail = "available", "live", "Available • Pick up this quest"
-                r.source = "C_QuestLine.GetAvailableQuestLines"
-                r.rewardAvailable = true
-                r.actionTitle = "Pick up " .. r.title
-                local pickup = Registry.pickupByQuestID and Registry.pickupByQuestID[id]
-                r.destination = { type = "map", id = offered[id],
-                    position = pickup and pickup.mapID == offered[id] and pickup.position or nil,
-                    label = pickup and pickup.mapID == offered[id] and "Pin quest giver" or "Open zone map" }
-            else
-                r.state, r.verification, r.detail = "unknown", "unknown", "Not in quest log"
-                if metadata and metadata.mapID then r.destination = { type = "map", id = metadata.mapID, label = "Map" } end
-            end
-            if keyQuests[id] then
-                r.rewardReason = keyQuests[id].rewardReason
-                r.rewardClass, r.recommendationWeight = "cofferKey", 72
-                keyQuests[id] = nil
-            end
-            local tag = self:Call(C_QuestLog, "GetQuestTagInfo", id)
-            if tag and Number(tag.tradeskillLineID) and tag.tradeskillLineID > 0 then
-                r.category, r.professionSkillLineID = "Professions", tag.tradeskillLineID
-            end
-            r.factionRewards = self:Call(C_QuestLog, "GetQuestLogMajorFactionReputationRewards", id) or {}
-            self:ClassifyQuest(r, observed)
-            -- Recommendation eligibility is explicit. A live accepted quest, a
-            -- character-specific world task, or a presently offered registered
-            -- weekly can be acted on; an old observation cannot.
-            r.recommendable = (onQuest == true or worldActive[id] ~= nil or offered[id] ~= nil)
-                and r.state ~= "unknown" and r.state ~= "complete"
-            r.recommendationWeight = r.recommendationWeight
-                or r.rewardClass == "spark" and 90
-                or r.rewardClass == "sparkCatchUp" and 80
-                or r.rewardClass == "professionKnowledge" and 78
-                or metadata and metadata.activeWorldQuest and 74
-                or (r.weeklyQuest or (metadata and metadata.weeklyQuest)) and 58
-                or cadence == "daily" and 42
-                or 35
-            records[#records + 1] = r
+    local function Add(r) records[#records + 1] = r; handled[r.questID] = true end
+    for index = 1, self:Call(C_QuestLog, "GetNumQuestLogEntries") or 0 do
+        local info = self:Call(C_QuestLog, "GetInfo", index)
+        local id = info and Safe(info.questID)
+        if id and not Safe(info.isHeader) and not Safe(info.isHidden) and id ~= activePrey then
+            local cadence = self:ObserveQuest(id, info)
+            if cadence or Data.quests[id] then Add(QuestRecord(self, id, Safe(info.title), Data.quests[id], cadence, "log")) end
         end
     end
-    end
-    for _, r in pairs(keyQuests) do self:ClassifyQuest(r); records[#records + 1] = r end
-    local level = self:Call(_G, "UnitLevel", "player")
-    if Number(level) then
-        for _, definition in ipairs(Registry.discovery or {}) do
-            if level >= definition.minLevel and NeedsDiscovery(self, definition.questIDs, offered, logged, definition.oneTime) then
-                records[#records + 1] = Discovery(self, definition,
-                    "Check " .. definition.giver, definition.reward, definition.icon)
+    local maxed = AtMaxLevel(self)
+    for _, mapID in ipairs(Data.maps) do
+        for _, line in ipairs(self:Call(C_QuestLine, "GetAvailableQuestLines", mapID) or {}) do
+            local id = Safe(line.questID)
+            local meta = id and Data.quests[id]
+            if meta and (meta.weekly or meta.oneTime) and not handled[id] and not Safe(line.isHidden) and not Done(self, id) then
+                Add(QuestRecord(self, id, self:QuestTitle(id), meta, "weekly", "offered", mapID))
             end
         end
-        if level >= 90 and type(GetProfessions) == "function" and type(GetProfessionInfo) == "function" then
-            local first, second = self:Call(_G, "GetProfessions")
-            local seen = {}
-            for _, slot in ipairs({ first, second }) do
-                if Number(slot) then
-                    local name, icon, skill, _, _, _, skillLine = self:Call(_G, "GetProfessionInfo", slot)
-                    local ids = Number(skillLine) and Registry.professionWeeklies[skillLine]
-                    local service = Registry.professionServices[skillLine]
-                    if ids and not seen[skillLine] and (service or Number(skill) and skill >= 25)
-                        and NeedsDiscovery(self, ids, offered, logged) then
-                        seen[skillLine] = true
-                        local definition = { key = "profession:" .. skillLine, questIDs = ids, mapID = 2393,
-                            position = Registry.professionPickupPoints[skillLine],
-                            category = "Professions", minLevel = 90, weight = 78 }
-                        records[#records + 1] = Discovery(self, definition,
-                            "Check " .. (name or "profession") .. " weekly",
-                            "Potential Knowledge • " .. (service and "Work Order station" or "profession trainer"), icon)
+    end
+    -- Registered world quests count only while visible to this character.
+    local visible = {}
+    for id, meta in pairs(Data.quests) do
+        if meta.worldQuest and not handled[id] and meta.mapID and self:Call(C_TaskQuest, "IsActive", id) == true then
+            if not visible[meta.mapID] then
+                visible[meta.mapID] = {}
+                for _, poi in ipairs(self:GetMapTasks(meta.mapID)) do
+                    local questID = Safe(poi.questID)
+                    if questID and not Safe(poi.isHidden) then visible[meta.mapID][questID] = true end
+                end
+            end
+            local seconds = self:Call(C_TaskQuest, "GetQuestTimeLeftSeconds", id)
+            if visible[meta.mapID][id] and seconds and seconds > 0 and not Done(self, id) then
+                Add(QuestRecord(self, id, self:QuestTitle(id), meta, "weekly", "task", meta.mapID, self:Now() + seconds))
+            end
+        end
+    end
+    -- Coffer Key world quests are only worth doing while shards are uncapped.
+    local shards = self:CurrencyInfo(Data.coffer.shards)
+    local shardsCapped = shards and shards.weeklyCap and shards.weeklyCap > 0 and shards.weeklyEarned
+        and shards.weeklyEarned >= shards.weeklyCap
+    for _, mapID in ipairs(Data.maps) do
+        for _, poi in ipairs(mapID ~= 2393 and self:GetMapTasks(mapID) or {}) do
+            local id = Safe(poi.questID)
+            if id and not handled[id] and not Safe(poi.isHidden) and self:Call(C_TaskQuest, "IsActive", id) == true then
+                if not self.requested["reward" .. id] then
+                    self.requested["reward" .. id] = true
+                    self:Call(C_TaskQuest, "RequestPreloadRewardData", id)
+                end
+                for _, reward in ipairs(self:Call(C_QuestLog, "GetQuestRewardCurrencies", id) or {}) do
+                    local currencyID = Safe(reward.currencyID)
+                    local seconds = self:Call(C_TaskQuest, "GetQuestTimeLeftSeconds", id)
+                    local title = self:QuestTitle(id)
+                    if (currencyID == Data.coffer.key or (currencyID == Data.coffer.shards and not shardsCapped))
+                        and title and seconds and seconds > 0 and not handled[id] then
+                        local r = QuestRecord(self, id, title, { category = "Coffer Keys", icon = 134241 }, "weekly", "task", mapID, self:Now() + seconds)
+                        r.section, r.weight = "delves", WEIGHTS.cofferKey
+                        r.reason = currencyID == Data.coffer.key and "Rewards a Restored Coffer Key" or "Rewards Coffer Key Shards"
+                        r.detail = r.reason
+                        Add(r)
                     end
                 end
             end
         end
     end
-    if not self.questCoverage then
-        local r = Base(self, "quests:coverage", "quests", "Progress", "Quest log coverage", "Quests", "weekly", 0)
-        r.state, r.verification, r.coverageRequired = "unknown", "unknown", true
-        r.detail = "Quest log partly unavailable • Existing observations are retained"
+    -- Earlier observations recover abandoned or turned-in quests; registry flags
+    -- recover completions that happened before the Planner saw them.
+    for _, scope in ipairs({ "character", "account" }) do
+        for _, cadence in ipairs({ "daily", "weekly" }) do
+            local period = self:Period(cadence, scope)
+            for id, observed in pairs(period and period.quests or {}) do
+                if not handled[id] and id ~= activePrey then
+                    local complete = observed.completed or Done(self, id)
+                    Add(QuestRecord(self, id, observed.title, Data.quests[id], cadence, complete and "complete" or "missing"))
+                end
+            end
+        end
+    end
+    for id, meta in pairs(Data.quests) do
+        if not handled[id] and not meta.profession and (meta.weekly or meta.oneTime) and Done(self, id) then
+            Add(QuestRecord(self, id, self:QuestTitle(id), meta, "weekly", "complete"))
+        end
+    end
+    if maxed then
+        local warMode = self:Call(C_PvP, "IsWarModeDesired") == true
+        for _, giver in ipairs(Data.givers) do
+            local open = true
+            for _, id in ipairs(giver.questIDs) do
+                if handled[id] or Done(self, id) then open = false; break end
+            end
+            if open then
+                local r = Record("discovery:" .. giver.key, "weekly", "lead", "Check " .. giver.giver, giver.category)
+                r.actionTitle, r.tier, r.weight = "Visit " .. giver.giver, 2, giver.weight - 15
+                r.reason = giver.reward .. (giver.note and " • " .. giver.note or "")
+                r.detail = "Weekly quest giver • pick up if offered this week"
+                local period = self:Period("weekly")
+                r.resetKey = period and period.reset
+                r.destination = { type = "map", id = giver.mapID, position = giver.position,
+                    label = giver.position and "Pin quest giver" or "Open map" }
+                r.recommend = not giver.optional or warMode
+                records[#records + 1] = r
+            end
+        end
+    end
+    return records
+end
+
+local TRACKS = {
+    { key = "Raid", title = RAIDS, unit = "raid boss", units = "raid bosses", icon = 236423 },
+    { key = "Activities", title = DUNGEONS, unit = "dungeon", units = "dungeons", icon = 463829 },
+    { key = "World", title = WORLD or "World", unit = "Delve or world activity", units = "Delves or world activities", icon = 6025441 },
+}
+
+local function ItemLevel(self, link)
+    if not link then return end
+    local level = self:Call(C_Item, "GetDetailedItemLevelInfo", link)
+    if not level then
+        local itemID = tonumber(link:match("item:(%d+)"))
+        if itemID then self:RequestItem(itemID) end
+    end
+    return level
+end
+
+-- Uses Blizzard's own Vault upgrade rules and strings, so advice matches the Vault tooltip.
+local function Improvement(self, track, activity)
+    local link, upgradeLink = self:Call(C_WeeklyRewards, "GetExampleRewardItemHyperlinks", activity.id)
+    local current = ItemLevel(self, link)
+    if track.key == "Raid" then
+        local upgrade = ItemLevel(self, upgradeLink)
+        local nextDifficulty = DifficultyUtil and DifficultyUtil.GetNextPrimaryRaidDifficultyID(activity.level)
+        local name = nextDifficulty and DifficultyUtil.GetDifficultyName(nextDifficulty)
+        if current and upgrade and upgrade > current and name then
+            return current, upgrade, WEEKLY_REWARDS_COMPLETE_RAID and WEEKLY_REWARDS_COMPLETE_RAID:format(name)
+        end
+        return current
+    end
+    local hasData, _, nextLevel, upgrade = self:Call(C_WeeklyRewards, "GetNextActivitiesIncrease", activity.tierID, activity.level)
+    if not (hasData and nextLevel and upgrade and current and upgrade > current) then return current end
+    local text = track.key == "World" and WEEKLY_REWARDS_COMPLETE_WORLD and WEEKLY_REWARDS_COMPLETE_WORLD:format(nextLevel)
+        or activity.threshold > 1 and WEEKLY_REWARDS_COMPLETE_MYTHIC and WEEKLY_REWARDS_COMPLETE_MYTHIC:format(nextLevel, activity.threshold)
+        or WEEKLY_REWARDS_COMPLETE_MYTHIC_SHORT and WEEKLY_REWARDS_COMPLETE_MYTHIC_SHORT:format(nextLevel)
+    return current, upgrade, text
+end
+
+Planner.providers.vault = function(self)
+    local records = {}
+    local waiting = self:Call(C_WeeklyRewards, "HasAvailableRewards") == true
+    local stale = waiting and self:Call(C_WeeklyRewards, "AreRewardsForCurrentRewardPeriod") ~= true
+    if waiting then
+        local r = Record("vault:claim", "vault", "task", "Choose your Great Vault reward", "Great Vault", 1518642)
+        r.state, r.tier, r.weight, r.recommend = "ready", 1, WEIGHTS.vaultClaim, true
+        r.reason = "Choose it before spending Crests or Catalyst charges"
+        r.detail = "Reward waiting at the Great Vault"
+        r.destination = { type = "vault", label = "Open Great Vault" }
+        records[#records + 1] = r
+    end
+    for index, track in ipairs(TRACKS) do
+        local r = Record("vault:track:" .. index, "vault", "vault", track.title, "Great Vault", track.icon)
+        r.destination, r.slots = { type = "vault", label = "Open Great Vault" }, {}
+        local activities = {}
+        for _, activity in ipairs(self:Call(C_WeeklyRewards, "GetActivities", Enum.WeeklyRewardChestThresholdType[track.key]) or {}) do
+            local threshold, progress = Safe(activity.threshold), Safe(activity.progress)
+            if threshold and progress and threshold > 0 then
+                activities[#activities + 1] = { id = Safe(activity.id), threshold = threshold, progress = progress,
+                    level = Safe(activity.level) or 0, tierID = Safe(activity.activityTierID) }
+            end
+        end
+        table.sort(activities, function(a, b) return a.threshold < b.threshold end)
+        local unlocked, nextActivity, lowest = 0, nil, nil
+        for _, activity in ipairs(activities) do
+            local slot = { threshold = activity.threshold, progress = activity.progress, reached = activity.progress >= activity.threshold }
+            if slot.reached then
+                unlocked = unlocked + 1
+                slot.itemLevel, slot.upgrade, slot.upgradeText = Improvement(self, track, activity)
+                if slot.itemLevel and (not lowest or slot.itemLevel < lowest.itemLevel) then lowest = slot end
+            elseif not nextActivity then nextActivity = activity end
+            r.slots[#r.slots + 1] = slot
+        end
+        r.current, r.target = unlocked, #activities
+        if #activities == 0 or stale then
+            r.state, r.detail = "unknown", stale and "Collect last week's reward first" or "Progress unavailable"
+        else
+            r.state = unlocked == #activities and "complete" or unlocked > 0 and "active" or "available"
+            r.detail = unlocked .. " / " .. #activities .. (lowest and (" • ilvl " .. lowest.itemLevel) or "")
+        end
+        -- The ring fills toward the final threshold; each activity reports the same total.
+        local final = activities[#activities]
+        r.fraction = final and math.min(1, final.progress / final.threshold)
+        records[#records + 1] = r
+        if r.state ~= "unknown" and nextActivity then
+            local remaining = nextActivity.threshold - nextActivity.progress
+            local task = Record("vault:next:" .. index, "vault", "task", track.title .. " Vault choice " .. (unlocked + 1), "Great Vault", track.icon)
+            task.actionTitle = "Complete " .. remaining .. " more " .. (remaining == 1 and track.unit or track.units)
+            task.reason = "Unlocks Great Vault choice " .. (unlocked + 1) .. " of " .. #activities
+            task.detail = track.title .. " • " .. nextActivity.progress .. " / " .. nextActivity.threshold
+            task.current, task.target = nextActivity.progress, nextActivity.threshold
+            task.state = nextActivity.progress > 0 and "active" or "available"
+            task.tier, task.weight, task.recommend = 4, WEIGHTS.vault - math.min(remaining, 10), true
+            task.destination = r.destination
+            records[#records + 1] = task
+        elseif r.state == "complete" and lowest and lowest.upgrade then
+            local task = Record("vault:improve:" .. index, "vault", "task", "Improve your " .. track.title .. " Vault reward", "Great Vault", track.icon)
+            task.actionTitle = "Raise a " .. track.title .. " Vault choice to ilvl " .. lowest.upgrade
+            task.reason = lowest.upgradeText or "Higher difficulty improves this Vault choice"
+            task.detail = "Currently ilvl " .. lowest.itemLevel
+            task.tier, task.weight, task.recommend = 5, WEIGHTS.vault - 14, true
+            task.destination = r.destination
+            records[#records + 1] = task
+        end
+    end
+    return records
+end
+
+Planner.providers.prey = function(self)
+    local records, prey = {}, Data.prey
+    local done = Count(self, prey.ids)
+    local r = Record("prey:weekly", "delves", "progress", "Prey hunts", "Prey", "Interface\\Icons\\Ability_Hunter_MarkedForDeath")
+    r.current, r.target = done, prey.target
+    r.state = done >= prey.target and "complete" or done > 0 and "active" or "available"
+    r.detail = done .. " / " .. prey.target .. " this week"
+    r.lines = { "Season 2 guides recommend four hunts each week.", "Later hunts give sharply reduced progress." }
+    records[#records + 1] = r
+    local id = self:Call(C_QuestLog, "GetActivePreyQuest")
+    if id and id > 0 and self:Call(C_QuestLog, "IsOnQuest", id) == true then
+        local hunt = QuestRecord(self, id, self:QuestTitle(id) or "Active Prey hunt", { category = "Prey" }, "weekly", "log")
+        hunt.section, hunt.weight = "delves", WEIGHTS.prey
+        hunt.reason = "Finish your active hunt • Great Vault World progress"
+        records[#records + 1] = hunt
+    elseif done < prey.target and AtMaxLevel(self) then
+        local task = Record("prey:start", "delves", "task", "Start a Prey hunt", "Prey", "Interface\\Icons\\Ability_Hunter_MarkedForDeath")
+        task.actionTitle = "Start a Prey hunt with " .. prey.giver
+        task.reason = "Hunt " .. (done + 1) .. " of " .. prey.target .. " • Great Vault World progress"
+        task.detail = "Silvermoon City"
+        task.tier, task.weight, task.recommend = 4, WEIGHTS.prey - done, true
+        task.destination = { type = "map", id = prey.mapID, label = "Open map" }
+        records[#records + 1] = task
+    end
+    return records
+end
+
+Planner.providers.delves = function(self)
+    local records, bountiful = {}, {}
+    local here = self:Call(C_Map, "GetBestMapForUnit", "player")
+    for mapID, pois in pairs(Data.bountifulDelves) do
+        for _, poiID in ipairs(pois) do
+            local info = self:Call(C_AreaPoiInfo, "GetAreaPOIInfo", mapID, poiID)
+            local name = info and Safe(info.name)
+            if name then
+                local map = self:Call(C_Map, "GetMapInfo", mapID)
+                local position, x, y = info and Safe(info.position)
+                if position then x, y = self:Call(position, "GetXY", position) end
+                local r = Record("delve:" .. poiID, "delves", "context", name, "Bountiful Delves", 6025441)
+                r.detail = "Bountiful • " .. (map and Safe(map.name) or "")
+                r.destination = { type = "map", id = mapID, position = x and y and { x = x, y = y },
+                    label = x and "Pin Delve" or "Open map" }
+                if mapID == here then table.insert(bountiful, 1, r) else bountiful[#bountiful + 1] = r end
+                records[#records + 1] = r
+            end
+        end
+    end
+    local keys = self:CurrencyInfo(Data.coffer.key)
+    local count = keys and keys.quantity or 0
+    if count > 0 and bountiful[1] then
+        local task = Record("delves:bountiful", "delves", "task", "Run a Bountiful Delve", "Delves", 6025441)
+        task.actionTitle = "Run a Bountiful Delve at Tier " .. Data.coffer.tier .. "+"
+        task.reason = count .. " Restored Coffer Key" .. (count == 1 and "" or "s") .. " • best used on Tier " .. Data.coffer.tier .. " or higher"
+        task.detail = bountiful[1].title .. " • " .. bountiful[1].detail:gsub("^Bountiful • ", "")
+        task.tier, task.weight, task.recommend = 4, WEIGHTS.bountiful + math.min(count, 6), true
+        task.destination = bountiful[1].destination
+        records[#records + 1] = task
+    end
+    if self:Call(C_DelvesUI, "HasActiveDelve") == true then
+        local eligible = self:Call(C_DelvesUI, "IsEligibleForActiveDelveRewards", "player")
+        local r = Record("delves:active", "nearby", "context", "Active Delve", "Delves", 6025441)
+        r.detail = "Rewards: " .. (eligible == true and "Available" or eligible == false and "Unavailable" or "Not shown")
         records[#records + 1] = r
     end
     return records
 end
 
-Planner.providers.vault = function(self)
-    local records, types = {}, Enum.WeeklyRewardChestThresholdType
-    local vaultActions = {}
-    local reset = self:ResetTime("weekly")
-    local waiting = self:Call(C_WeeklyRewards, "HasAvailableRewards")
-    local currentPeriod = self:Call(C_WeeklyRewards, "AreRewardsForCurrentRewardPeriod")
-    local tracks = { { types.Raid, "Raids", "raid bosses", 236423 },
-        { types.Activities, "Dungeons", "dungeons", 463829 }, { types.World, "World & delves", "world activities or delves", 6025441 } }
-    for index, track in ipairs(tracks) do
-        local progress = Base(self, "vault:track:" .. index, "vault", "Progress", track[2], "Great Vault", "weekly", 10 + index * 2)
-        progress.destination = { type = "vault", label = "Vault" }; progress.icon = track[4]
-        progress.validUntil = reset; progress.milestones = {}; progress.unit = track[3]
-        local activities = self:Call(C_WeeklyRewards, "GetActivities", track[1])
-        local sorted = {}
-        for _, activity in ipairs(activities or {}) do
-            if Number(activity.threshold) and Number(activity.progress) and activity.threshold > 0 then sorted[#sorted + 1] = activity end
-        end
-        table.sort(sorted, function(a, b) return a.threshold < b.threshold end)
-        local nextActivity, unlocked = nil, 0
-        for _, activity in ipairs(sorted) do
-            local reached = activity.progress >= activity.threshold
-            local link, upgradeLink = self:Call(C_WeeklyRewards, "GetExampleRewardItemHyperlinks", activity.id)
-            local itemLevel = link and self:Call(C_Item, "GetDetailedItemLevelInfo", link)
-            if link and not itemLevel then
-                local itemID = tonumber(link:match("item:(%d+)"))
-                if itemID then self.pendingItems[itemID] = true; self:Call(C_Item, "RequestLoadItemDataByID", itemID) end
-            end
-            progress.milestones[#progress.milestones + 1] = { current = activity.progress, target = activity.threshold,
-                reached = reached, itemLevel = itemLevel, link = link, upgradeLink = upgradeLink, level = activity.level, activityTierID = activity.activityTierID }
-            if reached then unlocked = unlocked + 1 elseif not nextActivity then nextActivity = activity end
-        end
-        progress.current, progress.target = unlocked, #sorted
-        progress.state = #sorted > 0 and not activities._incomplete and "available" or "unknown"
-        if waiting ~= false and currentPeriod ~= true then progress.state = "unknown" end
-        if progress.state == "unknown" then progress.verification = "unknown" end
-        progress.coverageRequired = true
-        progress.detail = #sorted > 0 and (unlocked .. " / " .. #sorted .. " options unlocked") or "Progress unavailable"
-        if progress.state == "unknown" then progress.detail = "Vault progress unavailable" end
-        progress.rewardReason = "Unlock reward choices for your next Great Vault"
-        progress.source = "C_WeeklyRewards.GetActivities"
-        records[#records + 1] = progress
-        if #sorted > 0 and not activities._incomplete and reset and (waiting == false or currentPeriod == true) then
-            local task = Model.Copy(progress)
-            task.id, task.kind, task.registryOrder = "vault:next:" .. index, "Progress", progress.registryOrder + 1
-            task.goalType, task.outcomeID = "vault", task.id
-            task.milestones = nil; task.title = track[2] .. " • Great Vault"
-            task.icon, task.expiresAt = track[4], reset
-            if nextActivity then
-                task.current, task.target = nextActivity.progress, nextActivity.threshold
-                task.remainingProgress = nextActivity.threshold - nextActivity.progress
-                task.state = task.current > 0 and "inProgress" or "available"
-                task.activityTierID, task.activityID = nextActivity.activityTierID, nextActivity.id
-                task.goalType, task.outcomeID = "vault", task.id
-                task.actionable = false
-                task.detail = task.current .. " / " .. task.target .. " • Unlocks next reward slot"
-                local remaining = task.target - task.current
-                if remaining > 0 then
-                    local singular, plural = index == 1 and "qualifying raid boss" or index == 2 and "qualifying dungeon" or "qualifying world activity or delve",
-                        index == 1 and "qualifying raid bosses" or index == 2 and "qualifying dungeons" or "qualifying world activities or delves"
-                    local action = Model.Copy(task)
-                    action.id, action.kind, action.goalID = "vault:action:" .. index, "Activity", task.id
-                    action.title = "Unlock the next " .. track[2] .. " Vault choice"
-                    action.actionTitle = "Complete " .. remaining .. " more " .. (remaining == 1 and singular or plural)
-                    action.state, action.actionable, action.recommendable =
-                        task.current > 0 and "inProgress" or "available", true, true
-                    action.destination = { type = "vault", label = "Vault" }
-                    action.rewardReason = "Unlocks your next Great Vault reward choice"
-                    action.recommendationWeight, action.rewardClass = 82, "vaultMilestone"
-                    action.remainingActions = remaining
-                    action.effort = { unit = track[3], count = remaining }
-                    action.facts = Model.Copy(task.facts or {})
-                    vaultActions[#vaultActions + 1] = action
-                end
-            else
-                task.state, task.detail = "complete", "All reward options unlocked"
-            end
-            records[#records + 1] = task
-        end
-    end
-    local reward = waiting
-    if reward then
-        local claim = Base(self, "vault:claim", "vault", "Activity", "Collect your Great Vault reward", "Great Vault", "weekly", 1)
-        claim.state = "claimable"; claim.icon = 1518642; claim.destination = { type = "vault", label = "Vault" }
-        claim.recommendable, claim.recommendationWeight, claim.rewardClass = true, 100, "vaultClaim"
-        claim.hasInteraction = self:Call(C_WeeklyRewards, "HasInteraction")
-        claim.canClaim = self:Call(C_WeeklyRewards, "CanClaimRewards")
-        claim.detail = claim.hasInteraction == true and claim.canClaim == true and "Reward ready • Choose at the Vault" or "Reward waiting • Visit the Great Vault to collect; remote preview may be read-only"
-        claim.rewardReason = "A Great Vault reward is waiting to be collected"
-        local E = RefineUI.PlannerEvidence
-        claim.source = "C_WeeklyRewards.HasAvailableRewards"
-        claim.facts = { rewardWaiting = E.Fact(claim, "rewardWaiting", reward),
-            interaction = E.Fact(claim, "interaction", claim.hasInteraction, "C_WeeklyRewards.HasInteraction"),
-            claimReady = E.Fact(claim, "claimReady", claim.canClaim, "C_WeeklyRewards.CanClaimRewards") }
-        records[#records + 1] = claim
-    end
-    -- One Vault action is enough for the weekly headline. Prefer the closest
-    -- measured milestone, then the stable track order. The remaining tracks stay
-    -- visible as progress without monopolizing all recommendation slots.
-    table.sort(vaultActions, function(a, b)
-        if a.remainingActions ~= b.remainingActions then return a.remainingActions < b.remainingActions end
-        return a.id < b.id
-    end)
-    if vaultActions[1] then records[#records + 1] = vaultActions[1] end
-    return records
+local function KnowledgeLine(label, done, kp)
+    return (done and "|A:common-icon-checkmark:12:12|a " or "|A:common-icon-redx:12:12|a ") .. label .. " • " .. kp .. " Knowledge"
 end
 
-Planner.providers.instances = function(self)
-    if not self.instanceReady then
-        return { { id = "instances:status", provider = "instances", kind = "Progress", category = "Lockouts", bucket = "weekly",
-            title = "Instance lockouts", state = self.instanceRequest and "loading" or "unknown", verification = "unknown",
-            detail = self.instanceRequest and "Checking progress…" or "Progress unavailable", registryOrder = 99 } }
+Planner.providers.professions = function(self, db)
+    local records, maxed, listed = {}, AtMaxLevel(self), {}
+    -- Accepted or offered profession quests already appear in the quests provider.
+    for _, r in ipairs(self.cache.quests or {}) do
+        if r.questID and r.state ~= "missing" then listed[r.questID] = true end
     end
-    local records, daily = {}, self:ResetTime("daily")
-    for index = 1, self:Call(_G, "GetNumSavedInstances") or 0 do
-        local name, lockID, seconds, difficultyID, locked, extended, _, raid, _, difficulty, total, killed, _, mapID = self:Call(_G, "GetSavedInstanceInfo", index)
-        if Number(difficultyID) and (Number(mapID) or Number(lockID)) and type(name) == "string" and Number(seconds) and (locked or extended) and (seconds > 0 or extended) then
-            local expiry = seconds > 0 and self:Now() + seconds or nil
-            local bucket = expiry and daily and expiry <= daily + 2 and "daily" or "weekly"
-            local r = Base(self, "instance:" .. tostring(mapID or lockID) .. ":" .. difficultyID, "instances",
-                "Progress", name, "Lockouts", bucket, 100)
-            r.cadence, r.current, r.target = "explicit-expiry", killed or 0, total or 0
-            r.expiresAt, r.validUntil, r.icon = expiry, expiry, 236423
-            r.state = r.target > 0 and (r.current >= r.target and "complete" or "inProgress") or "unknown"
-            r.detail = string.format("%s • %d / %d bosses%s", difficulty or "", r.current, r.target, extended and " • Extended save" or "")
-            r.rewardReason = extended and "Extended lockout; not a record of this week's kills" or "Saved instance progress by difficulty"
-            -- Lockout state alone does not prove per-boss personal loot eligibility.
-            r.rewardAvailable = false; r.bosses = {}
-            for boss = 1, r.target do
-                local bossName, _, defeated = self:Call(_G, "GetSavedInstanceEncounterInfo", index, boss)
-                if bossName then r.bosses[#r.bosses + 1] = { title = bossName, complete = defeated } end
+    local first, second = self:Call(_G, "GetProfessions")
+    for _, slot in ipairs({ first, second }) do
+        local name, icon, skill, _, _, _, skillLine = self:Call(_G, "GetProfessionInfo", slot)
+        local source = skillLine and Data.professions[skillLine]
+        if source and name then
+            local r = Record("profession:" .. skillLine, "professions", "progress", name .. " weekly Knowledge", "Professions", icon)
+            r.lines = {}
+            local earned, total = 0, 0
+            local function Source(label, done, kp, got)
+                total, earned = total + kp, earned + (got or done and kp or 0)
+                r.lines[#r.lines + 1] = KnowledgeLine(label, done, kp)
             end
-            local journalID = mapID and self:Call(C_EncounterJournal, "GetInstanceForGameMap", mapID)
-            if journalID then r.destination = { type = "instance", id = journalID, difficulty = difficultyID, raid = raid, label = "Guide" } end
+            local questDone = Count(self, source.quest) > 0
+            Source("Weekly quest", questDone, source.questKP)
+            local treatiseDone = Done(self, source.treatise)
+            Source("Thalassian Treatise", treatiseDone, 1)
+            if source.drops then
+                local drops = Count(self, source.drops)
+                Source("Crafting drops " .. drops .. " / " .. #source.drops, drops == #source.drops,
+                    #source.drops * source.dropKP, drops * source.dropKP)
+            end
+            if source.gather then
+                local gathered = Count(self, source.gather)
+                Source("Gathering finds " .. gathered .. " / " .. #source.gather, gathered == #source.gather,
+                    #source.gather * source.gatherKP, gathered * source.gatherKP)
+                Source("Bonus find", Done(self, source.bonus), source.bonusKP)
+            end
+            r.current, r.target = earned, total
+            r.state = earned >= total and "complete" or earned > 0 and "active" or "available"
+            r.detail = earned .. " / " .. total .. " Knowledge this week"
+            records[#records + 1] = r
+            local gatherer = source.gather ~= nil
+            local pending = false
+            for _, id in ipairs(source.quest) do
+                if listed[id] or self:Call(C_QuestLog, "IsOnQuest", id) == true then pending = true end
+            end
+            if maxed and not questDone and not pending and (not gatherer or (skill and skill >= 25)) then
+                local task = Record("discovery:profession:" .. skillLine, "professions", "task", name .. " weekly quest", "Professions", icon)
+                task.actionTitle = "Pick up your " .. name .. " weekly"
+                task.reason = "+" .. source.questKP .. " Knowledge • " .. (gatherer and "profession trainer" or "Work Order station")
+                task.detail = "Silvermoon City"
+                task.tier, task.weight, task.recommend = 5, WEIGHTS.knowledge, true
+                task.destination = { type = "map", id = 2393, position = source.point, label = "Pin pickup" }
+                records[#records + 1] = task
+            end
+            local held = self:Call(C_Item, "GetItemCount", source.treatiseItem, true, false, true, true)
+            if not treatiseDone and held and held > 0 then
+                local task = Record("profession:treatise:" .. skillLine, "professions", "task", "Use your " .. name .. " Treatise", "Professions", icon)
+                task.actionTitle, task.itemID = "Use your " .. name .. " Treatise", source.treatiseItem
+                task.reason, task.detail = "+1 Knowledge • already in your bags", "Use it from your bags"
+                task.tier, task.weight, task.recommend = 4, WEIGHTS.knowledge + 2, true
+                records[#records + 1] = task
+            end
+        end
+    end
+    for key, entry in pairs(db.snapshots.orders) do
+        if entry.expiresAt <= self:Now() then db.snapshots.orders[key] = nil
+        else
+            local r = Record("order:" .. key, "professions", "context", "Patron order #" .. entry.order.orderID, "Patron Orders", "Interface\\Icons\\INV_Misc_Note_01")
+            r.observedAt, r.expiresAt, r.expirationMeaning = entry.observedAt, entry.expiresAt, "Order expires"
+            r.detail, r.lines = "Seen at the crafting orders table", {}
+            for _, reward in ipairs(entry.order.npcOrderRewards or {}) do
+                local label = reward.itemLink or (reward.currencyType and ("Currency #" .. reward.currencyType))
+                if label then r.lines[#r.lines + 1] = "Reward: " .. (reward.count or "?") .. " × " .. label end
+            end
             records[#records + 1] = r
         end
     end
     return records
 end
 
-function Planner:CurrencyRecord(id, info, metadata)
-    if not info or not info.name or info.isTypeUnused or not info.discovered then return end
-    local r = Base(self, "currency:" .. id, "resources", "Resource", info.name,
-        metadata and metadata.category or "Currencies", "weekly", 400)
-    r.currencyID, r.quantity, r.icon = id, info.quantity, info.iconFileID
-    r.scope = info.isAccountWide and "account" or "character"
-    r.ownerKey = r.scope == "account" and "account" or self.owner
-    r.source = "C_CurrencyInfo.GetCurrencyInfo"
-    local E = RefineUI.PlannerEvidence
-    r.facts = { holdings = E.Field(r, info, "quantity"), weeklyEarned = E.Field(r, info, "quantityEarnedThisWeek"),
-        weeklyCap = E.Field(r, info, "maxWeeklyQuantity"), totalEarned = E.Field(r, info, "totalEarned"),
-        capacity = E.Field(r, info, "maxQuantity") }
+-- Patron orders are passive snapshots of successful NPC order searches.
+function Planner:ObserveOrders(page, result, orderType)
+    if Safe(result) ~= Enum.CraftingOrderResult.Ok or Safe(orderType) ~= Enum.CraftingOrderType.Npc then return end
+    local info = Safe(page.professionInfo)
+    local profession = info and Safe(info.professionID)
+    local db = self:Database()
+    if not profession or not db then return end
+    for _, order in ipairs(self:Call(C_CraftingOrders, "GetCrafterOrders") or {}) do
+        local orderID, expiresAt = Safe(order.orderID), Safe(order.expirationTime)
+        if orderID and expiresAt and Safe(order.orderType) == orderType then
+            local rewards = {}
+            for _, reward in ipairs(Safe(order.npcOrderRewards) or {}) do
+                rewards[#rewards + 1] = { itemLink = Safe(reward.itemLink), currencyType = Safe(reward.currencyType), count = Safe(reward.count) }
+            end
+            db.snapshots.orders[profession .. ":" .. orderID] = { order = { orderID = orderID, npcOrderRewards = rewards },
+                profession = profession, observedAt = self:Now(), expiresAt = expiresAt }
+        end
+    end
+    self:Invalidate("professions")
+end
+
+function Planner:InstallOrderHooks()
+    local page = ProfessionsFrame and ProfessionsFrame.OrdersPage
+    if not page or self.orderHookPage == page or type(page.OrderRequestCallback) ~= "function" then return end
+    self.orderHookPage = page
+    hooksecurefunc(page, "OrderRequestCallback", function(...) pcall(self.ObserveOrders, self, ...) end)
+end
+
+function Planner:ObserveOrderFulfilled(result, orderID)
+    result, orderID = Safe(result), Safe(orderID)
+    local db = self:Database()
+    if result ~= Enum.CraftingOrderResult.Ok or not orderID or not db then return end
+    for key, entry in pairs(db.snapshots.orders) do
+        if entry.order.orderID == orderID then db.snapshots.orders[key] = nil end
+    end
+    self:Invalidate("professions")
+end
+
+function Planner:InvalidateOrderReward(_, orderID)
+    orderID = Safe(orderID)
+    local db = self:Database()
+    if not orderID or not db then return end
+    for _, entry in pairs(db.snapshots.orders) do
+        if entry.order.orderID == orderID then entry.order.npcOrderRewards = nil end
+    end
+    self:Invalidate("professions")
+end
+
+function Planner:CurrencyRecord(id, metadata)
+    local info = self:CurrencyInfo(id)
+    if not info or not info.name or info.unused or not info.discovered then return end
+    local r = Record("currency:" .. id, "resources", "resource", info.name, metadata and metadata.category or "Currencies", info.icon)
+    r.currencyID, r.amount, r.description = id, info.quantity, info.description
     r.destination = { type = "currency", id = id, label = "Details" }
-    r.rewardReason = info.description
-    local parts = {}
-    if metadata and metadata.category == "Sparks" then
-        r.quantity = nil -- the counter is not an inventory balance
-        r.heldItemID = metadata.heldItemID
+    r.lines = {}
+    if metadata and metadata.heldItemID then
+        -- The Spark counter tracks seasonal acquisition; the held item is spendable.
         local itemName = self:Call(C_Item, "GetItemNameByID", metadata.heldItemID)
-        if itemName then r.title = itemName else self.pendingItems[metadata.heldItemID] = true end
-        local held = self:Call(C_Item, "GetItemCount", metadata.heldItemID, true, false, true, true)
-        if Number(held) then r.held = held end
-        r.facts.holdings = E.Fact(r, "holdings", r.held, "C_Item.GetItemCount (bags and banks)", "live")
-        if info.useTotalEarnedForMaxQty and Number(info.totalEarned) and Number(info.maxQuantity) and info.maxQuantity > 0 then
-            r.seasonEarned, r.seasonCap = info.totalEarned, info.maxQuantity
-            r.catchUpRemaining = math.max(0, r.seasonCap - r.seasonEarned)
-            r.detail = string.format("%d / %d earned this season • %s", r.seasonEarned, r.seasonCap,
-                r.catchUpRemaining == 0 and "Caught up" or (r.catchUpRemaining .. " behind current cap"))
-            if r.held then r.detail = r.detail .. " • " .. r.held .. " across bags and banks (including account bank)" end
-            r.validUntil = self:ResetTime("weekly")
-        else
-            r.state, r.verification, r.detail = "unknown", "unknown", "Spark acquisition progress unavailable"
+        if itemName then r.title = itemName else self:RequestItem(metadata.heldItemID) end
+        r.amount = self:Call(C_Item, "GetItemCount", metadata.heldItemID, true, false, true, true)
+        if info.useTotal and info.totalEarned and info.maxQuantity and info.maxQuantity > 0 then
+            r.lines[#r.lines + 1] = info.totalEarned .. " / " .. info.maxQuantity .. " earned this season"
+            if info.totalEarned < info.maxQuantity then r.lines[#r.lines + 1] = (info.maxQuantity - info.totalEarned) .. " still available" end
         end
         return r
     end
-    if Number(info.maxWeeklyQuantity) and info.maxWeeklyQuantity > 0 and Number(info.quantityEarnedThisWeek) then
-        r.weeklyEarned, r.weeklyCap = info.quantityEarnedThisWeek, info.maxWeeklyQuantity
-        parts[#parts + 1] = r.weeklyEarned .. " / " .. r.weeklyCap .. " earned this week"
-        r.validUntil = self:ResetTime("weekly")
+    if info.weeklyCap and info.weeklyCap > 0 and info.weeklyEarned then
+        r.lines[#r.lines + 1] = info.weeklyEarned .. " / " .. info.weeklyCap .. " earned this week"
     end
-    if info.useTotalEarnedForMaxQty and Number(info.maxQuantity) and info.maxQuantity > 0 and Number(info.totalEarned) then
-        r.seasonEarned, r.seasonCap = info.totalEarned, info.maxQuantity
-        parts[#parts + 1] = r.seasonEarned .. " / " .. r.seasonCap .. " total earned"
+    if info.useTotal and info.maxQuantity and info.maxQuantity > 0 and info.totalEarned then
+        r.lines[#r.lines + 1] = info.totalEarned .. " / " .. info.maxQuantity .. " earned this season"
     end
     if metadata and metadata.category == "Catalyst" then
-        r.charges, r.maxCharges = info.quantity, info.maxQuantity
-        parts[#parts + 1] = Number(info.quantity) and (info.quantity .. " Catalyst charges") or "Charges unavailable"
-        -- ItemInteraction charge data belongs to the active conversion system.
-        -- Never apply another interaction's recharge timer to this currency.
+        r.lines[#r.lines + 1] = (info.quantity or "?") .. " Catalyst charges"
         local interaction = self:Call(C_ItemInteraction, "GetItemInteractionInfo")
-        if interaction and interaction.currencyTypeId == id then
+        if interaction and Safe(interaction.currencyTypeId) == id then
             local charge = self:Call(C_ItemInteraction, "GetChargeInfo")
-            if charge and Number(charge.timeToNextCharge) and charge.timeToNextCharge > 0 then
-                r.nextRechargeAt = self:Now() + charge.timeToNextCharge
-                r.rechargeRate = Number(charge.rechargeRate) and charge.rechargeRate or nil
-                r.newChargeAmount = Number(charge.newChargeAmount) and charge.newChargeAmount or nil
-                parts[#parts + 1] = "Next charge in " .. math.ceil(charge.timeToNextCharge / 3600) .. "h"
-            end
+            local seconds = charge and Safe(charge.timeToNextCharge)
+            if seconds and seconds > 0 then r.expiresAt, r.expirationMeaning = self:Now() + seconds, "Next charge" end
         end
-    else parts[#parts + 1] = Number(info.quantity) and (info.quantity .. " held") or "Quantity unavailable" end
-    if not Number(info.quantity) then
-        r.quantity, r.charges = nil, nil
-        r.state, r.verification = "unknown", "unknown"
     end
-    r.detail = table.concat(parts, " • ")
     return r
 end
 
-Planner.providers.resources = function(self)
+Planner.providers.resources = function(self, db)
     local _, _, _, build = self:Call(_G, "GetBuildInfo")
-    local candidates = Registry.ResourceIDs(tonumber(build) or 0)
-    -- Read visible currency rows without expanding headers or changing the
-    -- player's currency-list filters. Seasonal candidates cover collapsed rows.
-    for index = 1, self:Call(C_CurrencyInfo, "GetCurrencyListSize") or 0 do
-        local info = self:Call(C_CurrencyInfo, "GetCurrencyListInfo", index)
-        if info and not info.isHeader then
-            local link = self:Call(C_CurrencyInfo, "GetCurrencyListLink", index)
-            local id = link and self:Call(C_CurrencyInfo, "GetCurrencyIDFromLink", link)
-            if id and Number(info.maxWeeklyQuantity) and info.maxWeeklyQuantity > 0 then candidates[id] = candidates[id] or {} end
-        end
-    end
-    local db = self:Database()
-    for key in pairs(db and db.preferences.pins or {}) do
+    local candidates = Data.ResourceIDs(tonumber(build) or 0)
+    for key in pairs(db.preferences.pins) do
         local id = tonumber(key:match("^currency:(%d+)$"))
         if id then candidates[id] = candidates[id] or {} end
     end
     local records = {}
     for id, metadata in pairs(candidates) do
-        local r = self:CurrencyRecord(id, self:Call(C_CurrencyInfo, "GetCurrencyInfo", id), metadata)
-        if r then records[#records + 1] = r end
+        local r = self:CurrencyRecord(id, metadata)
+        if r then
+            records[#records + 1] = r
+            if metadata.category == "Catalyst" and r.amount and r.amount > 0 then
+                local task = Record("catalyst:charge", "weekly", "task", "Catalyst charge available", "Catalyst", r.icon)
+                task.actionTitle = "Convert a piece at the Catalyst"
+                task.reason = r.amount .. " charge" .. (r.amount == 1 and "" or "s") .. " • convert after choosing your Vault reward"
+                task.tier, task.weight, task.recommend = 5, 55, true
+                records[#records + 1] = task
+            end
+        end
+    end
+    table.sort(records, function(a, b) return a.id < b.id end)
+    return records
+end
+
+Planner.providers.lockouts = function(self)
+    local records, dailyReset = {}, self:ResetTime("daily")
+    for index = 1, self:Call(_G, "GetNumSavedInstances") or 0 do
+        local name, lockID, seconds, difficultyID, locked, extended, _, raid, _, difficulty, total, killed, _, mapID =
+            self:Call(_G, "GetSavedInstanceInfo", index)
+        if name and difficultyID and seconds and (locked or extended) and (seconds > 0 or extended) and total and total > 0 then
+            local r = Record("instance:" .. tostring(mapID or lockID) .. ":" .. difficultyID, "lockouts", "lockout", name, "Lockouts", raid and 236423 or 463829)
+            r.current, r.target = killed or 0, total
+            r.expiresAt = seconds > 0 and self:Now() + seconds or nil
+            r.cadence = r.expiresAt and dailyReset and r.expiresAt <= dailyReset + 2 and "daily" or "weekly"
+            r.state = r.current >= r.target and "complete" or "active"
+            r.detail = (difficulty or "") .. " • " .. r.current .. " / " .. r.target .. " bosses" .. (extended and " • Extended" or "")
+            r.lines = {}
+            for boss = 1, total do
+                local bossName, _, defeated = self:Call(_G, "GetSavedInstanceEncounterInfo", index, boss)
+                if bossName then r.lines[#r.lines + 1] = (defeated and "|A:common-icon-checkmark:12:12|a " or "") .. bossName end
+            end
+            local journalID = mapID and self:Call(C_EncounterJournal, "GetInstanceForGameMap", mapID)
+            if journalID then r.destination = { type = "instance", id = journalID, difficulty = difficultyID, label = "Open in Guide" } end
+            records[#records + 1] = r
+        end
+    end
+    return records
+end
+
+Planner.providers.journeys = function(self)
+    local records = {}
+    for _, id in ipairs(self:Call(C_MajorFactions, "GetMajorFactionIDs", LE_EXPANSION_LEVEL_CURRENT) or {}) do
+        id = Safe(id)
+        if id and self:Call(C_MajorFactions, "IsMajorFactionHiddenFromExpansionPage", id) == false
+            and self:Call(C_MajorFactions, "ShouldDisplayMajorFactionAsJourney", id) == true then
+            local info = self:Call(C_MajorFactions, "GetMajorFactionData", id)
+            local name = info and Safe(info.name)
+            if name and Safe(info.isUnlocked) == true then
+                local r = Record("journey:" .. id, "progress", "progress", name, "Journeys", "Interface\\Icons\\Achievement_Reputation_01")
+                r.factionID = id
+                r.current, r.target = Safe(info.renownReputationEarned), Safe(info.renownLevelThreshold)
+                local maximum = self:Call(C_MajorFactions, "HasMaximumRenown", id) == true
+                local capped = self:Call(C_MajorFactions, "IsWeeklyRenownCapped", id) == true
+                r.state = maximum and "complete" or "active"
+                r.detail = "Renown " .. (Safe(info.renownLevel) or "?") .. (capped and " • Weekly cap reached" or "")
+                r.destination = { type = "journeys", id = id, label = "Open Journey" }
+                records[#records + 1] = r
+            end
+        end
+    end
+    return records
+end
+
+-- Map events near the player: the current map and its parents only.
+Planner.providers.events = function(self)
+    local records, seen = {}, {}
+    local mapID = self:Call(C_Map, "GetBestMapForUnit", "player")
+    for _ = 1, 8 do
+        if not mapID or mapID <= 0 or seen[mapID] then break end
+        seen[mapID] = true
+        for _, id in ipairs(self:Call(C_AreaPoiInfo, "GetEventsForMap", mapID) or {}) do
+            id = Safe(id)
+            local info = id and not seen["poi" .. id] and self:Call(C_AreaPoiInfo, "GetAreaPOIInfo", mapID, id)
+            local name = info and Safe(info.name)
+            if name and Safe(info.isLocked) ~= true then
+                seen["poi" .. id] = true
+                local r = Record("events:" .. id, "nearby", "context", name, "World events", "Interface\\Icons\\INV_Misc_Map_01")
+                local position, x, y = Safe(info.position)
+                if position then x, y = self:Call(position, "GetXY", position) end
+                r.detail = Safe(info.isCurrentEvent) == true and "Happening now" or "On your map"
+                r.destination = { type = "map", id = mapID, position = x and y and { x = x, y = y }, label = x and "Pin location" or "Open map" }
+                local timed, hidden = self:Call(C_AreaPoiInfo, "IsAreaPOITimed", id)
+                local seconds = timed == true and hidden == false and self:Call(C_AreaPoiInfo, "GetAreaPOISecondsLeft", id)
+                if seconds and seconds > 0 then r.expiresAt, r.expirationMeaning = self:Now() + seconds, "Ends" end
+                records[#records + 1] = r
+            end
+        end
+        local info = self:Call(C_Map, "GetMapInfo", mapID)
+        mapID = info and Safe(info.parentMapID)
     end
     return records
 end

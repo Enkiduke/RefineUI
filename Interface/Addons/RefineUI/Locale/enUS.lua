@@ -26,3 +26,25 @@ RefineUI.Locale.Chat = {
     ComeOnline = "has come online.",
     GoneOffline = "has gone offline.",
 }
+
+RefineUI.Locale.Toasts = {
+    NewMail = "New Mail",
+    AuctionSold = "Auction Sold",
+    AuctionExpired = "Auction Expired",
+    AuctionOutbid = "Outbid",
+    AuctionWon = "Auction Won",
+    BagsFull = "Bags Almost Full",
+    FreeSlots = "%d free slots",
+    LowDurability = "Low Durability",
+    DurabilityPercent = "Gear at %d%%",
+    Rare = "Rare",
+    Treasure = "Treasure",
+    CalendarInvite = "Calendar Invite",
+    PendingInvites = "%d pending invites",
+    VaultReady = "Great Vault",
+    VaultRewards = "Rewards are waiting",
+    NewKeystone = "New Keystone",
+    KeystoneUpgraded = "Keystone Upgraded",
+    WeeklyBest = "New Weekly Best",
+    KeystoneFormat = "+%d %s",
+}

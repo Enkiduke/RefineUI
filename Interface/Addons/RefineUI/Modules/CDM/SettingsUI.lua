@@ -15,10 +15,12 @@ end
 local _G = _G
 local type = type
 local pairs = pairs
+local ipairs = ipairs
 local pcall = pcall
 local wipe = _G.wipe or table.wipe
 local strfind = string.find
 local strlower = string.lower
+local strupper = string.upper
 local max = math.max
 local CreateFrame = CreateFrame
 local CreateFramePool = CreateFramePool
@@ -61,6 +63,7 @@ local PANEL_HEIGHT = 640
 local DISPLAY_MODE_SPELLS = "spells"
 local DISPLAY_MODE_AURAS = "auras"
 local DISPLAY_MODE_REFINE = "refineui"
+local DISPLAY_MODE_GROUP_BUFFS = "groupBuffs"
 local EMPTY_ICON_TEXTURE = 134400
 local ICON_BORDER_TEXTURE = [[Interface\Buttons\UI-Quickslot2]]
 local ICON_HIGHLIGHT_TEXTURE = [[Interface\Buttons\ButtonHilight-Square]]
@@ -71,11 +74,20 @@ local BLIZZARD_SETTINGS_REDIRECT_HOOK_KEY = "CDM:Settings:Blizzard:RedirectOnSho
 local POST_RELOAD_OPEN_TIMER_KEY = CDM:BuildKey("Settings", "PostReloadOpen")
 local REFINE_TAB_TOOLTIP = "RefineUI"
 local REFINE_TAB_ATLAS = "minimap-genericevent-hornicon-small"
-local REFINE_TAB_TEXTURE = (RefineUI.Media and RefineUI.Media.Logo) or [[Interface\AddOns\RefineUI\Media\Logo\Logo.blp]]
+local REFINE_TAB_TEXTURE = [[Interface\AddOns\RefineUI\Media\Textures\CDM.blp]]
 local SPELLS_TAB_TOOLTIP = _G.COOLDOWN_VIEWER_SETTINGS_TAB_SPELLS or "Spells"
 local AURAS_TAB_TOOLTIP = _G.COOLDOWN_VIEWER_SETTINGS_TAB_BUFFS or "Auras"
 local SPELLS_TAB_ATLAS = "icon_cooldownmanager"
 local AURAS_TAB_ATLAS = "icon_trackedbuffs"
+local GROUP_BUFFS_TAB_TOOLTIP = _G.COOLDOWN_VIEWER_SETTINGS_TAB_GROUP_AURAS or "Group Buffs"
+local GROUP_BUFFS_TAB_ATLAS = "icon_buffreorder"
+local GROUP_BUFF_SECTIONS = {
+    { key = "Important", title = "Important", tracked = true },
+    { key = "Tracked", title = "Tracked", tracked = true },
+    { key = "Untracked", title = "Untracked", tracked = false },
+}
+local GROUP_BUFF_UNKNOWN_ALPHA = 0.45
+local GROUP_BUFFS_DESCRIPTION = "Drag buffs between sections to choose how they appear on party and raid frames, and within a section to set their order. Right-click a buff for its border and frame colors."
 local BLIZZARD_OWNER_OVERLAY_TITLE = "Blizzard CDM Disabled"
 local BLIZZARD_OWNER_OVERLAY_TEXT = "RefineUI CDM is enabled. Enable Blizzard CDM for this tab to edit Blizzard cooldown settings here."
 local BLIZZARD_OWNER_OVERLAY_BUTTON = "Enable Blizzard CDM"
@@ -583,8 +595,8 @@ local function GetNearestVisibleItemWeighted(itemIterator)
     return nearestItem
 end
 
-local function UpdateCategoryHeight(categoryFrame, shownItems)
-    local rows = math.max(1, math.ceil(shownItems / ITEM_COLUMNS))
+local function UpdateCategoryHeight(categoryFrame, shownItems, columns)
+    local rows = math.max(1, math.ceil(shownItems / (columns or ITEM_COLUMNS)))
     local contentHeight = rows * ITEM_SIZE + ((rows - 1) * ITEM_SPACING)
     categoryFrame.Container:SetHeight(contentHeight)
 
@@ -775,6 +787,26 @@ local function InitializeInjectedItem(settingsFrame, itemFrame, categoryFrame)
     CDM:StateSet(itemFrame, "categoryFrame", categoryFrame)
 end
 
+-- Matches Blizzard's own disabled Group Buffs tab. Tabs stay clickable so the owner
+-- overlay can offer the switch to the other cooldown manager.
+local function SetTabGreyedOut(tab, greyedOut)
+    tab.Icon:SetDesaturated(greyedOut)
+    tab.Icon:SetAlpha(greyedOut and 0.5 or 1)
+end
+
+local function RefreshBlizzardTabGreyedOut(tab)
+    SetTabGreyedOut(tab, CDM:IsRefineRuntimeOwnerActive() or tab.isTabDisabled == true)
+end
+
+local function RefreshBlizzardSettingsTabsGreyedOut(settingsFrame)
+    local tabs = settingsFrame.TabButtons
+    for i = 1, #tabs do
+        local tab = tabs[i]
+        RefineUI:HookOnce("CDM:Settings:BlizzardTab:" .. tostring(tab) .. ":SetChecked", tab, "SetChecked", RefreshBlizzardTabGreyedOut)
+        RefreshBlizzardTabGreyedOut(tab)
+    end
+end
+
 local function ApplyRefineTabIcon(tab)
     if not tab or not tab.Icon then
         return
@@ -782,7 +814,8 @@ local function ApplyRefineTabIcon(tab)
 
     tab.Icon:SetTexture(REFINE_TAB_TEXTURE)
     tab.Icon:SetTexCoord(0, 1, 0, 1)
-    tab.Icon:SetSize(18, 18)
+    tab.Icon:SetSize(40, 40)
+    SetTabGreyedOut(tab, not CDM:IsRefineRuntimeOwnerActive())
 end
 
 local function HookRefineTabIcon(tab, hookKey)
@@ -950,7 +983,7 @@ local function AnchorBlizzardRefineTab(tab, settingsFrame)
         return
     end
 
-    local anchor = settingsFrame.AurasTab or settingsFrame.SpellsTab or settingsFrame
+    local anchor = settingsFrame.GroupBuffsTab or settingsFrame.AurasTab or settingsFrame.SpellsTab or settingsFrame
     local point = anchor == settingsFrame and "TOPLEFT" or "TOPLEFT"
     local relativePoint = anchor == settingsFrame and "TOPRIGHT" or "BOTTOMLEFT"
     local xOffset = anchor == settingsFrame and 0 or 0
@@ -965,6 +998,14 @@ local function AnchorBlizzardRefineTab(tab, settingsFrame)
     if type(settingsFrame.GetFrameLevel) == "function" then
         tab:SetFrameLevel(settingsFrame:GetFrameLevel() + 4)
     end
+end
+
+-- Blizzard's Group Buffs tab stays hidden; ours takes its slot.
+local function AnchorBlizzardGroupBuffsTab(tab, settingsFrame)
+    tab:ClearAllPoints()
+    tab:SetPoint("TOPLEFT", settingsFrame.GroupBuffsTab, "TOPLEFT", 0, 0)
+    tab:SetFrameStrata(settingsFrame:GetFrameStrata())
+    tab:SetFrameLevel(settingsFrame:GetFrameLevel() + 4)
 end
 
 local function EnsureItemFrame(parent, index)
@@ -1105,6 +1146,215 @@ local function UpdateReadOnlyState(settingsFrame)
     if settingsFrame.ReadOnlyNotice then
         settingsFrame.ReadOnlyNotice:SetShown(inCombat)
     end
+    if settingsFrame.FinishSetupButton then
+        settingsFrame.FinishSetupButton:SetShown(not inCombat
+            and settingsFrame.displayMode ~= DISPLAY_MODE_GROUP_BUFFS
+            and CDM:NeedsBlizzardTrackerSetup())
+    end
+end
+
+local function GetUnitFramesModule()
+    return RefineUI:GetModule("UnitFrames")
+end
+
+local function OpenGroupBuffColorPicker(settingsFrame, entry)
+    local UnitFrames = GetUnitFramesModule()
+    local r, g, b = UnitFrames.GetGroupBuffBorderColor(entry)
+
+    local function Commit(red, green, blue)
+        UnitFrames.SetGroupBuffBorderColor(entry, red, green, blue, 1)
+        CDM:RefreshGroupBuffsPanel(settingsFrame)
+    end
+
+    ColorPickerFrame:SetupColorPickerAndShow({
+        r = r,
+        g = g,
+        b = b,
+        swatchFunc = function()
+            Commit(ColorPickerFrame:GetColorRGB())
+        end,
+        cancelFunc = function(previous)
+            Commit(previous.r, previous.g, previous.b)
+        end,
+    })
+end
+
+local function ShowGroupBuffItemMenu(settingsFrame, item)
+    local entry = item.groupBuffEntry
+    local UnitFrames = GetUnitFramesModule()
+
+    MenuUtil.CreateContextMenu(item, function(_owner, rootDescription)
+        rootDescription:CreateTitle(entry.name)
+        rootDescription:CreateButton("Border Color", function()
+            OpenGroupBuffColorPicker(settingsFrame, entry)
+        end)
+        rootDescription:CreateButton("Reset Border Color", function()
+            UnitFrames.ResetGroupBuffBorderColor(entry)
+            CDM:RefreshGroupBuffsPanel(settingsFrame)
+        end)
+        rootDescription:CreateCheckbox("Frame Color", function()
+            return UnitFrames.IsGroupBuffFrameColor(entry)
+        end, function()
+            UnitFrames.SetGroupBuffFrameColor(entry, not UnitFrames.IsGroupBuffFrameColor(entry))
+            CDM:RefreshGroupBuffsPanel(settingsFrame)
+        end)
+    end)
+end
+
+local function OnGroupBuffDrop(sourceItem, targetSection, targetItem, reorderOffset)
+    GetUnitFramesModule().MoveGroupBuff(sourceItem.groupBuffEntry, targetSection.sectionKey, targetItem and targetItem.groupBuffEntry, reorderOffset == 1)
+    CDM:RefreshGroupBuffsPanel(CDM:GetCooldownViewerSettingsFrame())
+end
+
+local function EnsureGroupBuffItem(settingsFrame, section, index)
+    local item = EnsureItemFrame(section.Container, index)
+    if item.groupBuffInitialized then
+        return item
+    end
+
+    CDM:StateSet(item, "categoryFrame", section)
+    item:SetScript("OnDragStart", function(frame)
+        if frame.groupBuffEntry then
+            CDM:BeginInjectedOrderChange(settingsFrame, frame, OnGroupBuffDrop)
+        end
+    end)
+    item:SetScript("OnClick", function(frame, button)
+        if button == "RightButton" and frame.groupBuffEntry and not InCombatLockdown() then
+            ShowGroupBuffItemMenu(settingsFrame, frame)
+        end
+    end)
+    item:HookScript("OnEnter", function(frame)
+        CDM:SetInjectedDragTarget(section, frame)
+        local entry = frame.groupBuffEntry
+        if not entry then
+            return
+        end
+        GameTooltip:SetOwner(frame, "ANCHOR_RIGHT")
+        GameTooltip:SetSpellByID(entry.spellIDs[1])
+        if not entry.isKnown then
+            GameTooltip:AddLine("Not known by your current specialization or talents.", 1, 0.3, 0.3, true)
+        end
+        if GetUnitFramesModule().IsGroupBuffFrameColor(entry) then
+            GameTooltip:AddLine("Frame Color", 1, 0.82, 0)
+        end
+        GameTooltip:Show()
+    end)
+    item:HookScript("OnLeave", GameTooltip_Hide)
+
+    item.groupBuffInitialized = true
+    return item
+end
+
+local function LayoutGroupBuffSection(settingsFrame, section, entries)
+    local UnitFrames = GetUnitFramesModule()
+    local container = section.Container
+    local columns = math.max(1, math.floor((container:GetWidth() + ITEM_SPACING) / (ITEM_SIZE + ITEM_SPACING)))
+
+    for index = 1, #entries do
+        local entry = entries[index]
+        local item = EnsureGroupBuffItem(settingsFrame, section, index)
+        local column = (index - 1) % columns
+        local row = math.floor((index - 1) / columns)
+
+        item.groupBuffEntry = entry
+        item.isEmpty = false
+        item:ClearAllPoints()
+        item:SetPoint("TOPLEFT", container, "TOPLEFT", column * (ITEM_SIZE + ITEM_SPACING), -(row * (ITEM_SIZE + ITEM_SPACING)))
+        item.Icon:SetTexture(entry.icon)
+        item.Icon:SetDesaturated(not entry.isKnown)
+        item.Icon:SetAlpha(entry.isKnown and 1 or GROUP_BUFF_UNKNOWN_ALPHA)
+        item.EmptyText:Hide()
+        ApplyItemBorder(item, nil)
+        if entry.isKnown and section.sectionKey ~= "Untracked" then
+            item.border:SetBackdropBorderColor(UnitFrames.GetGroupBuffBorderColor(entry))
+        end
+        UpdateItemVisualState(item)
+        item:Show()
+    end
+
+    local shownItems = #entries
+    if shownItems == 0 then
+        shownItems = 1
+        local emptyItem = EnsureGroupBuffItem(settingsFrame, section, 1)
+        emptyItem.groupBuffEntry = nil
+        emptyItem:ClearAllPoints()
+        emptyItem:SetPoint("TOPLEFT", container, "TOPLEFT", 0, 0)
+        emptyItem:SetAsEmptyCategory(nil)
+        emptyItem.Icon:SetAlpha(1)
+        emptyItem:Show()
+    end
+
+    for index = shownItems + 1, #container.itemFrames do
+        container.itemFrames[index]:Hide()
+    end
+
+    UpdateCategoryHeight(section, shownItems, columns)
+end
+
+local function CreateGroupBuffSection(panel, sectionKey, titleText, isTracked)
+    local section = CreateFrame("Frame", nil, panel)
+    section.sectionKey = sectionKey
+    CreateCategoryHeader(section, titleText)
+    CreateCategoryContainer(section)
+    ApplyCategoryRoleVisual(section, isTracked)
+    section.RefineRoleLabel:SetText(strupper(titleText))
+
+    function section:GetBestCooldownItemTarget()
+        local itemFrames = self.Container.itemFrames
+        local index = 0
+        return GetNearestVisibleItemWeighted(function()
+            index = index + 1
+            while itemFrames[index] and not itemFrames[index]:IsShown() do
+                index = index + 1
+            end
+            return itemFrames[index]
+        end)
+    end
+
+    local function OnEnter()
+        CDM:OnInjectedCategoryEnter(section)
+    end
+    section:HookScript("OnEnter", OnEnter)
+    section.Header:HookScript("OnEnter", OnEnter)
+    section.Container:HookScript("OnEnter", OnEnter)
+    return section
+end
+
+local function EnsureGroupBuffsPanel(settingsFrame)
+    if settingsFrame.GroupBuffsPanel then
+        return settingsFrame.GroupBuffsPanel
+    end
+
+    local panel = CreateFrame("Frame", nil, settingsFrame)
+    panel:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 17, -72)
+    panel:SetPoint("BOTTOMRIGHT", settingsFrame, "BOTTOMRIGHT", -30, 29)
+    panel:SetScript("OnSizeChanged", function()
+        CDM:RefreshGroupBuffsPanel(settingsFrame)
+    end)
+
+    panel.Description = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    panel.Description:SetPoint("TOPLEFT", panel, "TOPLEFT", 4, 0)
+    panel.Description:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -4, 0)
+    panel.Description:SetJustifyH("LEFT")
+    panel.Description:SetText(GROUP_BUFFS_DESCRIPTION)
+
+    panel.sections = {}
+    local previous
+    for _, info in ipairs(GROUP_BUFF_SECTIONS) do
+        local section = CreateGroupBuffSection(panel, info.key, info.title, info.tracked)
+        if previous then
+            section:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -18)
+            section:SetPoint("TOPRIGHT", previous, "BOTTOMRIGHT", 0, -18)
+        else
+            section:SetPoint("TOPLEFT", panel.Description, "BOTTOMLEFT", -4, -12)
+            section:SetPoint("TOPRIGHT", panel.Description, "BOTTOMRIGHT", 4, -12)
+        end
+        panel.sections[info.key] = section
+        previous = section
+    end
+
+    settingsFrame.GroupBuffsPanel = panel
+    return panel
 end
 
 ----------------------------------------------------------------------------------------
@@ -1407,6 +1657,52 @@ function CDM:RefreshSettingsSection()
     end
 end
 
+function CDM:RefreshGroupBuffsPanel(settingsFrame)
+    local panel = settingsFrame.GroupBuffsPanel
+    if not panel or not panel:IsVisible() then
+        return
+    end
+
+    local UnitFrames = GetUnitFramesModule()
+    local entriesBySection = {}
+    for _, info in ipairs(GROUP_BUFF_SECTIONS) do
+        entriesBySection[info.key] = {}
+    end
+    for _, entry in ipairs(UnitFrames.GetGroupBuffEntries()) do
+        local entries = entriesBySection[UnitFrames.GetGroupBuffSection(entry)]
+        entries[#entries + 1] = entry
+    end
+
+    for _, info in ipairs(GROUP_BUFF_SECTIONS) do
+        LayoutGroupBuffSection(settingsFrame, panel.sections[info.key], entriesBySection[info.key])
+    end
+end
+
+function CDM:SetStandaloneSettingsDisplayMode(settingsFrame, displayMode)
+    local isGroupBuffs = displayMode == DISPLAY_MODE_GROUP_BUFFS
+    settingsFrame.displayMode = displayMode
+    settingsFrame.ScrollFrame:SetShown(not isGroupBuffs)
+    settingsFrame.SearchBox:SetShown(not isGroupBuffs)
+    settingsFrame.SettingsDropdown:SetShown(not isGroupBuffs)
+
+    if isGroupBuffs then
+        self:CancelStandaloneSettingsWork(settingsFrame)
+        EnsureGroupBuffsPanel(settingsFrame):Show()
+    elseif settingsFrame.GroupBuffsPanel then
+        settingsFrame.GroupBuffsPanel:Hide()
+    end
+
+    UpdateReadOnlyState(settingsFrame)
+    self:RefreshStandaloneSettingsTabs(settingsFrame)
+    self:RefreshSettingsOwnerOverlays(nil, settingsFrame)
+
+    if isGroupBuffs then
+        self:RefreshGroupBuffsPanel(settingsFrame)
+    elseif self:CanRefreshRefineSettingsPanel(settingsFrame) then
+        self:RequestRefineTabPanelRefresh(settingsFrame)
+    end
+end
+
 function CDM:SyncSettingsWindowGeometry(sourceFrame, targetFrame)
     SyncSettingsWindowGeometry(sourceFrame, targetFrame)
 end
@@ -1541,6 +1837,9 @@ function CDM:CanRefreshRefineSettingsPanel(settingsFrame)
     if not settingsFrame or not settingsFrame:IsShown() then
         return false
     end
+    if settingsFrame.displayMode == DISPLAY_MODE_GROUP_BUFFS then
+        return false
+    end
     if not self:IsRefineSettingsOwnerActive() then
         return false
     end
@@ -1595,6 +1894,7 @@ function CDM:RefreshSettingsOwnerOverlays(blizzardFrame, refineFrame)
     end
 
     local showRefineOverlay = refineFrame and refineFrame:IsShown() and (not ownerActive) and not self.settingsRouteInProgress
+        and refineFrame.displayMode ~= DISPLAY_MODE_GROUP_BUFFS
     local refineOverlay = nil
     if refineFrame then
         local refineState = GetSettingsState(self, refineFrame)
@@ -1653,19 +1953,24 @@ function CDM:RefreshStandaloneSettingsTabs(settingsFrame)
     end
 
     local tabs = settingsFrame.SettingsTabs
+    local refineActive = self:IsRefineRuntimeOwnerActive()
     if tabs.Spells then
         tabs.Spells:SetChecked(false)
+        SetTabGreyedOut(tabs.Spells, refineActive)
     end
     if tabs.Auras then
         tabs.Auras:SetChecked(false)
+        SetTabGreyedOut(tabs.Auras, refineActive)
     end
+    local isGroupBuffs = settingsFrame.displayMode == DISPLAY_MODE_GROUP_BUFFS
+    tabs.GroupBuffs:SetChecked(isGroupBuffs)
     if tabs.RefineUI then
-        tabs.RefineUI:SetChecked(true)
+        tabs.RefineUI:SetChecked(not isGroupBuffs)
         ApplyRefineTabIcon(tabs.RefineUI)
     end
 end
 
-function CDM:OpenRefineSettingsPanelFromBlizzard(sourceFrame, skipGuard)
+function CDM:OpenRefineSettingsPanelFromBlizzard(sourceFrame, skipGuard, displayMode)
     if self.settingsRouteInProgress then
         return false
     end
@@ -1688,8 +1993,7 @@ function CDM:OpenRefineSettingsPanelFromBlizzard(sourceFrame, skipGuard)
     self.settingsRouteInProgress = true
 
     SyncSettingsWindowGeometry(sourceFrame, targetFrame)
-    UpdateReadOnlyState(targetFrame)
-    self:RefreshStandaloneSettingsTabs(targetFrame)
+    self:SetStandaloneSettingsDisplayMode(targetFrame, displayMode or DISPLAY_MODE_REFINE)
 
     local sourceWasShown = sourceFrame and sourceFrame:IsShown()
     if sourceWasShown then
@@ -1838,6 +2142,9 @@ function CDM:RefreshBlizzardSettingsRefineTab()
 
     if settingsFrame and settingsFrame:IsShown() then
         AnchorBlizzardRefineTab(tab, settingsFrame)
+        AnchorBlizzardGroupBuffsTab(self.blizzardGroupBuffsTab, settingsFrame)
+        self.blizzardGroupBuffsTab:SetChecked(false)
+        RefreshBlizzardSettingsTabsGreyedOut(settingsFrame)
         tab:SetChecked(false)
         ApplyRefineTabIcon(tab)
         if host then
@@ -1946,7 +2253,26 @@ function CDM:InstallBlizzardSettingsIntegration()
         self.blizzardRefineTab = tab
     end
 
+    if not self.blizzardGroupBuffsTab then
+        settingsFrame.GroupBuffsTab:Hide()
+        local tab = CreateSettingsShellTab(
+            self.blizzardRefineTabHost,
+            GROUP_BUFFS_TAB_TOOLTIP,
+            GROUP_BUFFS_TAB_ATLAS,
+            "TOPLEFT",
+            settingsFrame.GroupBuffsTab,
+            "TOPLEFT",
+            0,
+            0
+        )
+        SetTabMouseUpHandler(tab, function()
+            CDM:OpenRefineSettingsPanelFromBlizzard(GetBlizzardSettingsFrame(), nil, DISPLAY_MODE_GROUP_BUFFS)
+        end)
+        self.blizzardGroupBuffsTab = tab
+    end
+
     AnchorBlizzardRefineTab(self.blizzardRefineTab, settingsFrame)
+    AnchorBlizzardGroupBuffsTab(self.blizzardGroupBuffsTab, settingsFrame)
     self:EnsureBlizzardSettingsOwnerHooks()
 
     if self.blizzardSettingsIntegrationInstalled then
@@ -2035,12 +2361,22 @@ function CDM:CreateStandaloneSettingsFrame()
         0,
         -3
     )
+    local groupBuffsTab = CreateSettingsShellTab(
+        frame,
+        GROUP_BUFFS_TAB_TOOLTIP,
+        GROUP_BUFFS_TAB_ATLAS,
+        "TOP",
+        aurasTab,
+        "BOTTOM",
+        0,
+        -3
+    )
     local refineTab = CreateSettingsShellTab(
         frame,
         REFINE_TAB_TOOLTIP,
         REFINE_TAB_ATLAS,
         "TOP",
-        aurasTab,
+        groupBuffsTab,
         "BOTTOM",
         0,
         -3
@@ -2052,14 +2388,19 @@ function CDM:CreateStandaloneSettingsFrame()
     SetTabMouseUpHandler(aurasTab, function()
         CDM:OpenBlizzardSettingsPanelFromRefine(DISPLAY_MODE_AURAS, frame)
     end)
+    SetTabMouseUpHandler(groupBuffsTab, function()
+        CDM:SetStandaloneSettingsDisplayMode(frame, DISPLAY_MODE_GROUP_BUFFS)
+    end)
     SetTabMouseUpHandler(refineTab, function()
-        CDM:RefreshStandaloneSettingsTabs(frame)
+        CDM:SetStandaloneSettingsDisplayMode(frame, DISPLAY_MODE_REFINE)
     end)
     frame.SettingsTabs = {
         Spells = spellsTab,
         Auras = aurasTab,
+        GroupBuffs = groupBuffsTab,
         RefineUI = refineTab,
     }
+    frame.displayMode = DISPLAY_MODE_REFINE
 
     local searchBox = CreateFrame("EditBox", nil, frame, "SearchBoxTemplate")
     searchBox:SetSize(290, 30)
@@ -2090,6 +2431,33 @@ function CDM:CreateStandaloneSettingsFrame()
     readOnlyNotice:SetText("|cffff5555Read-only in combat|r")
     readOnlyNotice:Hide()
     frame.ReadOnlyNotice = readOnlyNotice
+
+    -- Blizzard's layout can only be written right before a reload, so this appears once
+    -- per specialization (or after a patch adds cooldowns) instead of after every change.
+    local finishSetupButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    finishSetupButton:SetSize(110, 22)
+    finishSetupButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -40, -33)
+    finishSetupButton:SetText("Finish Setup")
+    finishSetupButton:SetScript("OnEnter", function(button)
+        GameTooltip:SetOwner(button, "ANCHOR_BOTTOMRIGHT")
+        GameTooltip:SetText("Finish Setup")
+        GameTooltip:AddLine("Saves the RefineUI layout to Blizzard's Cooldown Manager and reloads the UI. Needed once per specialization.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    finishSetupButton:SetScript("OnLeave", GameTooltip_Hide)
+    finishSetupButton:SetScript("OnClick", function()
+        if InCombatLockdown() then
+            return
+        end
+        if not CDM:SyncAssignmentsToBlizzardLayout() then
+            RefineUI:Print("CDM setup could not be saved yet. Try again in a moment.")
+            return
+        end
+        CDM:SetPendingPostReloadSettingsOpen(DISPLAY_MODE_REFINE)
+        ReloadUI()
+    end)
+    finishSetupButton:Hide()
+    frame.FinishSetupButton = finishSetupButton
 
     local scrollFrame = CreateFrame("ScrollFrame", nil, frame, "ScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", 17, -72)
@@ -2153,6 +2521,7 @@ function CDM:CreateStandaloneSettingsFrame()
         else
             CDM:CancelStandaloneSettingsWork(frame)
         end
+        CDM:RefreshGroupBuffsPanel(frame)
     end)
 
     frame:HookScript("OnHide", function()

@@ -27,7 +27,6 @@ end
 ----------------------------------------------------------------------------------------
 -- Lib Globals
 ----------------------------------------------------------------------------------------
-local _G = _G
 local unpack = unpack
 local math = math
 local pcall = pcall
@@ -58,6 +57,8 @@ local IsAccessibleValue = NameplatesUtil.IsAccessibleValue
 local ReadSafeBoolean = NameplatesUtil.ReadSafeBoolean
 local IsUsableUnitToken = NameplatesUtil.IsUsableUnitToken
 local IsCastBarActiveOnly = NameplatesUtil.IsCastBarActive
+local GetCastBarUnitFrame = NameplatesUtil.GetCastBarUnitFrame
+local IsRuntimeSuppressedNameplate = NameplatesUtil.IsNameOnly
 local BuildHookKey = NameplatesUtil.BuildHookKey
 local BuildNameplateCastHookKey = function(owner, method)
     return BuildHookKey("NameplatesCastBars", owner, method)
@@ -65,8 +66,10 @@ end
 
 local DEFAULT_INTERRUPTIBLE_CAST_COLOR = { 1, 0.7, 0 }
 local DEFAULT_NON_INTERRUPTIBLE_CAST_COLOR = { 1, 0.2, 0.2 }
+local INTERRUPTED_CAST_COLOR = { 0.45, 0.45, 0.45 }
 local CAST_BG_MULTIPLIER = 0.3
 local INTERRUPTED = INTERRUPTED or "Interrupted"
+local EMPTY_TEXT_OPTS = { emptyText = "" }
 
 local function ClampColorChannel(value, fallback)
     local number = tonumber(value)
@@ -131,32 +134,12 @@ local function EnforceNameOnlyCastBarHidden(castBar)
         return false
     end
 
-    local unitFrame = castBar:GetParent()
-    if not unitFrame then
-        return false
-    end
-
-    local frameData = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
-    local isHidden = (frameData and frameData.RefineHidden) == true or unitFrame.RefineHidden == true
-    if not isHidden then
+    if not IsRuntimeSuppressedNameplate(GetCastBarUnitFrame(castBar)) then
         return false
     end
 
     SetCastBarVisualAlpha(castBar, 0)
     return true
-end
-
-local function IsRuntimeSuppressedNameplate(unitFrame)
-    if not unitFrame then
-        return false
-    end
-
-    if RefineUI.IsRuntimeSuppressedNameplate then
-        return RefineUI:IsRuntimeSuppressedNameplate(unitFrame)
-    end
-
-    local frameData = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
-    return frameData and frameData.RefineHidden == true or false
 end
 
 function Nameplates:SetCastBarVisualAlpha(castBar, alpha)
@@ -436,19 +419,11 @@ local function SyncNameplateCastAlphaState(castBar, unitFrame, unit, forceRefres
         return
     end
 
-    RefineUI.NameplateData = RefineUI.NameplateData or {}
-    local frameData = RefineUI.NameplateData[unitFrame]
-    if not frameData then
-        frameData = {}
-        RefineUI.NameplateData[unitFrame] = frameData
-    end
-
-    if IsRuntimeSuppressedNameplate(unitFrame) then
+    local frameData = Nameplates:GetNameplateData(unitFrame)
+    if frameData.RefineHidden == true then
         if frameData.isCasting ~= false or forceRefresh == true then
             frameData.isCasting = false
-            if RefineUI.UpdateTarget then
-                RefineUI:UpdateTarget(unitFrame)
-            end
+            RefineUI:UpdateTarget(unitFrame)
         end
         return
     end
@@ -464,9 +439,7 @@ local function SyncNameplateCastAlphaState(castBar, unitFrame, unit, forceRefres
     local isCastingNow = IsCastActive(resolvedUnit, castBar)
     if frameData.isCasting ~= isCastingNow then
         frameData.isCasting = isCastingNow
-        if RefineUI.UpdateTarget then
-            RefineUI:UpdateTarget(unitFrame)
-        end
+        RefineUI:UpdateTarget(unitFrame)
     end
 end
 
@@ -492,25 +465,9 @@ local CAST_BORDER_REFRESH_EVENTS = {
     UNIT_SPELLCAST_NOT_INTERRUPTIBLE = true,
 }
 
-local CAST_FORCE_BORDER_RESET_EVENTS = {
-    UNIT_SPELLCAST_STOP = true,
-    UNIT_SPELLCAST_FAILED = true,
-    UNIT_SPELLCAST_INTERRUPTED = true,
-    UNIT_SPELLCAST_SUCCEEDED = true,
-    UNIT_SPELLCAST_CHANNEL_STOP = true,
-    UNIT_SPELLCAST_EMPOWER_STOP = true,
-}
-
-local function ShouldRefreshCrowdControlForCastState(unitFrame)
-    if not unitFrame then
-        return false
-    end
-
-    local frameData = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
-    if not frameData or (frameData.CrowdControlActive ~= true and frameData.CrowdControlSuppressed ~= true) then
-        return false
-    end
-
+-- CC presence is secret in 12.1, so cast transitions always re-evaluate the
+-- CC display's hide-while-casting state when that option is on.
+local function ShouldRefreshCrowdControlForCastState()
     local crowdControlConfig = Config
         and Config.Nameplates
         and (Config.Nameplates.CrowdControl or Config.Nameplates.CrowdControlTest)
@@ -568,7 +525,7 @@ function RefineUI:RefreshNameplateCastColors(refreshExisting)
 
     for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
         local unitFrame = nameplate and nameplate.UnitFrame
-        local castBar = unitFrame and (unitFrame.castBar or unitFrame.CastBar)
+        local castBar = NameplatesUtil.GetNameplateCastBar(unitFrame)
         if castBar then
             UpdateCastColor(castBar, true)
         end
@@ -623,18 +580,16 @@ local function ResetCastStyle(self)
      end
      
      -- Reset Portrait Border using centralized logic
-     local unitFrame = self:GetParent()
-     if unitFrame and IsRuntimeSuppressedNameplate(unitFrame) then
+     -- RefineHidden is true for name-only plates and nil until RefreshAddedNameplate runs.
+     -- Blizzard's OnUnitSet resets the cast bar before NAME_PLATE_UNIT_ADDED reaches us,
+     -- and the add handler refreshes the portrait, CC, and borders itself.
+     local unitFrame = GetCastBarUnitFrame(self)
+     local frameData = unitFrame and RefineUI.NameplateData[unitFrame]
+     if not frameData or frameData.RefineHidden ~= false then
          return
      end
-     if unitFrame then
-         RefineUI:RefreshNameplateVisualState(unitFrame, unitFrame.unit, "CAST_RESET", {
-             refreshCrowdControl = ShouldRefreshCrowdControlForCastState(unitFrame),
-             refreshPortrait = true,
-             refreshBorders = true,
-             forceCastCheck = false,
-         })
-     end
+     RefineUI:RefreshNameplateVisualState(unitFrame, unitFrame.unit, "CAST_RESET",
+         ShouldRefreshCrowdControlForCastState(), true, true, false)
 end
 
 local function GetLiveUnitCastInterruptibilitySignal(unit)
@@ -727,25 +682,20 @@ GetCastInterruptibilitySignal = function(unit, castBar)
 end
 
 local function RefreshCastVisualState(self, event, unitFrame, unit)
-    if not unitFrame or not RefineUI.RefreshNameplateVisualState then
-        return
-    end
-    if IsRuntimeSuppressedNameplate(unitFrame) then
+    if not unitFrame or IsRuntimeSuppressedNameplate(unitFrame) then
         return
     end
 
     local refreshState = CAST_STATE_REFRESH_EVENTS[event] == true
     local refreshBorders = refreshState or CAST_BORDER_REFRESH_EVENTS[event] == true
-    if not refreshState and not refreshBorders then
+    if not refreshBorders then
         return
     end
 
-    RefineUI:RefreshNameplateVisualState(unitFrame, unit, event, {
-        refreshCrowdControl = refreshState and ShouldRefreshCrowdControlForCastState(unitFrame),
-        refreshPortrait = refreshState,
-        refreshBorders = refreshBorders,
-        forceCastCheck = CAST_FORCE_BORDER_RESET_EVENTS[event] == true and false or nil,
-    })
+    -- Stop events keep the live cast check: UNIT_SPELLCAST_SUCCEEDED can arrive after a
+    -- channel has started, and the cast bar's OnHide reset clears cast colors.
+    RefineUI:RefreshNameplateVisualState(unitFrame, unit, event,
+        refreshState and ShouldRefreshCrowdControlForCastState(), refreshState, refreshBorders)
 end
 
 UpdateCastColor = function(self, refreshBorders)
@@ -754,7 +704,7 @@ UpdateCastColor = function(self, refreshBorders)
      if data.refineColoring then return end
      data.refineColoring = true
      
-     local unitFrame = self:GetParent()
+     local unitFrame = GetCastBarUnitFrame(self)
      if IsRuntimeSuppressedNameplate(unitFrame) then
          data.castR, data.castG, data.castB = nil, nil, nil
          ClearCastInterruptibilityState(data)
@@ -831,58 +781,15 @@ local function ClearCastTimeText(castTimeText)
         return
     end
 
-    RefineUI:SetFontStringValue(castTimeText, nil, {
-        emptyText = "",
-    })
+    RefineUI:SetFontStringValue(castTimeText, nil, EMPTY_TEXT_OPTS)
     castTimeText:Hide()
 end
 
-local function ForceHideCastBar(castBar)
-    if not castBar then return end
-
-    -- Stop Blizzard fade/interrupt animations
-    if castBar.HoldFadeOutAnim and castBar.HoldFadeOutAnim.Stop then
-        pcall(castBar.HoldFadeOutAnim.Stop, castBar.HoldFadeOutAnim)
-    end
-    if castBar.FadeOutAnim and castBar.FadeOutAnim.Stop then
-        pcall(castBar.FadeOutAnim.Stop, castBar.FadeOutAnim)
-    end
-    if castBar.FlashAnim and castBar.FlashAnim.Stop then
-        pcall(castBar.FlashAnim.Stop, castBar.FlashAnim)
-    end
-    if castBar.InterruptShakeAnim and castBar.InterruptShakeAnim.Stop then
-        pcall(castBar.InterruptShakeAnim.Stop, castBar.InterruptShakeAnim)
-    end
-    if castBar.InterruptGlowAnim and castBar.InterruptGlowAnim.Stop then
-        pcall(castBar.InterruptGlowAnim.Stop, castBar.InterruptGlowAnim)
-    end
-    if castBar.InterruptSparkAnim and castBar.InterruptSparkAnim.Stop then
-        pcall(castBar.InterruptSparkAnim.Stop, castBar.InterruptSparkAnim)
-    end
-
-    -- Immediately hide
-    castBar:SetAlpha(0)
-    castBar:Hide()
-
-    -- Clear timer text
-    local data = GetCastBarData(castBar)
-    local castTimeText = data and data.castTimeText
-    if castTimeText then
-        ClearCastTimeText(castTimeText)
-    end
-end
-
-local CAST_END_EVENTS = {
-    UNIT_SPELLCAST_INTERRUPTED = true,
-    UNIT_SPELLCAST_FAILED = true,
-    UNIT_SPELLCAST_STOP = true,
-    UNIT_SPELLCAST_CHANNEL_STOP = true,
-    UNIT_SPELLCAST_EMPOWER_STOP = true,
-}
-
 HandleCastBarEvent = function(self, event, ...)
     local data = GetCastBarData(self)
-    local unitFrame = self:GetParent()
+    -- Any cast event can start, delay, or end the cast, so refetch its duration next update.
+    data.castDuration = nil
+    local unitFrame = GetCastBarUnitFrame(self)
     local unit = unitFrame and unitFrame.unit
     if unitFrame and IsRuntimeSuppressedNameplate(unitFrame) then
         if data then
@@ -918,15 +825,22 @@ HandleCastBarEvent = function(self, event, ...)
         RefreshCastVisualState(self, event, unitFrame, unit)
         SyncNameplateCastAlphaState(self, unitFrame, unit)
 
-        if CAST_END_EVENTS[event] and RefineUI.UpdateBorderColors then
-            RefineUI:UpdateBorderColors(unitFrame, false)
+        -- Color interrupted/failed casts here, after Blizzard has ended the cast on the bar.
+        -- Channel and empower interrupts arrive as *_STOP with interruptedBy. The unit's
+        -- cast info can outlive the interrupt event, so check the bar's flags, not the unit.
+        local interrupted = event == "UNIT_SPELLCAST_INTERRUPTED" or event == "UNIT_SPELLCAST_FAILED"
+        if event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+            interrupted = HasValue(select(4, ...))
+        elseif event == "UNIT_SPELLCAST_EMPOWER_STOP" then
+            interrupted = HasValue(select(5, ...))
         end
-
-        -- Instant-hide cast bar when a cast ends and CC is active on this unit
-        if CAST_END_EVENTS[event] then
-            local frameData = RefineUI.NameplateData and RefineUI.NameplateData[unitFrame]
-            if frameData and frameData.CrowdControlActive then
-                ForceHideCastBar(self)
+        if interrupted
+            and ReadSafeBoolean(self.casting) ~= true
+            and ReadSafeBoolean(self.channeling) ~= true
+            and ReadSafeBoolean(self.reverseChanneling) ~= true then
+            ApplyCastStatusColorDirect(self, INTERRUPTED_CAST_COLOR)
+            if self.border then
+                self.border:SetBackdropBorderColor(unpack(INTERRUPTED_CAST_COLOR))
             end
         end
 
@@ -964,12 +878,10 @@ local function EnsureCastTimeText(castBar)
     if not castTimeText then
         castTimeText = castBar:CreateFontString(nil, "OVERLAY")
         RefineUI.Font(castTimeText, 12, nil, "OUTLINE")
+        RefineUI.Point(castTimeText, "BOTTOMRIGHT", castBar, "BOTTOMRIGHT", -2, 0)
         data.castTimeText = castTimeText
     end
 
-    RefineUI.Font(castTimeText, 12, nil, "OUTLINE")
-    castTimeText:ClearAllPoints()
-    RefineUI.Point(castTimeText, "BOTTOMRIGHT", castBar, "BOTTOMRIGHT", -2, 0)
     return castTimeText
 end
 
@@ -996,6 +908,17 @@ local function TryFormatRemainingDuration(castTimeText, duration)
     return false
 end
 
+-- Runs from Blizzard's per-frame UpdateCastTimeText; kept as a named function so the
+-- pcall below does not allocate a closure each frame.
+local function GetCastBarRemainingSeconds(castBar, countsDown)
+    local minValue, maxValue = castBar:GetMinMaxValues()
+    local currentValue = castBar:GetValue()
+    if countsDown then
+        return math.max(minValue, maxValue - currentValue)
+    end
+    return math.max(minValue, currentValue)
+end
+
 local function UpdateCustomCastTimeText(castBar)
     local data = GetCastBarData(castBar)
     local castTimeText = data and data.castTimeText
@@ -1003,7 +926,7 @@ local function UpdateCustomCastTimeText(castBar)
         return
     end
 
-    local unitFrame = castBar:GetParent()
+    local unitFrame = GetCastBarUnitFrame(castBar)
     if IsRuntimeSuppressedNameplate(unitFrame) then
         ClearCastTimeText(castTimeText)
         return
@@ -1013,35 +936,36 @@ local function UpdateCustomCastTimeText(castBar)
     local isChanneling = ReadSafeBoolean(castBar.channeling) == true
     local isReverseChanneling = ReadSafeBoolean(castBar.reverseChanneling) == true
     if not (isCasting or isChanneling or isReverseChanneling) then
+        data.castDuration = nil
         ClearCastTimeText(castTimeText)
         return
     end
 
-    -- Path 1: Duration object from UnitCastingDuration / UnitChannelDuration
-    local unit = (unitFrame and unitFrame.unit) or castBar.unit
-    if IsUsableUnitToken(unit) then
-        local duration
-        if (isChanneling or isReverseChanneling) and UnitChannelDuration then
-            duration = UnitChannelDuration(unit)
-        elseif UnitCastingDuration then
-            duration = UnitCastingDuration(unit)
+    -- Path 1: Duration object from UnitCastingDuration / UnitChannelDuration.
+    -- Blizzard calls UpdateCastTimeText every frame while casting; the duration object
+    -- stays valid for the whole cast, so fetch it once and reuse it until the next cast event.
+    local duration = data.castDuration
+    if duration == nil then
+        local unit = (unitFrame and unitFrame.unit) or castBar.unit
+        if IsUsableUnitToken(unit) then
+            if (isChanneling or isReverseChanneling) and UnitChannelDuration then
+                duration = UnitChannelDuration(unit)
+            elseif UnitCastingDuration then
+                duration = UnitCastingDuration(unit)
+            end
         end
-
-        if HasValue(duration) and TryFormatRemainingDuration(castTimeText, duration) then
-            return
+        if HasValue(duration) then
+            data.castDuration = duration
         end
     end
 
+    if HasValue(duration) and TryFormatRemainingDuration(castTimeText, duration) then
+        return
+    end
+    data.castDuration = nil
+
     -- Path 2: Bar values — arithmetic may involve secrets, wrap in pcall
-    local ok, seconds = pcall(function()
-        local minValue, maxValue = castBar:GetMinMaxValues()
-        local currentValue = castBar:GetValue()
-        if isCasting or isReverseChanneling then
-            return math.max(minValue, maxValue - currentValue)
-        else
-            return math.max(minValue, currentValue)
-        end
-    end)
+    local ok, seconds = pcall(GetCastBarRemainingSeconds, castBar, isCasting or isReverseChanneling)
 
     if ok and HasValue(seconds) then
         -- SetFormattedText is AllowedWhenTainted — safe even if seconds is secret
@@ -1061,7 +985,7 @@ local function ApplyCastBarLayout(self)
     if data and data.adjusting then return end
     if data then data.adjusting = true end
     
-    local unitFrame = self:GetParent()
+    local unitFrame = GetCastBarUnitFrame(self)
     if unitFrame and IsRuntimeSuppressedNameplate(unitFrame) then
         EnforceNameOnlyCastBarHidden(self)
         if data then data.adjusting = false end
@@ -1090,15 +1014,10 @@ local function ApplyCastBarLayout(self)
         if self.Text then
             self.Text:ClearAllPoints()
             RefineUI.Point(self.Text, "BOTTOMLEFT", self, "BOTTOMLEFT", 4, 0)
-            RefineUI.Font(self.Text, 10, nil, "OUTLINE") 
+            RefineUI.Font(self.Text, 10, nil, "OUTLINE")
         end
-        local castTimeText = EnsureCastTimeText(self)
-        if castTimeText then
-            castTimeText:ClearAllPoints()
-            RefineUI.Point(castTimeText, "BOTTOMRIGHT", self, "BOTTOMRIGHT", -2, 0)
-            RefineUI.Font(castTimeText, 12, nil, "OUTLINE")
-        end
-        
+        EnsureCastTimeText(self)
+
         -- Name-only suppression is visual-only. Hiding the Blizzard cast bar
         -- forces later addon-driven reshow paths back through secret cast logic.
         EnforceNameOnlyCastBarHidden(self)
@@ -1129,7 +1048,7 @@ local function ApplyHealthBarLayout(self)
     if data.adjusting then return end
     data.adjusting = true
     
-    local unitFrame = self:GetParent()
+    local unitFrame = GetCastBarUnitFrame(self)
     if unitFrame then
         self:ClearAllPoints()
         RefineUI.Point(self, "TOPLEFT", unitFrame, "TOPLEFT", 12, 0)
@@ -1161,7 +1080,7 @@ function Nameplates:SuppressCastBarForNameOnly(castBar)
 
     EnforceNameOnlyCastBarHidden(castBar)
 
-    local unitFrame = castBar:GetParent()
+    local unitFrame = GetCastBarUnitFrame(castBar)
     SyncNameplateCastAlphaState(castBar, unitFrame, unitFrame and unitFrame.unit, true)
 end
 
@@ -1170,7 +1089,7 @@ function Nameplates:RefreshCastBarForRuntimeMode(castBar)
         return
     end
 
-    local unitFrame = castBar:GetParent()
+    local unitFrame = GetCastBarUnitFrame(castBar)
     if IsRuntimeSuppressedNameplate(unitFrame) then
         self:SuppressCastBarForNameOnly(castBar)
         return
@@ -1211,12 +1130,21 @@ function RefineUI:StyleNameplateCastBar(castBar)
             SnapshotNativeStatusBarTexture(self, data)
         end
         if (not IsAccessibleValue(tex)) or tex ~= TEX_BAR then
+            -- Re-enters this hook with TEX_BAR, which applies the desaturation.
             self:SetStatusBarTexture(TEX_BAR)
+            return
         end
         EnsureCastBarTextureDesaturation(self)
+    end)
+
+    -- Blizzard's UpdateBarFillTexture follows every SetStatusBarTexture with
+    -- SetStatusBarColor(1, 1, 1), which would wipe a color applied in the texture
+    -- hook. Recolor after it instead, including FinishSpell from OnUpdate, where no
+    -- cast event follows in the same frame.
+    RefineUI:HookOnce(BuildNameplateCastHookKey(castBar, "SetStatusBarColor"), castBar, "SetStatusBarColor", function(self)
         UpdateCastColor(self, false)
     end)
-    
+
     -- Border
     RefineUI.CreateBorder(castBar, 6, 6, 12)
     
@@ -1282,7 +1210,7 @@ function RefineUI:StyleNameplateCastBar(castBar)
         function(self)
         UpdateCastColor(self, true)
         UpdateCustomCastTimeText(self)
-        local parentFrame = self:GetParent()
+        local parentFrame = GetCastBarUnitFrame(self)
         SyncNameplateCastAlphaState(self, parentFrame, parentFrame and parentFrame.unit, true)
         EnforceNameOnlyCastBarHidden(self)
         end
@@ -1298,7 +1226,7 @@ function RefineUI:StyleNameplateCastBar(castBar)
             hiddenText:SetText("")
             hiddenText:Hide()
         end
-        local parentFrame = self:GetParent()
+        local parentFrame = GetCastBarUnitFrame(self)
         SyncNameplateCastAlphaState(self, parentFrame, parentFrame and parentFrame.unit, true)
         end
     )
@@ -1313,7 +1241,7 @@ function RefineUI:StyleNameplateCastBar(castBar)
     )
 
     -- Hook HealthBarsContainer
-    local unitFrame = castBar:GetParent()
+    local unitFrame = GetCastBarUnitFrame(castBar)
     if unitFrame and unitFrame.HealthBarsContainer then 
         RefineUI:HookOnce(
             BuildNameplateCastHookKey(unitFrame.HealthBarsContainer, "SetPoint"),

@@ -13,7 +13,8 @@ function Module:InitializeData()
     self._filteredSourceRows, self._filteredBossToken, self._filteredRows = nil, nil, nil
 end
 function Module:RequestInstanceAchievementRows(instanceID, isRaid, callback)
-    return Data:RequestInstanceAchievementRows(instanceID, isRaid, callback, self)
+    -- The Guide page and its Achievements tab are visible, so build ahead of card work.
+    return Data:RequestInstanceAchievementRows(instanceID, isRaid, callback, self, true)
 end
 function Module:CancelPendingInstanceRowBuilds()
     Data:ReleaseOwner(self)

@@ -511,11 +511,6 @@ local function RefreshLiveNameplates()
     end
 
     local config = GetNameplatesConfig()
-    local castConfig = config.CastBar or {}
-    local castColors = castConfig.Colors or {}
-    local interruptibleColor = castColors.Interruptible or DEFAULT_CAST_COLORS.Interruptible
-    local castHeight = ClampNumber(castConfig.Height, 8, 48, 20)
-    local scaledCastHeight = (type(RefineUI.Scale) == "function" and RefineUI:Scale(castHeight)) or castHeight
 
     for nameplate in pairs(active) do
         local unitFrame = nameplate and nameplate.UnitFrame
@@ -525,10 +520,7 @@ local function RefreshLiveNameplates()
                 unitToken = nil
             end
 
-            local healthContainer = unitFrame.HealthBarsContainer
-            if Nameplates and Nameplates.ApplyConfiguredNameplateSize then
-                Nameplates:ApplyConfiguredNameplateSize(unitFrame, nameplate)
-            end
+            Nameplates:ApplyConfiguredNameplateSize(unitFrame)
 
             if config.TargetIndicator ~= false and type(RefineUI.CreateTargetArrows) == "function" then
                 RefineUI:CreateTargetArrows(unitFrame)
@@ -537,31 +529,11 @@ local function RefreshLiveNameplates()
                 RefineUI:UpdateTarget(unitFrame)
             end
 
-            local castBar = unitFrame.castBar or unitFrame.CastBar
+            -- Re-run the live cast bar's own layout and coloring; painting a fixed color here
+            -- would override the real cast's interruptibility color.
+            local castBar = RefineUI.NameplatesUtil.GetNameplateCastBar(unitFrame)
             if castBar then
-                local hpHeight = healthContainer and healthContainer:GetHeight()
-                local safeHeight = 12
-                if hpHeight and (not issecretvalue or not issecretvalue(hpHeight)) and hpHeight > 0 then
-                    safeHeight = hpHeight
-                end
-
-                castBar:ClearAllPoints()
-                RefineUI.Point(castBar, "TOPLEFT", unitFrame, "TOPLEFT", 12, -(safeHeight - 4))
-                RefineUI.Point(castBar, "TOPRIGHT", unitFrame, "TOPRIGHT", -12, -(safeHeight - 4))
-                castBar:SetHeight(scaledCastHeight)
-
-                local castR = ClampNumber(interruptibleColor[1], 0, 1, 1)
-                local castG = ClampNumber(interruptibleColor[2], 0, 1, 0.7)
-                local castB = ClampNumber(interruptibleColor[3], 0, 1, 0)
-                if castBar.SetStatusBarColor then
-                    castBar:SetStatusBarColor(castR, castG, castB)
-                end
-                if castBar.border and castBar.border.SetBackdropBorderColor then
-                    castBar.border:SetBackdropBorderColor(castR, castG, castB, 1)
-                end
-                if castBar.Background and castBar.Background.SetVertexColor then
-                    castBar.Background:SetVertexColor(castR * 0.24, castG * 0.24, castB * 0.24, 0.95)
-                end
+                Nameplates:RefreshCastBarForRuntimeMode(castBar)
             end
 
             if type(RefineUI.UpdateNameplateCrowdControl) == "function" then

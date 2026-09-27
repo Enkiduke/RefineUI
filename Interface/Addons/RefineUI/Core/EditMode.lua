@@ -23,6 +23,7 @@ local LAYOUT_EVENT_KEY = {
     DISPLAY_SIZE_CHANGED = "EditMode:DisplaySizeChanged",
     UI_SCALE_CHANGED = "EditMode:UIScaleChanged",
     PLAYER_REGEN_ENABLED = "EditMode:PlayerRegenEnabled",
+    PLAYER_SPECIALIZATION_CHANGED = "EditMode:PlayerSpecializationChanged",
 }
 
 local MICRO_MENU_SIZE = 115
@@ -272,7 +273,6 @@ function Module:OnEnable()
     -- Register Custom Frames with LibEditMode if they exist
     self:RegisterCustomFrames()
 
-    self:HookExitEditMode()
     self:RegisterManagedLayoutEvents()
     self:HandleManagedLayoutEnvironmentChange("OnEnable")
 end
@@ -333,6 +333,10 @@ function Module:RegisterManagedLayoutEvents()
         end
         self:HandleManagedLayoutEnvironmentChange("PLAYER_REGEN_ENABLED")
     end, LAYOUT_EVENT_KEY.PLAYER_REGEN_ENABLED)
+
+    RefineUI:RegisterUnitEventCallback("PLAYER_SPECIALIZATION_CHANGED", "player", function()
+        self:HandleManagedLayoutEnvironmentChange("PLAYER_SPECIALIZATION_CHANGED")
+    end, LAYOUT_EVENT_KEY.PLAYER_SPECIALIZATION_CHANGED)
 end
 
 function Module:HandleManagedLayoutEnvironmentChange(source)
@@ -347,7 +351,9 @@ function Module:HandleManagedLayoutEnvironmentChange(source)
     end
 
     if not isReady then
-        if not self._managedLayoutReadyRetryScheduled then
+        local attempts = self._managedLayoutReadyAttempts or 0
+        if not self._managedLayoutReadyRetryScheduled and attempts < READY_WAIT_ATTEMPTS then
+            self._managedLayoutReadyAttempts = attempts + 1
             self._managedLayoutReadyRetryScheduled = true
             C_Timer.After(READY_WAIT_INTERVAL, function()
                 self._managedLayoutReadyRetryScheduled = nil
@@ -358,6 +364,7 @@ function Module:HandleManagedLayoutEnvironmentChange(source)
         end
         return
     end
+    self._managedLayoutReadyAttempts = nil
 
     local loadOk = CallOverride("LoadLayouts")
     if not loadOk then
@@ -371,8 +378,20 @@ function Module:HandleManagedLayoutEnvironmentChange(source)
 
     local activeTier = RefineUI:GetManagedLayoutTier(activeLayout)
     if not activeTier then
-        self.pendingManagedLayoutTier = nil
         self.pendingManagedLayoutSource = nil
+        -- Blizzard stores the active layout per spec; a spec that never chose one sits on a preset.
+        -- Adopt it into RefineUI, but leave user-made custom layouts alone.
+        local editableOk, canEdit = CallOverride("CanEditActiveLayout")
+        if not editableOk or canEdit then
+            self.pendingManagedLayoutTier = nil
+            return
+        end
+        if InCombatLockdown() then
+            self.pendingManagedLayoutTier = RefineUI:GetStoredLayoutTier()
+            return
+        end
+        self.pendingManagedLayoutTier = nil
+        self:EnsureRefineUILayout(false, false)
         return
     end
 
@@ -637,10 +656,6 @@ function Module:ConfigureRefineUILayout(tierKey)
                 if not ok then return false, err end
                 ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.FrameHeight, 174)
                 if not ok then return false, err end
-                ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.BarHeight, 14)
-                if not ok then return false, err end
-                ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.Padding, 4)
-                if not ok then return false, err end
                 ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.BackgroundTransparency, 0)
                 if not ok then return false, err end
                 ok, err = TrySetFrameSettingStored(damageMeter, Enum.EditModeDamageMeterSetting.TextSize, 7)
@@ -650,15 +665,15 @@ function Module:ConfigureRefineUILayout(tierKey)
                 if not ok then return false, err end
                 ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.FrameHeight, damageMeterSettings.frameHeight)
                 if not ok then return false, err end
-                ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.BarHeight, damageMeterSettings.barHeight)
-                if not ok then return false, err end
-                ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.Padding, damageMeterSettings.padding)
-                if not ok then return false, err end
                 ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.BackgroundTransparency, damageMeterSettings.backgroundTransparency)
                 if not ok then return false, err end
                 ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.TextSize, damageMeterSettings.textSize)
                 if not ok then return false, err end
             end
+            ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.BarHeight, damageMeterSettings.barHeight)
+            if not ok then return false, err end
+            ok, err = TrySetFrameSetting(damageMeter, Enum.EditModeDamageMeterSetting.Padding, damageMeterSettings.padding)
+            if not ok then return false, err end
         end
 
         -- Duration Bars (MirrorTimerContainer) default size in Blizzard Edit Mode.
@@ -781,7 +796,9 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks, tierKe
             return
         end
 
+        -- Each SaveLayouts is a server write, so save once and only when something changed.
         local created = false
+        local dirty = false
         if not layoutExists then
             if not allowCreate then
                 fail("layout_not_found", "RefineUI layout is missing.", "create_layout")
@@ -790,35 +807,15 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks, tierKe
 
             fireCallback("onPhaseChanged", { state = "running", phase = "create_layout" })
 
+            -- AddLayout also marks the new layout active; the final save persists both.
             local addOk, addErr = CallOverride("AddLayout", Enum.EditModeLayoutType.Account, layoutName)
             if not addOk then
                 fail("layout_create_failed", tostring(addErr), "create_layout")
                 return
             end
 
-            local saveOk, saveErr = CallOverride("SaveOnly")
-            if not saveOk then
-                fail("layout_create_failed", tostring(saveErr), "create_layout")
-                return
-            end
-
-            ok, loadErr = CallOverride("LoadLayouts")
-            if not ok then
-                fail("layout_create_failed", tostring(loadErr), "create_layout")
-                return
-            end
-
-            existsOk, layoutExists = CallOverride("DoesLayoutExist", layoutName)
-            if not existsOk then
-                fail("layout_create_failed", tostring(layoutExists), "create_layout")
-                return
-            end
-            if not layoutExists then
-                fail("layout_missing_after_create", "RefineUI layout still does not exist after creation.", "create_layout")
-                return
-            end
-
             created = true
+            dirty = true
         end
 
         fireCallback("onPhaseChanged", { state = "running", phase = "activate_layout" })
@@ -835,28 +832,7 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks, tierKe
                 fail("layout_activate_failed", tostring(setErr), "activate_layout")
                 return
             end
-
-            local saveOk, saveErr = CallOverride("SaveOnly")
-            if not saveOk then
-                fail("layout_activate_failed", tostring(saveErr), "activate_layout")
-                return
-            end
-
-            ok, loadErr = CallOverride("LoadLayouts")
-            if not ok then
-                fail("layout_activate_failed", tostring(loadErr), "activate_layout")
-                return
-            end
-
-            activeOk, activeLayout = CallOverride("GetActiveLayout")
-            if not activeOk then
-                fail("layout_activate_failed", tostring(activeLayout), "activate_layout")
-                return
-            end
-            if activeLayout ~= layoutName then
-                fail("layout_activate_failed", "RefineUI layout could not be activated.", "activate_layout")
-                return
-            end
+            dirty = true
         end
 
         fireCallback("onPhaseChanged", { state = "running", phase = "apply_layout" })
@@ -869,48 +845,20 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks, tierKe
                 fail("layout_apply_failed", tostring(configureErr), "apply_layout")
                 return
             end
+            dirty = true
         end
 
-        local saveOk, saveErr = CallOverride("SaveOnly")
-        if not saveOk then
-            fail("layout_apply_failed", tostring(saveErr), "apply_layout")
-            return
-        end
-
-        local applyOk, applyErr = CallOverride("ApplyChanges")
-        if not applyOk then
-            if tostring(applyErr):find("combat", 1, true) then
-                block("combat_locked", "Cannot apply the RefineUI layout while in combat.", "apply_layout")
+        if dirty then
+            -- ApplyChanges saves the layouts and any pending active-layout switch.
+            local applyOk, applyErr = CallOverride("ApplyChanges")
+            if not applyOk then
+                if tostring(applyErr):find("combat", 1, true) then
+                    block("combat_locked", "Cannot apply the RefineUI layout while in combat.", "apply_layout")
+                    return
+                end
+                fail("layout_apply_failed", tostring(applyErr), "apply_layout")
                 return
             end
-            fail("layout_apply_failed", tostring(applyErr), "apply_layout")
-            return
-        end
-
-        ok, loadErr = CallOverride("LoadLayouts")
-        if not ok then
-            fail("layout_apply_failed", tostring(loadErr), "apply_layout")
-            return
-        end
-
-        existsOk, layoutExists = CallOverride("DoesLayoutExist", layoutName)
-        if not existsOk then
-            fail("layout_apply_failed", tostring(layoutExists), "apply_layout")
-            return
-        end
-        if not layoutExists then
-            fail("layout_not_found", "RefineUI layout disappeared after applying changes.", "apply_layout")
-            return
-        end
-
-        activeOk, activeLayout = CallOverride("GetActiveLayout")
-        if not activeOk then
-            fail("layout_apply_failed", tostring(activeLayout), "apply_layout")
-            return
-        end
-        if activeLayout ~= layoutName then
-            fail("layout_activate_failed", "RefineUI layout is no longer active after applying changes.", "apply_layout")
-            return
         end
 
         RefineUI:SetStoredLayoutTier(targetTier, RefineUI.DB)
@@ -959,101 +907,4 @@ function Module:EnsureRefineUILayout(forceReload, allowCreate, callbacks, tierKe
     end
 
     waitForReady()
-end
-
-----------------------------------------------------------------------------------------
--- Reload Prompt (Golden Glow)
-----------------------------------------------------------------------------------------
-
-local function PlayPulse(frame)
-    local pulse = RefineUI.CreatePulse(frame, 0.2, 0.8, 0.6)
-    if not pulse:IsPlaying() then pulse:Play() end
-end
-
-
-function Module:ShowReloadPrompt()
-    if self.ReloadPrompt then 
-        self.ReloadPrompt:Show()
-        return 
-    end
-
-    local f = CreateFrame("Frame", "RefineUI_EditModeReloadPrompt", UIParent)
-    RefineUI:AddAPI(f)
-    f:SetSize(350, 140)
-    f:SetPoint("CENTER")
-    f:SetFrameStrata("DIALOG")
-    f:CreateBackdrop()
-    f:SetTemplate("Transparent")
-    f:EnableMouse(true)
-    
-    -- Golden Glow
-    local PulseGlow = RefineUI.CreateGlow and RefineUI.CreateGlow(f, 2)
-    if PulseGlow then
-        PulseGlow:SetFrameStrata(f:GetFrameStrata())
-        PulseGlow:SetFrameLevel(f:GetFrameLevel() + 5)
-        PulseGlow:SetBackdropBorderColor(1, 0.82, 0, 0.8) -- Gold color
-        PulseGlow:Show()
-        PlayPulse(PulseGlow)
-        f.PulseGlow = PulseGlow
-    end
-    
-    -- Header overlay
-    local header = CreateFrame("Frame", nil, f)
-    RefineUI:AddAPI(header)
-    header:SetSize(350, 26)
-    header:SetPoint("TOP", f, "TOP", 0, 0)
-    header:CreateBackdrop()
-    header:SetTemplate("Overlay")
-    
-    -- Header text
-    local title = header:CreateFontString(nil, "OVERLAY")
-    RefineUI:AddAPI(title)
-    title:Font(14, nil, nil, true)
-    title:SetPoint("CENTER", header, 0, 0)
-    title:SetText("Edit Mode Complete")
-    title:SetTextColor(1, 0.82, 0)
-    
-    -- Message text
-    local msg = f:CreateFontString(nil, "OVERLAY")
-    RefineUI:AddAPI(msg)
-    msg:Font(12, nil, nil, true)
-    msg:SetPoint("TOP", header, "BOTTOM", 0, -15)
-    msg:SetWidth(320)
-    msg:SetText("A UI reload is recommended to ensure\nall frames display correctly.")
-    
-    -- Reload button
-    local reloadBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    RefineUI:AddAPI(reloadBtn)
-    reloadBtn:SetSize(100, 26)
-    reloadBtn:SetPoint("BOTTOMRIGHT", f, "BOTTOM", -10, 15)
-    reloadBtn:SkinButton()
-    reloadBtn:SetText("Reload")
-    reloadBtn:SetScript("OnClick", function()
-        ReloadUI()
-    end)
-    
-    -- Later button
-    local laterBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    RefineUI:AddAPI(laterBtn)
-    laterBtn:SetSize(100, 26)
-    laterBtn:SetPoint("BOTTOMLEFT", f, "BOTTOM", 10, 15)
-    laterBtn:SkinButton()
-    laterBtn:SetText("Later")
-    laterBtn:SetScript("OnClick", function()
-        f:Hide()
-    end)
-    
-    self.ReloadPrompt = f
-end
-
-function Module:HookExitEditMode()
-    if not EditModeManagerFrame then
-        return
-    end
-
-    RefineUI:HookOnce("Core:EditMode:EditModeManagerFrame:ExitEditMode", EditModeManagerFrame, "ExitEditMode", function()
-        C_Timer.After(0.5, function()
-            Module:ShowReloadPrompt()
-        end)
-    end)
 end

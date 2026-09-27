@@ -9,154 +9,94 @@ local _, RefineUI = ...
 -- Module
 ----------------------------------------------------------------------------------------
 local Tooltip = RefineUI:GetModule("Tooltip")
-if not Tooltip then
-    return
-end
+local Private = Tooltip.Private
 
 ----------------------------------------------------------------------------------------
--- Lua / WoW Upvalues
+-- Shared Aliases (Explicit)
 ----------------------------------------------------------------------------------------
-local _G = _G
-local tostring = tostring
-local type = type
-local pcall = pcall
+local IsAugmentableTooltip = Private.IsAugmentableTooltip
+local IsAccessibleTable = Private.IsAccessibleTable
+local ReadSafeNumber = Private.ReadSafeNumber
+local ReadSafeString = Private.ReadSafeString
 
 ----------------------------------------------------------------------------------------
 -- WoW Globals
 ----------------------------------------------------------------------------------------
-local C_Item = _G.C_Item
-local C_Spell = _G.C_Spell
-local TOOLTIP_DATA_TYPE = Enum and Enum.TooltipDataType
+local AddTooltipPostCall = TooltipDataProcessor.AddTooltipPostCall
+local GetItemIconByID = C_Item.GetItemIconByID
+local GetSpellTexture = C_Spell.GetSpellTexture
+local SPELL_TOOLTIP_TYPE = Enum.TooltipDataType.Spell
+local MACRO_TOOLTIP_TYPE = Enum.TooltipDataType.Macro
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local TOOLTIP_ICONS_ITEM_HANDLER_KEY = "TooltipIcons"
-local TOOLTIP_ICONS_POSTCALL_SPELL_KEY = "TooltipIcons:PostCall:Spell"
-local TOOLTIP_ICONS_POSTCALL_MACRO_KEY = "TooltipIcons:PostCall:Macro"
 local TOOLTIP_TITLE_ICON_FORMAT = "|T%s:20:20:0:0:64:64:4:60:4:60|t %s"
 
 ----------------------------------------------------------------------------------------
 -- Helpers
 ----------------------------------------------------------------------------------------
 local function SetTooltipIcon(tooltip, icon)
-    if not Tooltip:IsAugmentableTooltipFrame(tooltip) then
-        return
-    end
-    if icon == nil then
-        return
-    end
-
-    local title = Tooltip:GetCachedLine(tooltip, 1)
-    if not title then
+    icon = ReadSafeNumber(icon) or ReadSafeString(icon)
+    if not icon then
         return
     end
 
-    local okText, text = pcall(title.GetText, title)
-    if not okText then
+    local title = tooltip:GetLeftLine(1)
+    local text = title and ReadSafeString(title:GetText())
+    if not text or text == "" or text:find("|T" .. icon, 1, true) then
         return
     end
 
-    text = Tooltip:ReadSafeString(text)
-    if not text or text == "" then
+    title:SetFormattedText(TOOLTIP_TITLE_ICON_FORMAT, icon, text)
+end
+
+local function GetDataID(data)
+    return IsAccessibleTable(data) and ReadSafeNumber(data.id)
+end
+
+local function OnItemTooltip(tooltip, data)
+    local itemID = GetDataID(data)
+    if itemID and IsAugmentableTooltip(tooltip) then
+        SetTooltipIcon(tooltip, GetItemIconByID(itemID))
+    end
+end
+
+local function OnSpellTooltip(tooltip, data)
+    local spellID = GetDataID(data)
+    if spellID and IsAugmentableTooltip(tooltip) then
+        SetTooltipIcon(tooltip, GetSpellTexture(spellID))
+    end
+end
+
+local function OnMacroTooltip(tooltip, data)
+    local tooltipType, tooltipID = Tooltip:GetMacroTooltipTarget(data)
+    if not tooltipID or not IsAugmentableTooltip(tooltip) then
         return
     end
 
-    local iconToken = nil
-    local safeIconString = Tooltip:ReadSafeString(icon)
-    if safeIconString then
-        iconToken = "|T" .. safeIconString
-    else
-        local safeIconNumber = Tooltip:ReadSafeNumber(icon)
-        if safeIconNumber then
-            iconToken = "|T" .. tostring(safeIconNumber)
-        end
+    if tooltipType == 0 then
+        SetTooltipIcon(tooltip, GetItemIconByID(tooltipID))
+    elseif tooltipType == 1 then
+        SetTooltipIcon(tooltip, GetSpellTexture(tooltipID))
     end
+end
 
-    if iconToken and text:find(iconToken, 1, true) then
-        return
+-- Macro tooltips describe their item (0) or spell (1) target on the first data line.
+function Tooltip:GetMacroTooltipTarget(data)
+    local lines = IsAccessibleTable(data) and data.lines
+    local line = IsAccessibleTable(lines) and lines[1]
+    if not IsAccessibleTable(line) then
+        return nil
     end
-
-    pcall(title.SetFormattedText, title, TOOLTIP_TITLE_ICON_FORMAT, icon, text)
+    return ReadSafeNumber(line.tooltipType), ReadSafeNumber(line.tooltipID)
 end
 
 ----------------------------------------------------------------------------------------
 -- Initialization
 ----------------------------------------------------------------------------------------
 function Tooltip:InitializeTooltipIcons()
-    Tooltip:RegisterItemHandler(TOOLTIP_ICONS_ITEM_HANDLER_KEY, function(tooltip, data)
-        if not Tooltip:IsAugmentableTooltipFrame(tooltip) then
-            return
-        end
-
-        local itemID = nil
-        if Tooltip:CanAccessObjectSafe(data) then
-            local rawItemID, okItemID = Tooltip:SafeGetField(data, "id")
-            if okItemID then
-                itemID = Tooltip:ReadSafeNumber(rawItemID)
-            end
-        end
-        local icon = C_Item and C_Item.GetItemIconByID and itemID and C_Item.GetItemIconByID(itemID)
-        SetTooltipIcon(tooltip, icon)
-    end)
-
-    if TOOLTIP_DATA_TYPE and TOOLTIP_DATA_TYPE.Spell then
-        Tooltip:AddTooltipPostCallOnce(TOOLTIP_ICONS_POSTCALL_SPELL_KEY, TOOLTIP_DATA_TYPE.Spell, function(tooltip, data)
-            if not Tooltip:IsAugmentableTooltipFrame(tooltip) then
-                return
-            end
-
-            local spellID = nil
-            if Tooltip:CanAccessObjectSafe(data) then
-                local rawSpellID, okSpellID = Tooltip:SafeGetField(data, "id")
-                if okSpellID then
-                    spellID = Tooltip:ReadSafeNumber(rawSpellID)
-                end
-            end
-            local icon = C_Spell and C_Spell.GetSpellTexture and spellID and C_Spell.GetSpellTexture(spellID)
-            SetTooltipIcon(tooltip, icon)
-        end)
-    end
-
-    if TOOLTIP_DATA_TYPE and TOOLTIP_DATA_TYPE.Macro then
-        Tooltip:AddTooltipPostCallOnce(TOOLTIP_ICONS_POSTCALL_MACRO_KEY, TOOLTIP_DATA_TYPE.Macro, function(tooltip, data)
-            if not Tooltip:IsAugmentableTooltipFrame(tooltip) then
-                return
-            end
-            if not Tooltip:CanAccessObjectSafe(data) then
-                return
-            end
-
-            local lines, okLines = Tooltip:SafeGetField(data, "lines")
-            if not okLines or type(lines) ~= "table" then
-                return
-            end
-
-            local lineData, okLineData = Tooltip:SafeGetField(lines, 1)
-            if not okLineData or not Tooltip:CanAccessObjectSafe(lineData) then
-                return
-            end
-
-            local rawTooltipType, okTooltipType = Tooltip:SafeGetField(lineData, "tooltipType")
-            local tooltipType = okTooltipType and Tooltip:ReadSafeNumber(rawTooltipType) or nil
-            if not tooltipType then
-                return
-            end
-
-            local rawTooltipID, okTooltipID = Tooltip:SafeGetField(lineData, "tooltipID")
-            local tooltipID = okTooltipID and Tooltip:ReadSafeNumber(rawTooltipID) or nil
-            if not tooltipID then
-                return
-            end
-
-            local icon = nil
-            if tooltipType == 0 then
-                icon = C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(tooltipID)
-            elseif tooltipType == 1 then
-                icon = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(tooltipID)
-            end
-
-            SetTooltipIcon(tooltip, icon)
-        end)
-    end
+    self:RegisterItemHandler(OnItemTooltip)
+    AddTooltipPostCall(SPELL_TOOLTIP_TYPE, OnSpellTooltip)
+    AddTooltipPostCall(MACRO_TOOLTIP_TYPE, OnMacroTooltip)
 end

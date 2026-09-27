@@ -1,6 +1,7 @@
 -- Current-character saved instances, independent of collection scans.
 local _, RefineUI = ...
 local Module = RefineUI:GetModule("AdventureGuideInstances")
+local NO_LOCKOUTS = {}
 
 function Module:ReadGuideLockouts()
     local byMap = {}
@@ -30,7 +31,7 @@ function Module:ReadGuideLockouts()
 end
 
 function Module:GetGuideCardLockouts(button)
-    if not button.instanceID then return {} end
+    if not button.instanceID then return NO_LOCKOUTS end
     local mapID = button.RefineLockoutMapID
     if button.RefineLockoutInstanceID ~= button.instanceID then
         -- Return 8 is the journal link; return 10 is the game map ID
@@ -38,8 +39,10 @@ function Module:GetGuideCardLockouts(button)
         mapID = select(10, EJ_GetInstanceInfo(button.instanceID))
         button.RefineLockoutInstanceID, button.RefineLockoutMapID = button.instanceID, mapID
     end
+    local entries = self.guideLockouts and self.guideLockouts[mapID]
+    if not entries then return NO_LOCKOUTS end
     local active = {}
-    for _, entry in ipairs(self.guideLockouts and self.guideLockouts[mapID] or {}) do
+    for _, entry in ipairs(entries) do
         if entry.extended or entry.expires > GetTime() then active[#active + 1] = entry end
     end
     return active
@@ -81,10 +84,10 @@ function Module:ShowGuideLockoutTooltip(button, owner)
 end
 
 function Module:DecorateGuideLockout(button)
-    local entries = self:GetGuideCardLockouts(button)
+    local entries = self:IsGuideOptionEnabled("Lockouts") and self:GetGuideCardLockouts(button) or NO_LOCKOUTS
     local badges = button.RefineGuideLockouts or {}
     button.RefineGuideLockouts = badges
-    if not self:IsGuideOptionEnabled("Lockouts") or #entries == 0 then
+    if #entries == 0 then
         for _, badge in ipairs(badges) do
             if GameTooltip:IsOwned(badge) then GameTooltip:Hide() end
             badge:Hide()
@@ -159,11 +162,17 @@ function Module:InstallGuideLockouts()
         self:ReadGuideLockouts()
         self:RefreshGuideLockoutCards()
     end
-    ScrollUtil.AddInitializedFrameCallback(scroll, function(_, button) self:DecorateGuideLockout(button) end, self)
+    ScrollUtil.AddInitializedFrameCallback(scroll, function(_, button) self:DecorateGuideLockout(button) end,
+        self:BuildKey("Lockouts", "Init"))
     RefineUI:HookOnce(self:BuildKey("Lockouts", "List"), "EncounterJournal_ListInstances", function() self:RefreshGuideLockoutCards() end)
+    -- OnShow re-reads and re-requests, so hidden-list updates can be skipped.
     scroll:HookScript("OnShow", function() Refresh(); RequestRaidInfo() end)
-    RefineUI:RegisterEventCallback("UPDATE_INSTANCE_INFO", Refresh, self:BuildKey("Lockouts", "Update"))
-    RefineUI:RegisterEventCallback("BOSS_KILL", function() RequestRaidInfo() end, self:BuildKey("Lockouts", "Boss"))
+    RefineUI:RegisterEventCallback("UPDATE_INSTANCE_INFO", function()
+        if scroll:IsVisible() then Refresh() end
+    end, self:BuildKey("Lockouts", "Update"))
+    RefineUI:RegisterEventCallback("BOSS_KILL", function()
+        if scroll:IsVisible() then RequestRaidInfo() end
+    end, self:BuildKey("Lockouts", "Boss"))
     Refresh()
     RequestRaidInfo()
 end

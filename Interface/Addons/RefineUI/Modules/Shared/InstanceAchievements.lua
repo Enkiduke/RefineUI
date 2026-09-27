@@ -349,6 +349,18 @@ function EncounterAchievements:GetCategoryDepth(categoryID)
     return depth
 end
 
+-- Top-level category containing categoryID (itself when it has no parent).
+function EncounterAchievements:GetRootCategoryID(categoryID)
+    local graph = self:GetCategoryGraph()
+    local node = graph[categoryID]
+    local safety = 0
+    while node and node.parentID > 0 and graph[node.parentID] and safety < 64 do
+        node = graph[node.parentID]
+        safety = safety + 1
+    end
+    return node and node.id
+end
+
 function EncounterAchievements:GetCategoryPath(categoryID, separator)
     separator = separator or " > "
     if categoryID == nil then
@@ -866,7 +878,20 @@ function EncounterAchievements:CancelPendingInstanceRowBuilds()
     self._pendingInstanceRowBuildQueue = {}
 end
 
-function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid, onComplete, owner)
+-- The worker builds queue[1] first. A priority request (the visible Guide page) moves
+-- ahead of background card work; a paused task keeps its progress.
+local function QueueTask(queue, task, priority)
+    for index = #queue, 1, -1 do
+        if queue[index] == task then
+            if not priority then return end
+            table.remove(queue, index)
+            break
+        end
+    end
+    table.insert(queue, priority and 1 or #queue + 1, task)
+end
+
+function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid, onComplete, owner, priority)
     if type(instanceID) ~= "number" or instanceID <= 0 then
         if type(onComplete) == "function" then
             pcall(onComplete, instanceID, {}, nil)
@@ -888,6 +913,7 @@ function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid
         if type(onComplete) == "function" then
             pendingBuild.callbacks[#pendingBuild.callbacks + 1] = { callback = onComplete, owner = owner }
         end
+        QueueTask(self._pendingInstanceRowBuildQueue, pendingBuild, priority)
         return false
     end
 
@@ -944,7 +970,7 @@ function EncounterAchievements:RequestInstanceAchievementRows(instanceID, isRaid
     end
 
     self._pendingInstanceRowBuilds[instanceID] = task
-    self._pendingInstanceRowBuildQueue[#self._pendingInstanceRowBuildQueue + 1] = task
+    QueueTask(self._pendingInstanceRowBuildQueue, task, priority)
     self:StartPendingRowBuildWorker()
 
     return false

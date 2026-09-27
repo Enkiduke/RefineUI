@@ -49,8 +49,8 @@ local LAYOUT_DEFAULTS = {
         damageMeter = {
             frameWidth = 314,
             frameHeight = 294,
-            barHeight = 16,
-            padding = 2,
+            barHeight = 29,
+            padding = 6,
             textSize = 100,
             backgroundTransparency = 0,
         },
@@ -69,8 +69,8 @@ local LAYOUT_DEFAULTS = {
         damageMeter = {
             frameWidth = 300,
             frameHeight = 272,
-            barHeight = 16,
-            padding = 2,
+            barHeight = 29,
+            padding = 6,
             textSize = 90,
             backgroundTransparency = 0,
         },
@@ -89,8 +89,8 @@ local LAYOUT_DEFAULTS = {
         damageMeter = {
             frameWidth = 300,
             frameHeight = 244,
-            barHeight = 16,
-            padding = 2,
+            barHeight = 29,
+            padding = 6,
             textSize = 80,
             backgroundTransparency = 0,
         },

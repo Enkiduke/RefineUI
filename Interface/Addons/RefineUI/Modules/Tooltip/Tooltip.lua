@@ -9,52 +9,27 @@ local _, RefineUI = ...
 -- Module
 ----------------------------------------------------------------------------------------
 local Tooltip = RefineUI:RegisterModule("Tooltip", "Tooltip")
-Tooltip.Private = Tooltip.Private or {}
-Tooltip.ItemHandlers = Tooltip.ItemHandlers or {}
-
-----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
+Tooltip.Private = {}
 
 ----------------------------------------------------------------------------------------
 -- Lifecycle
 ----------------------------------------------------------------------------------------
 function Tooltip:OnInitialize()
-    if not Config.Tooltip or not Config.Tooltip.Enable then
+    if not RefineUI.Config.Tooltip.Enable then
         return
     end
 
-    if self.InitializeTooltipCore then
-        self:InitializeTooltipCore()
-    end
-    if self.InitializeTooltipStyle then
-        self:InitializeTooltipStyle()
-    end
-    if self.InitializeTooltipAnchor then
-        self:InitializeTooltipAnchor()
-    end
-    if self.InitializeTooltipEditMode then
-        self:InitializeTooltipEditMode()
-    end
-    if self.InitializeTooltipUnit then
-        self:InitializeTooltipUnit()
-    end
+    -- Style registers its post-calls first so borders and fonts apply before feature lines.
+    self:InitializeTooltipStyle()
+    self:InitializeTooltipAnchor()
+    self:InitializeTooltipEditMode()
+    self:InitializeTooltipUnit()
+    self:InitializeHyperlinkSupport()
 
-    if self.InitializeHyperlinkSupport then
-        self:InitializeHyperlinkSupport()
-    end
-    if self.InitializeTooltipIcons then
-        self:InitializeTooltipIcons()
-    end
-    if self.InitializeSpellID then
-        self:InitializeSpellID()
-    end
-    if self.InitializeItemCountStorage then
-        self:InitializeItemCountStorage()
-    end
-    if self.InitializeItemCount then
-        self:InitializeItemCount()
-    end
+    -- Item handler order sets line order: icon, counts, token rows, then the ID line.
+    self:InitializeTooltipIcons()
+    self:InitializeItemCountStorage()
+    self:InitializeItemCount()
     self:InitializeItemTokens()
+    self:InitializeSpellID()
 end

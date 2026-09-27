@@ -10,23 +10,31 @@ if not AutoItemBar then return end
 local floor = math.floor
 local ceil = math.ceil
 local min = math.min
-local tinsert = table.insert
-local tsort = table.sort
 local pairs = pairs
+local ipairs = ipairs
+local wipe = wipe
 local type = type
 local InCombatLockdown = InCombatLockdown
 local GetCursorInfo = GetCursorInfo
 local IsControlKeyDown = IsControlKeyDown
 local GetItemIconByID = C_Item.GetItemIconByID
+local GetItemCount = C_Item.GetItemCount
+local GetContainerNumSlots = C_Container.GetContainerNumSlots
+local GetContainerItemID = C_Container.GetContainerItemID
+local GetContainerItemCooldown = C_Container.GetContainerItemCooldown
 local UnitAffectingCombat = UnitAffectingCombat
-local GetAtlasInfo = C_Texture and C_Texture.GetAtlasInfo
+local GetAtlasInfo = C_Texture.GetAtlasInfo
 local UIParent = UIParent
 
 ----------------------------------------------------------------------------------------
 --	Locals & Constants
 ----------------------------------------------------------------------------------------
 
-local currentConsumables = AutoItemBar.currentConsumables
+-- Reused on every bag scan.
+local displayedItems = {}
+local itemBag = {}
+local itemSlot = {}
+
 local EDITMODE_TUTORIAL_FRAME_NAME = "RefineUI_AutoItemBarEditModeTutorialTip"
 local MAIN_FRAME_NAME = "RefineUI_AutoItemBar"
 local MOVER_FRAME_NAME = "RefineUI_AutoItemBarMover"
@@ -112,48 +120,42 @@ function AutoItemBar:InvalidateLayoutCache()
 end
 
 function AutoItemBar:GetGridExtents(itemCount)
+    local cfg = self:GetConfig()
     local count = itemCount > 0 and itemCount or 1
-    local orientation = self:GetOrientation()
-    local limit = self:GetButtonLimit()
-    local rows, cols
+    local limit = cfg.ButtonLimit
 
-    if orientation == self.ORIENTATION_VERTICAL then
-        rows = min(count, limit)
-        cols = ceil(count / limit)
-    else
-        cols = min(count, limit)
-        rows = ceil(count / limit)
+    if cfg.Orientation == self.ORIENTATION_VERTICAL then
+        return min(count, limit), ceil(count / limit)
     end
-
-    return rows, cols
+    return ceil(count / limit), min(count, limit)
 end
 
 function AutoItemBar:GetGridPosition(index, itemCount)
-    local orientation = self:GetOrientation()
-    local direction = self:GetButtonDirection()
-    local wrap = self:GetButtonWrap()
-    local limit = self:GetButtonLimit()
+    local cfg = self:GetConfig()
+    local limit = cfg.ButtonLimit
     local rows, cols = self:GetGridExtents(itemCount or index)
+    local directionReversed = cfg.ButtonDirection == self.DIRECTION_REVERSE
+    local wrapReversed = cfg.ButtonWrap == self.WRAP_REVERSE
     local row, col
 
-    if orientation == self.ORIENTATION_VERTICAL then
+    if cfg.Orientation == self.ORIENTATION_VERTICAL then
         row = (index - 1) % limit
         col = floor((index - 1) / limit)
 
-        if direction == self.DIRECTION_REVERSE then
+        if directionReversed then
             row = (rows - 1) - row
         end
-        if wrap == self.WRAP_REVERSE then
+        if wrapReversed then
             col = (cols - 1) - col
         end
     else
         row = floor((index - 1) / limit)
         col = (index - 1) % limit
 
-        if direction == self.DIRECTION_REVERSE then
+        if directionReversed then
             col = (cols - 1) - col
         end
-        if wrap == self.WRAP_REVERSE then
+        if wrapReversed then
             row = (rows - 1) - row
         end
     end
@@ -280,7 +282,6 @@ function AutoItemBar:RefreshAddSlotFromCursor()
 
     self:UpdateAddSlotButton(count, showAddSlot, inCombat)
     self:ApplyDisplayCountSize(count, inCombat)
-    self:SyncInteractivity()
 end
 
 ----------------------------------------------------------------------------------------
@@ -291,12 +292,7 @@ function AutoItemBar:IsMouseOverBar()
     if self._editModeActive then return true end
     if self.ConsumableButtonsFrame and self.ConsumableButtonsFrame:IsMouseOver() then return true end
     if self.ConsumableBarParent and self.ConsumableBarParent:IsMouseOver() then return true end
-
-    if self.consumableButtons then
-        for _, button in pairs(self.consumableButtons) do
-            if button:IsMouseOver() then return true end
-        end
-    end
+    -- Item buttons sit inside ConsumableButtonsFrame; only the add slot extends past it.
     if self.AddSlotButton and self.AddSlotButton:IsShown() and self.AddSlotButton:IsMouseOver() then
         return true
     end
@@ -307,14 +303,7 @@ end
 function AutoItemBar:EvaluateMouseoverVisibility()
     if not self.ConsumableButtonsFrame then return end
 
-    local cfg = self:GetConfig()
     local visibilityMode = self:GetBarVisibilityMode()
-    local barAlpha = cfg.BarAlpha or 1
-    if barAlpha < 0 then
-        barAlpha = 0
-    elseif barAlpha > 1 then
-        barAlpha = 1
-    end
     local shouldShow
 
     if self._editModeActive then
@@ -338,7 +327,7 @@ function AutoItemBar:EvaluateMouseoverVisibility()
     self._lastVisibleState = shouldShow
 
     if shouldShow then
-        SafeFade(self.ConsumableButtonsFrame, barAlpha)
+        SafeFade(self.ConsumableButtonsFrame, self:GetConfig().BarAlpha)
     else
         SafeFade(self.ConsumableButtonsFrame, 0)
     end
@@ -356,37 +345,21 @@ function AutoItemBar:UpdateButtonLayering()
         return
     end
 
-    local moverStrata = (self.Mover and self.Mover:GetFrameStrata()) or "MEDIUM"
-    local desiredStrata = self._editModeActive and "LOW" or moverStrata
-
-    if self.ConsumableButtonsFrame and self.ConsumableButtonsFrame.GetFrameStrata then
-        local frameStrata = self._editModeActive and "LOW" or moverStrata
-        if self.ConsumableButtonsFrame:GetFrameStrata() ~= frameStrata then
-            self.ConsumableButtonsFrame:SetFrameStrata(frameStrata)
-        end
-    end
-
-    if not self.consumableButtons then
-        if self.AddSlotButton and self.AddSlotButton.GetFrameStrata and self.AddSlotButton.SetFrameStrata then
-            if self.AddSlotButton:GetFrameStrata() ~= desiredStrata then
-                self.AddSlotButton:SetFrameStrata(desiredStrata)
-            end
-        end
+    local strata = self:GetButtonStrata()
+    if strata == self._appliedStrata then
         return
     end
 
+    self.ConsumableButtonsFrame:SetFrameStrata(strata)
     for _, button in pairs(self.consumableButtons) do
-        if button and button.GetFrameStrata and button.SetFrameStrata then
-            if button:GetFrameStrata() ~= desiredStrata then
-                button:SetFrameStrata(desiredStrata)
-            end
-        end
+        button:SetFrameStrata(strata)
     end
-    if self.AddSlotButton and self.AddSlotButton.GetFrameStrata and self.AddSlotButton.SetFrameStrata then
-        if self.AddSlotButton:GetFrameStrata() ~= desiredStrata then
-            self.AddSlotButton:SetFrameStrata(desiredStrata)
-        end
-    end
+    self.AddSlotButton:SetFrameStrata(strata)
+    self._appliedStrata = strata
+end
+
+function AutoItemBar:GetButtonStrata()
+    return self._editModeActive and "LOW" or self.Mover:GetFrameStrata()
 end
 
 function AutoItemBar:QueueMouseoverRefresh()
@@ -399,10 +372,6 @@ end
 function AutoItemBar:ShowBar()
     self._mouseOverBar = true
     self:EvaluateMouseoverVisibility()
-end
-
-function AutoItemBar:HideBar()
-    self:QueueMouseoverRefresh()
 end
 
 function AutoItemBar:UpdateBarVisibility()
@@ -553,17 +522,13 @@ function AutoItemBar:CreateConsumableButton(itemID, index, itemCount)
     local yOffset = -row * (self.buttonSize + self.buttonSpacing)
 
     RefineUI.Point(button, "TOPLEFT", xOffset, yOffset)
-    button:SetFrameStrata((self._editModeActive and "LOW") or ((self.Mover and self.Mover:GetFrameStrata()) or "MEDIUM"))
+    button:SetFrameStrata(self:GetButtonStrata())
     RefineUI.SetTemplate(button, "Default")
     RefineUI.StyleButton(button, true)
 
     button:RegisterForClicks("AnyDown", "AnyUp")
-    button:EnableMouse(true)
-    buttonState.lastUseItem = nil
-    buttonState.pendingUseItem = nil
-    if self._useActionsEnabled ~= false then
-        self:AssignUseAction(button, itemID)
-    end
+    button:EnableMouse(self._appliedInteractive ~= false)
+    self:AssignUseAction(button, itemID)
 
     local iconTexture = button:CreateTexture(nil, "BORDER")
     RefineUI.SetInside(iconTexture)
@@ -586,8 +551,6 @@ function AutoItemBar:CreateConsumableButton(itemID, index, itemCount)
     buttonState.countText = countText
     buttonState.cooldown = cooldown
     buttonState.itemID = itemID
-    buttonState.row = row
-    buttonState.col = col
     buttonState.xOffset = xOffset
     buttonState.yOffset = yOffset
     buttonState.buttonSize = self.buttonSize
@@ -597,11 +560,8 @@ function AutoItemBar:CreateConsumableButton(itemID, index, itemCount)
         local targetItemID = state and state.itemID
         if not targetItemID then return end
         GameTooltip:SetOwner(selfButton, "ANCHOR_RIGHT")
-        local loc = AutoItemBar.itemLocationById and AutoItemBar.itemLocationById[targetItemID]
-        local bag = loc and loc.bag
-        local slot = loc and loc.slot
-        if type(bag) == "number" and type(slot) == "number" then
-            GameTooltip:SetBagItem(bag, slot)
+        if state.bag and state.slot then
+            GameTooltip:SetBagItem(state.bag, state.slot)
         else
             GameTooltip:SetItemByID(targetItemID)
         end
@@ -638,63 +598,48 @@ function AutoItemBar:CreateConsumableButton(itemID, index, itemCount)
 end
 
 function AutoItemBar:UpdateConsumableButtons()
-    wipe(currentConsumables)
-    wipe(self.itemLocationById)
+    wipe(displayedItems)
+    wipe(itemBag)
+    wipe(itemSlot)
 
-    local consumableCount = {}
-    local sortedConsumables = {}
     local inCombat = InCombatLockdown()
 
     for bag = 0, self.NUM_BAG_SLOTS do
-        local numSlots = C_Container.GetContainerNumSlots(bag)
-        for slot = 1, numSlots do
-            local itemID = C_Container.GetContainerItemID(bag, slot)
-            if itemID and self:ShouldDisplayItem(itemID) then
-                if not currentConsumables[itemID] then
-                    tinsert(sortedConsumables, itemID)
-                end
-                currentConsumables[itemID] = true
-                self.itemLocationById[itemID] = { bag = bag, slot = slot }
-
-                local info = C_Container.GetContainerItemInfo(bag, slot)
-                local count = info and info.stackCount or 0
-                consumableCount[itemID] = (consumableCount[itemID] or 0) + count
+        for slot = 1, GetContainerNumSlots(bag) do
+            local itemID = GetContainerItemID(bag, slot)
+            if itemID and not itemBag[itemID] and self:ShouldDisplayItem(itemID) then
+                displayedItems[#displayedItems + 1] = itemID
+                itemBag[itemID] = bag
+                itemSlot[itemID] = slot
             end
         end
     end
 
-    tsort(sortedConsumables, function(a, b)
-        return self:SortItems(a, b)
-    end)
-    self._lastConsumableCount = #sortedConsumables
-    local cursorType = GetCursorInfo()
-    local showAddSlot = cursorType == "item"
+    self:SortItems(displayedItems)
+    local itemCount = #displayedItems
+    self._lastConsumableCount = itemCount
+    local showAddSlot = GetCursorInfo() == "item"
+    local step = self.buttonSize + self.buttonSpacing
 
-    for index, itemID in ipairs(sortedConsumables) do
+    for index, itemID in ipairs(displayedItems) do
         if not self.consumableButtons[itemID] then
             if inCombat then
                 self._pendingCombatRefresh = true
             else
-                self.consumableButtons[itemID] = self:CreateConsumableButton(itemID, index, #sortedConsumables)
+                self.consumableButtons[itemID] = self:CreateConsumableButton(itemID, index, itemCount)
             end
         end
 
         local button = self.consumableButtons[itemID]
         if button then
             local buttonState = self:GetButtonState(button)
-            local row, col = self:GetGridPosition(index, #sortedConsumables)
-            local xOffset = col * (self.buttonSize + self.buttonSpacing)
-            local yOffset = -row * (self.buttonSize + self.buttonSpacing)
-            buttonState.itemID = itemID
-            if self._useActionsEnabled ~= false then
-                self:AssignUseAction(button, itemID)
-            end
+            local row, col = self:GetGridPosition(index, itemCount)
+            local xOffset = col * step
+            local yOffset = -row * step
 
             local icon = GetItemIconByID(itemID)
             if icon and icon ~= buttonState.lastIcon then
-                if buttonState.iconTexture then
-                    buttonState.iconTexture:SetTexture(icon)
-                end
+                buttonState.iconTexture:SetTexture(icon)
                 buttonState.lastIcon = icon
             end
 
@@ -704,61 +649,56 @@ function AutoItemBar:UpdateConsumableButtons()
                     buttonState.buttonSize = self.buttonSize
                 end
 
-                if row ~= buttonState.row or col ~= buttonState.col or xOffset ~= buttonState.xOffset or yOffset ~= buttonState.yOffset then
+                if xOffset ~= buttonState.xOffset or yOffset ~= buttonState.yOffset then
                     RefineUI.Point(button, "TOPLEFT", xOffset, yOffset)
-                    buttonState.row = row
-                    buttonState.col = col
                     buttonState.xOffset = xOffset
                     buttonState.yOffset = yOffset
                 end
                 button:Show()
-            elseif row ~= buttonState.row or col ~= buttonState.col or xOffset ~= buttonState.xOffset or yOffset ~= buttonState.yOffset or buttonState.buttonSize ~= self.buttonSize then
+            elseif xOffset ~= buttonState.xOffset or yOffset ~= buttonState.yOffset or buttonState.buttonSize ~= self.buttonSize then
                 self._pendingCombatRefresh = true
             end
 
-            local countText = (consumableCount[itemID] and consumableCount[itemID] > 1) and consumableCount[itemID] or ""
+            local count = GetItemCount(itemID)
+            local countText = count > 1 and count or ""
             if countText ~= buttonState.lastCountText then
-                if buttonState.countText then
-                    buttonState.countText:SetText(countText)
-                end
+                buttonState.countText:SetText(countText)
                 buttonState.lastCountText = countText
             end
 
-            local loc = self.itemLocationById[itemID]
-            if loc then
-                buttonState.bag = loc.bag
-                buttonState.slot = loc.slot
-                local start, duration = C_Container.GetContainerItemCooldown(loc.bag, loc.slot)
-                if buttonState.cooldown and start and duration and duration > 0 then
-                    if start ~= buttonState.lastCooldownStart or duration ~= buttonState.lastCooldownDuration then
-                        buttonState.cooldown:SetCooldown(start, duration)
-                        buttonState.lastCooldownStart = start
-                        buttonState.lastCooldownDuration = duration
-                    end
-                elseif buttonState.cooldown and (buttonState.lastCooldownStart or buttonState.lastCooldownDuration) then
-                    buttonState.cooldown:SetCooldown(0, 0)
-                    buttonState.lastCooldownStart = nil
-                    buttonState.lastCooldownDuration = nil
+            local bag, slot = itemBag[itemID], itemSlot[itemID]
+            buttonState.bag = bag
+            buttonState.slot = slot
+            local start, duration = GetContainerItemCooldown(bag, slot)
+            if duration > 0 then
+                if start ~= buttonState.lastCooldownStart or duration ~= buttonState.lastCooldownDuration then
+                    buttonState.cooldown:SetCooldown(start, duration)
+                    buttonState.lastCooldownStart = start
+                    buttonState.lastCooldownDuration = duration
                 end
+            elseif buttonState.lastCooldownStart then
+                buttonState.cooldown:SetCooldown(0, 0)
+                buttonState.lastCooldownStart = nil
+                buttonState.lastCooldownDuration = nil
             end
         end
     end
 
     for itemID, button in pairs(self.consumableButtons) do
-        if not currentConsumables[itemID] then
+        if not itemBag[itemID] and button:IsShown() then
+            local buttonState = self:GetButtonState(button)
+            buttonState.bag = nil
+            buttonState.slot = nil
             if inCombat then
                 self._pendingCombatRefresh = true
             else
                 button:Hide()
-                self.itemLocationById[itemID] = nil
             end
         end
     end
 
-    self:UpdateAddSlotButton(#sortedConsumables, showAddSlot, inCombat)
-    self:ApplyDisplayCountSize(#sortedConsumables, inCombat)
-
-    self:SyncInteractivity()
+    self:UpdateAddSlotButton(itemCount, showAddSlot, inCombat)
+    self:ApplyDisplayCountSize(itemCount, inCombat)
 end
 
 function AutoItemBar:RequestUpdate()
@@ -772,7 +712,6 @@ function AutoItemBar:RequestUpdate()
 
     RefineUI:Debounce(DEBOUNCE_KEY.REQUEST_UPDATE, 0.05, function()
         self:UpdateConsumableButtons()
-        self:ApplyPendingButtonActions()
         self:UpdateBarVisibility()
     end)
 end
@@ -782,20 +721,18 @@ end
 ----------------------------------------------------------------------------------------
 
 function AutoItemBar:OnEnable()
-    local cfg = self:GetConfig()
-    if not cfg.Enable then return end
+    local cfg = self:NormalizeConfig()
 
-    self._categoryConfigInitialized = nil
-    self:EnsureCategoryConfig()
     self:RebuildTrackedLookup()
     self:RebuildHiddenLookup()
+    self._categoryConfigInitialized = nil
+    self:EnsureCategoryConfig()
 
     self.buttonSize = cfg.ButtonSize
     self.buttonSpacing = cfg.ButtonSpacing
     local frameWidth, frameHeight = self:GetFrameDimensions(1)
 
     self.consumableButtons = {}
-    self.itemLocationById = {}
 
     local moverName = MOVER_FRAME_NAME
     local mover = _G[moverName]
@@ -845,12 +782,10 @@ function AutoItemBar:OnEnable()
     self._editModeActive = RefineUI.LibEditMode and RefineUI.LibEditMode:IsInEditMode() or false
     self._pendingCombatRefresh = false
     self._appliedInteractive = nil
+    self._appliedStrata = nil
     self._pendingEditModeTutorial = nil
     self._lastConsumableCount = 0
-    self._cursorHasPayload = (GetCursorInfo() ~= nil)
     self._useActionsEnabled = nil
-    self._pendingUseActionsEnabled = nil
-    self._forceUseActionRefresh = true
 
     if RefineUI.LibEditMode and not self._editModeFrameRegistered then
         RefineUI.LibEditMode:AddFrame(mover, function(frame, layout, point, x, y)
@@ -888,25 +823,14 @@ function AutoItemBar:OnEnable()
 
     RefineUI:After(TIMER_KEY.INITIAL_UPDATE, 1, function()
         self:UpdateConsumableButtons()
-        self:SetUseActionsEnabled(not self._cursorHasPayload)
-        self:ApplyPendingButtonActions()
+        self:SetUseActionsEnabled(GetCursorInfo() == nil)
         self:UpdateBarVisibility()
     end)
 
     RefineUI:RegisterEventCallback("BAG_UPDATE_DELAYED", function() self:RequestUpdate() end, "AutoItemBar:BagUpdate")
     RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function() self:RequestUpdate() end, "AutoItemBar:EnteringWorld")
-    RefineUI:RegisterEventCallback("UNIT_INVENTORY_CHANGED", function(_, unit)
-        if unit == "player" then self:RequestUpdate() end
-    end, "AutoItemBar:InventoryChanged")
     RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-        if self._pendingUseActionsEnabled ~= nil then
-            self._useActionsEnabled = nil
-            self._forceUseActionRefresh = true
-            self:SetUseActionsEnabled(self._pendingUseActionsEnabled)
-        else
-            self:SetUseActionsEnabled(not self._cursorHasPayload)
-        end
-        self:ApplyPendingButtonActions()
+        self:SetUseActionsEnabled(GetCursorInfo() == nil)
         if self._pendingCombatRefresh then
             self._pendingCombatRefresh = false
             self:RequestUpdate()
@@ -921,9 +845,7 @@ function AutoItemBar:OnEnable()
         self:UpdateBarVisibility()
     end, "AutoItemBar:RegenDisabled")
     RefineUI:RegisterEventCallback("CURSOR_CHANGED", function()
-        local hasCursor = (GetCursorInfo() ~= nil)
-        self._cursorHasPayload = hasCursor
-        self:SetUseActionsEnabled(not hasCursor)
+        self:SetUseActionsEnabled(GetCursorInfo() == nil)
         self:RefreshAddSlotFromCursor()
         self:QueueMouseoverRefresh()
     end, "AutoItemBar:CursorChanged")

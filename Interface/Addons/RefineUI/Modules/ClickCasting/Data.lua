@@ -13,7 +13,7 @@ end
 -- WoW Globals
 ----------------------------------------------------------------------------------------
 local C_Macro = C_Macro
-local FindBaseSpellByID = FindBaseSpellByID
+local FindBaseSpellByID = C_SpellBook.FindBaseSpellByID
 local GetMacroIndexByName = GetMacroIndexByName
 local GetMacroInfo = GetMacroInfo
 local MAX_ACCOUNT_MACROS = MAX_ACCOUNT_MACROS or 120
@@ -39,15 +39,9 @@ local function GetBaseSpellID(spellID)
         return nil
     end
 
-    if type(FindBaseSpellByID) == "function" then
-        local ok, result = pcall(FindBaseSpellByID, idNum)
-        if ok and tonumber(result) then
-            return tonumber(result)
-        end
-    end
-
-    return idNum
+    return FindBaseSpellByID(idNum) or idNum
 end
+ClickCasting.GetBaseSpellID = GetBaseSpellID
 
 local function NormalizeStateTable(tbl)
     if type(tbl) ~= "table" then
@@ -135,6 +129,10 @@ end
 -- Config
 ----------------------------------------------------------------------------------------
 function ClickCasting:GetConfig()
+    return RefineUI.Config.ClickCasting
+end
+
+function ClickCasting:InitializeData()
     RefineUI.Config.ClickCasting = NormalizeStateTable(RefineUI.Config.ClickCasting)
 
     local cfg = RefineUI.Config.ClickCasting
@@ -147,22 +145,9 @@ function ClickCasting:GetConfig()
     if type(cfg.TrackedEntries) ~= "table" then
         cfg.TrackedEntries = {}
     end
-    if type(cfg.SpecBindings) ~= "table" then
-        cfg.SpecBindings = {}
-    end
     cfg.UI = NormalizeStateTable(cfg.UI)
     if cfg.UI.PanelShown == nil then
         cfg.UI.PanelShown = false
-    end
-
-    return cfg
-end
-
-function ClickCasting:InitializeData()
-    local cfg = self:GetConfig()
-
-    if cfg.SchemaVersion < CURRENT_SCHEMA_VERSION then
-        cfg.SchemaVersion = CURRENT_SCHEMA_VERSION
     end
 
     local normalizedEntries = {}
@@ -174,7 +159,8 @@ function ClickCasting:InitializeData()
     end
 
     cfg.TrackedEntries = normalizedEntries
-    cfg.SpecBindings = NormalizeStateTable(cfg.SpecBindings)
+    -- Resolved bindings are runtime-only; drop the cache older versions saved per spec.
+    cfg.SpecBindings = nil
 end
 
 ----------------------------------------------------------------------------------------
@@ -309,29 +295,8 @@ function ClickCasting:UpdateTrackedMacroMetadata(entryID, macroIndex, macroName,
 end
 
 ----------------------------------------------------------------------------------------
--- Spec Cache
+-- Panel State
 ----------------------------------------------------------------------------------------
-function ClickCasting:GetSpecBindings(specKey)
-    local key = tostring(specKey or "nospec")
-    local cfg = self:GetConfig()
-    if type(cfg.SpecBindings[key]) ~= "table" then
-        cfg.SpecBindings[key] = {
-            byEntryId = {},
-            byKey = {},
-        }
-    end
-    return cfg.SpecBindings[key]
-end
-
-function ClickCasting:SetSpecBindings(specKey, payload)
-    local key = tostring(specKey or "nospec")
-    local cfg = self:GetConfig()
-    cfg.SpecBindings[key] = payload or {
-        byEntryId = {},
-        byKey = {},
-    }
-end
-
 function ClickCasting:SetPanelShown(shown)
     local cfg = self:GetConfig()
     cfg.UI.PanelShown = shown and true or false

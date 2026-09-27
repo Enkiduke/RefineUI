@@ -7,13 +7,30 @@ local Module = RefineUI:GetModule("AdventureGuideInstances")
 if not Module then return end
 
 local TICK_SECONDS = 0.03
-local KEYS = RefineUI.InstanceCompletion.KEYS
+local Completion = RefineUI.InstanceCompletion
+local KEYS = Completion.KEYS
 Module.COMPLETION_KEYS = KEYS
-local function NewCounts() return RefineUI.InstanceCompletion:NewCounts() end
-local function AddCount(...) return RefineUI.InstanceCompletion:AddCount(...) end
+local function NewCounts() return Completion:NewCounts() end
 
 local function ValidID(value)
     return type(value) == "number" and value > 0
+end
+
+-- Scratch state for the synchronous loot scan; avoids a table per tick and a closure per item.
+local scan = {}
+local visitState, visitItem
+local function CountReward(kind, id, earned)
+    local state, item = visitState, visitItem
+    if earned == nil then
+        state.hasUnknown = true
+        state.missingItems[item.itemID or 0] = true
+    end
+    Completion:AddCount(state.instance, kind, id, earned, item)
+    for bossID in pairs(item.bosses) do
+        local counts = state.bosses[bossID]
+        if not counts then counts = NewCounts(); state.bosses[bossID] = counts end
+        Completion:AddCount(counts, kind, id, earned, item)
+    end
 end
 
 function Module:IsCompletionVisible()
@@ -67,9 +84,10 @@ end
 -- This transaction never spans frames and uses the C API, not display functions.
 -- Other addons and Blizzard continue to see their original loot filters/selection.
 function Module:ReadCompletionLootBatch(state)
-    local scan = { index = state.index, bossIndex = state.bossIndex }
-    local batch, total = RefineUI.InstanceCompletion:ReadLootBatch(state.instanceID, state.difficultyID, scan)
+    scan.index, scan.bossIndex, scan.bosses = state.index, state.bossIndex, nil
+    local batch, total = Completion:ReadLootBatch(state.instanceID, state.difficultyID, scan)
     state.journalBosses = scan.bosses
+    scan.bosses = nil
     return batch, total
 end
 
@@ -89,24 +107,15 @@ function Module:ProcessCompletionLootTick()
         state.unavailable = true
         if total == "loading" then state.missingItems[0] = true end
     else
+        visitState = state
         for _, item in ipairs(batch) do
-            local pending = RefineUI.Collections:VisitRewards(item, function(kind, id, earned)
-                if earned == nil then
-                    state.hasUnknown = true
-                    state.missingItems[item.itemID or 0] = true
-                end
-                AddCount(state.instance, kind, id, earned, item)
-                for bossID in pairs(item.bosses) do
-                    local counts = state.bosses[bossID]
-                    if not counts then counts = NewCounts(); state.bosses[bossID] = counts end
-                    AddCount(counts, kind, id, earned, item)
-                end
-            end)
-            if pending then
+            visitItem = item
+            if RefineUI.Collections:VisitRewards(item, CountReward) then
                 state.incomplete = true
                 state.missingItems[item.itemID or 0] = true
             end
         end
+        visitState, visitItem = nil, nil
         state.index = state.index + #batch
         if state.index > total then
             if state.bossIndex < #(state.journalBosses or {}) then
@@ -184,7 +193,7 @@ function Module:UpdateCompletionSummary()
         for _, row in ipairs(rows) do
             local _, _, _, completed = GetAchievementInfo(row.achievementID)
             ownership[row.achievementID] = completed
-            AddCount(summary.instance, "achievements", row.achievementID, completed, row)
+            Completion:AddCount(summary.instance, "achievements", row.achievementID, completed, row)
         end
         for bossID, boss in pairs(map.bosses) do
             local counts = NewCounts()
@@ -193,7 +202,7 @@ function Module:UpdateCompletionSummary()
                 if key ~= "achievements" and loot then counts[key] = loot[key] end
             end
             for _, row in ipairs(boss.rows) do
-                AddCount(counts, "achievements", row.achievementID, ownership[row.achievementID], row)
+                Completion:AddCount(counts, "achievements", row.achievementID, ownership[row.achievementID], row)
             end
             summary.bosses[bossID] = counts
         end

@@ -1,6 +1,6 @@
 <Bindings>
-    <Binding name="CLICK RefineUI_RadBar:LeftButton" header="REFINEUI" />
-    <Binding name="REFINEUI_TOGGLEBAGS">
+    <Binding name="CLICK RefineUI_RadBar:LeftButton" category="BINDING_HEADER_REFINEUI" />
+    <Binding name="REFINEUI_TOGGLEBAGS" category="BINDING_HEADER_REFINEUI">
         RefineUI_ToggleBags()
     </Binding>
 </Bindings>

@@ -51,6 +51,7 @@ function RadBar:SetPresentationMode(mode)
     end
     self:UpdateSlotVisibility()
     self:UpdateUsabilityVisuals()
+    self:UpdateRemoveIndicator()
 
     if mode == "closed" then
         self:Fade(self.Content, 0, 0.1, function(frame)
@@ -160,6 +161,7 @@ end
 function RadBar:UpdateVisuals(elapsed)
     if self.cursorTracking then
         self:UpdatePointerVisuals()
+        self:UpdateRemoveIndicator()
         self.usabilityAccumulator = self.usabilityAccumulator + elapsed
         if self.usabilityAccumulator >= self.usabilityInterval then
             self.usabilityAccumulator = self.usabilityAccumulator % self.usabilityInterval
@@ -235,4 +237,17 @@ function RadBar:Select(index, force)
         local btn = slot == 0 and self.CenterButton or self.Buttons[slot]
         if btn then self:SetSlotHighlight(btn, slot == index, force) end
     end
+end
+
+-- Ctrl/Shift + right-click unbinds the hovered slot; mark it while a modifier is held.
+function RadBar:UpdateRemoveIndicator()
+    local btn
+    if self.cursorTracking and self.sel and (IsControlKeyDown() or IsShiftKeyDown()) then
+        btn = self.sel == 0 and self.CenterButton or self.Buttons[self.sel]
+        if btn and not btn.HasAction then btn = nil end
+    end
+    if btn == self.removeButton then return end
+    if self.removeButton then self.removeButton.RemoveIcon:Hide() end
+    if btn then btn.RemoveIcon:Show() end
+    self.removeButton = btn
 end

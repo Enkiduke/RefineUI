@@ -56,6 +56,10 @@ local SNIPPETS = {
             if down and (IsControlKeyDown() or IsShiftKeyDown()) then
                 local index = self:RunAttribute("GetSelection")
                 if bridge then bridge:CallMethod("Notify", "Unbind", index) end
+                if not self:GetAttribute("customizing") then
+                    self:Hide()
+                    if bridge then bridge:CallMethod("Notify", "Hide") end
+                end
             elseif not (IsControlKeyDown() or IsShiftKeyDown()) then
                 self:SetAttribute("customizing", nil)
                 self:Hide()

@@ -1,5 +1,6 @@
 local AddOnName, RefineUI = ...
 
+_G.BINDING_HEADER_REFINEUI = "RefineUI"
 _G["BINDING_NAME_CLICK RefineUI_RadBar:LeftButton"] = "Radial Bar"
 
 RefineUI.Locale.Chat = {

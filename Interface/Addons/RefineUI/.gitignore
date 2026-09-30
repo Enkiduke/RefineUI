@@ -1,7 +1,20 @@
 .cache/
 __pycache__/
 *.pyc
+
+# Development and research material (never published)
 References/
 docs/
 Tests/
 Tools/
+
+# AI agent support files (never published)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.agents/
+.claude/
+.codex/
+.gemini/
+.cursor/
+.mcp.json

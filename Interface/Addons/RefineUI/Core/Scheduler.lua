@@ -11,8 +11,8 @@ local _, RefineUI = ...
 local CreateFrame = CreateFrame
 local pairs = pairs
 local type = type
-local tostring = tostring
-local pcall = pcall
+local xpcall = xpcall
+local ErrorHandler = RefineUI.ErrorHandler
 local InCombatLockdown = InCombatLockdown
 
 ----------------------------------------------------------------------------------------
@@ -112,12 +112,8 @@ local function runJob(job, elapsed)
         return
     end
 
-    local ok, err = pcall(job.fn, elapsed, job.key, job)
-    if not ok then
-        print("|cFFFF0000[RefineUI Scheduler]|r Error in job [" .. tostring(job.key) .. "]:", err)
-        if job.disableOnError then
-            setJobEnabledState(job, false)
-        end
+    if not xpcall(job.fn, ErrorHandler, elapsed, job.key, job) and job.disableOnError then
+        setJobEnabledState(job, false)
     end
 end
 

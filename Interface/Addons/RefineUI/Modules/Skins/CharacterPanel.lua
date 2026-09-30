@@ -459,6 +459,8 @@ local function IsEnchantEligible(slotID, itemLink)
     local equipLoc = select(4, C_Item.GetItemInfoInstant(itemLink))
     return not EQUIP_LOC_NO_OFFHAND_ENCHANT[equipLoc]
 end
+-- Shared with the MicroMenu character tooltip.
+Skins.IsEnchantEligible = IsEnchantEligible
 
 local function GetSlotDetails(slotID, itemLink)
     local details = {

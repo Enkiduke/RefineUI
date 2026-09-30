@@ -10,7 +10,6 @@ local Chat = RefineUI:GetModule("Chat")
 ----------------------------------------------------------------------------------------
 local _G = _G
 local CreateFrame = CreateFrame
-local C_Timer = C_Timer
 local floor = math.floor
 local format = string.format
 local gsub = string.gsub
@@ -18,7 +17,6 @@ local pairs = pairs
 local setmetatable = setmetatable
 local table_concat = table.concat
 local type = type
-local UIParent = UIParent
 
 ----------------------------------------------------------------------------------------
 -- Constants
@@ -38,9 +36,6 @@ local HYPERLINK_PATTERN = "|H.-|h(.-)|h"
 ----------------------------------------------------------------------------------------
 -- State
 ----------------------------------------------------------------------------------------
-local frame
-local scrollArea
-local editBox
 local copyButtons = setmetatable({}, { __mode = "k" })
 
 ----------------------------------------------------------------------------------------
@@ -113,58 +108,6 @@ local function ApplyCopyButtonState(button)
     button:EnableMouse(true)
 end
 
-local function SelectCopyText()
-    if not editBox or not editBox:IsShown() then
-        return
-    end
-
-    editBox:SetFocus()
-    editBox:HighlightText()
-    if scrollArea and scrollArea.SetVerticalScroll then
-        scrollArea:SetVerticalScroll(0)
-    end
-end
-
-local function CreateCopyFrame()
-    if frame then
-        return
-    end
-
-    frame = CreateFrame("Frame", "RefineUI_ChatCopy", UIParent)
-    RefineUI.SetTemplate(frame, "Transparent")
-    RefineUI.Size(frame, 600, 400)
-    RefineUI.Point(frame, "CENTER", UIParent, "CENTER")
-    frame:SetFrameStrata("DIALOG")
-    frame:Hide()
-
-    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -10)
-    title:SetText("Copy Chat — Ctrl+C")
-
-    scrollArea = CreateFrame("ScrollFrame", "RefineUI_ChatCopyScroll", frame, "UIPanelScrollFrameTemplate")
-    RefineUI.Point(scrollArea, "TOPLEFT", frame, "TOPLEFT", 10, -30)
-    RefineUI.Point(scrollArea, "BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 10)
-
-    editBox = CreateFrame("EditBox", "RefineUI_ChatCopyEditBox", scrollArea)
-    editBox:SetMultiLine(true)
-    editBox:SetMaxLetters(0)
-    editBox:EnableMouse(true)
-    editBox:SetAutoFocus(false)
-    editBox:SetFontObject("ChatFontNormal")
-    editBox:SetJustifyH("LEFT")
-    editBox:SetJustifyV("TOP")
-    editBox:SetWidth(scrollArea:GetWidth() - 25)
-    editBox:SetScript("OnEscapePressed", function(self)
-        self:ClearFocus()
-        frame:Hide()
-    end)
-    scrollArea:SetScrollChild(editBox)
-
-    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    close:SetPoint("TOPRIGHT", frame, "TOPRIGHT")
-    RefineUI.AddAPI(close)
-end
-
 local function GetChatLines(chatFrame)
     local reverseLines = {}
     local bytesUsed = 0
@@ -195,10 +138,7 @@ local function ShowCopyFrame(chatFrame)
         return
     end
 
-    CreateCopyFrame()
-    editBox:SetText(GetChatLines(chatFrame))
-    frame:Show()
-    C_Timer.After(0, SelectCopyText)
+    RefineUI:ShowCopyWindow("Copy Chat — Ctrl+C", GetChatLines(chatFrame))
 end
 
 local function CreateCopyButton(chatFrame)
@@ -262,7 +202,7 @@ function Chat:RefreshCopyButtons()
         ApplyCopyButtonState(button)
     end
 
-    if IsCopySuspended() and frame then
-        frame:Hide()
+    if IsCopySuspended() then
+        RefineUI:HideCopyWindow()
     end
 end

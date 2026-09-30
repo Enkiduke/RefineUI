@@ -30,7 +30,7 @@ local QuestMapFrame = _G.QuestMapFrame
 -- Own font object so changes to Blizzard's shared font objects never restyle the labels.
 local function CreateCoordsFont()
     local font = CreateFont("RefineUI_WorldMapCoordsFont")
-    RefineUI.Font(font, 16, nil, "THICKOUTLINE")
+    RefineUI.Font(font, 16, nil, "OUTLINE")
     font:SetTextColor(1, 0.82, 0)
     font:SetJustifyH("CENTER")
     return font

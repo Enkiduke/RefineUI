@@ -75,6 +75,21 @@ local function Button_OnEnter(self)
     private.SetHoveredVisual(self, true)
 end
 
+local function StyleHotkey(button, hotkey)
+    hotkey:ClearAllPoints()
+    RefineUI.Point(hotkey, "TOPRIGHT", button, "TOPRIGHT", -2, -4)
+    RefineUI.Font(hotkey, 11, nil, "THINOUTLINE")
+    if not private.IsHotkeyEnabledForButton(button) then
+        hotkey:SetText("")
+    end
+    private.ApplyHotkeyVisibility(button, hotkey)
+end
+
+-- Blizzard's UpdateHotkeys re-anchors and re-texts the hotkey on every binding change.
+local function Button_OnUpdateHotkeys(self)
+    StyleHotkey(self, self.HotKey)
+end
+
 local function Button_OnLeave(self)
     private.SetHoveredVisual(self, false)
 end
@@ -234,6 +249,10 @@ function private.EnableDesaturation(button)
     private.SkinnedButtons[button] = true
     private.RegisterButtonCollections(button)
 
+    if private.ActionButtons[button] and button.UpdateUsable then
+        RefineUI:HookOnce(private.BuildHookKey(button, "UpdateUsable"), button, "UpdateUsable", private.ReapplyUsability)
+    end
+
     if private.GetBarKeyForButton(button) ~= private.BAR_KEY.STANCE then
         private.EnsureCooldownShade(button)
         private.ForEachButtonCooldownFrame(button, function(frame, key)
@@ -352,13 +371,10 @@ function ActionBars:StyleButton(button)
     end
 
     if hotkey then
-        hotkey:ClearAllPoints()
-        RefineUI.Point(hotkey, "TOPRIGHT", button, "TOPRIGHT", -2, -4)
-        RefineUI.Font(hotkey, 11, nil, "THINOUTLINE")
-        if not private.IsHotkeyEnabledForButton(button) then
-            hotkey:SetText("")
+        StyleHotkey(button, hotkey)
+        if button.UpdateHotkeys and button.HotKey then
+            RefineUI:HookOnce(private.BuildHookKey(button, "UpdateHotkeys"), button, "UpdateHotkeys", Button_OnUpdateHotkeys)
         end
-        private.ApplyHotkeyVisibility(button, hotkey)
     end
 
     if cooldown then

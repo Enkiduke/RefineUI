@@ -10,11 +10,13 @@ local _, RefineUI = ...
 ----------------------------------------------------------------------------------------
 local CreateFrame = CreateFrame
 local pairs, ipairs, type, tostring = pairs, ipairs, type, tostring
-local pcall = pcall
-local debug = debug
+local xpcall = xpcall
+local next = next
+local InCombatLockdown = InCombatLockdown
+local UnitAffectingCombat = UnitAffectingCombat
 local format = string.format
-local issecretvalue = _G and _G.issecretvalue
 local wipe = wipe
+local ErrorHandler = RefineUI.ErrorHandler
 
 ----------------------------------------------------------------------------------------
 -- State
@@ -156,26 +158,13 @@ local function DispatchEventHandler(fn, event, ...)
     -- payload tables (for example UNIT_AURA updateInfo) never enter addon handlers.
     if event == "UNIT_AURA" then
         local unit = ...
-        return pcall(fn, event, unit)
+        return xpcall(fn, ErrorHandler, event, unit)
     end
     if event == "PLAYER_TOTEM_UPDATE" then
         local slot = ...
-        return pcall(fn, event, slot)
+        return xpcall(fn, ErrorHandler, event, slot)
     end
-    return pcall(fn, event, ...)
-end
-
-local function SafeString(v)
-    if issecretvalue and issecretvalue(v) then
-        return "<secret>"
-    end
-
-    local sOk, s = pcall(tostring, v)
-    if sOk then
-        return s
-    end
-
-    return "<unprintable>"
+    return xpcall(fn, ErrorHandler, event, ...)
 end
 
 local function dispatchBucket(bucket, event, ...)
@@ -190,19 +179,7 @@ local function dispatchBucket(bucket, event, ...)
         local key = ordered[i]
         local fn = ordered[i + 1]
         if bucket.map[key] == fn then
-            local ok, err = DispatchEventHandler(fn, event, ...)
-            if not ok then
-                local handlerLabel = SafeString(key)
-                if type(fn) == "function" and debug and debug.getinfo then
-                    local info = debug.getinfo(fn, "Sl")
-                    if info and info.short_src and info.linedefined then
-                        handlerLabel = format("%s:%d", info.short_src, info.linedefined)
-                    end
-                end
-
-                local errText = SafeString(err)
-                print(format("|cFFFF0000[RefineUI EventBus]|r Error in handler [%s] for event [%s]: %s", handlerLabel, SafeString(event), errText))
-            end
+            DispatchEventHandler(fn, event, ...)
         end
     end
 end
@@ -426,6 +403,46 @@ function RefineUI:OffUnitEvent(event, unitToken, key)
         trackHandlerCount(event)
         trackUnitHandlerCount(event, unitToken)
     end
+end
+
+----------------------------------------------------------------------------------------
+-- Combat Queue
+----------------------------------------------------------------------------------------
+local AFTER_COMBAT_KEY = "Core:Events:AfterCombat"
+local afterCombatQueue = {} -- afterCombatQueue[key] = fn
+
+-- InCombatLockdown() stays false while loading after a /reload in combat.
+local function IsInCombat()
+    return InCombatLockdown() or UnitAffectingCombat("player")
+end
+
+local function flushAfterCombat()
+    if IsInCombat() then return end
+    RefineUI:OffEvent("PLAYER_REGEN_ENABLED", AFTER_COMBAT_KEY)
+
+    local key, fn = next(afterCombatQueue)
+    while key do
+        afterCombatQueue[key] = nil
+        xpcall(fn, ErrorHandler)
+        key, fn = next(afterCombatQueue)
+    end
+end
+
+--- Run fn now when out of combat; otherwise once after combat ends.
+-- Calls sharing a key collapse, so only the latest fn for that key runs.
+-- @param key string Queue key
+-- @param fn function Callback, called with no arguments
+function RefineUI:RunAfterCombat(key, fn)
+    if not IsInCombat() then
+        afterCombatQueue[key] = nil
+        fn()
+        return
+    end
+
+    if next(afterCombatQueue) == nil then
+        self:RegisterEventCallback("PLAYER_REGEN_ENABLED", flushAfterCombat, AFTER_COMBAT_KEY)
+    end
+    afterCombatQueue[key] = fn
 end
 
 local function copyTable(src)

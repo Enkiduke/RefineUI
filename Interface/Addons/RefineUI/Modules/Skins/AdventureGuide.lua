@@ -119,21 +119,16 @@ local function StyleVisibleLootMetadata()
     for index = 1, #rows do StyleLootRowMetadata(rows[index]) end
 end
 
-local function StyleFrameTextWhite(frame, visited)
-    if not IsUsable(frame) then return end
-    visited = visited or {}
-    if visited[frame] then return end
-    visited[frame] = true
-    SetTextWhite(frame)
+-- Walks GetRegions/GetChildren results without building a table per frame.
+local function ForEachArg(fn, ...)
+    for index = 1, select("#", ...) do fn((select(index, ...))) end
+end
 
-    if type(frame.GetRegions) == "function" then
-        local regions = { frame:GetRegions() }
-        for index = 1, #regions do SetTextWhite(regions[index]) end
-    end
-    if type(frame.GetChildren) == "function" then
-        local children = { frame:GetChildren() }
-        for index = 1, #children do StyleFrameTextWhite(children[index], visited) end
-    end
+local function StyleFrameTextWhite(frame)
+    if not IsUsable(frame) then return end
+    SetTextWhite(frame)
+    ForEachArg(SetTextWhite, frame:GetRegions())
+    ForEachArg(StyleFrameTextWhite, frame:GetChildren())
 end
 
 local function StyleEncounterPageText()
@@ -168,20 +163,10 @@ local function StyleFontString(fontString)
     StyleTextColor(fontString)
 end
 
-local function StyleFrameFontStrings(frame, visited)
+local function StyleFrameFontStrings(frame)
     if not IsUsable(frame) then return end
-    visited = visited or {}
-    if visited[frame] then return end
-    visited[frame] = true
-
-    if type(frame.GetRegions) == "function" then
-        local regions = { frame:GetRegions() }
-        for index = 1, #regions do StyleFontString(regions[index]) end
-    end
-    if type(frame.GetChildren) == "function" then
-        local children = { frame:GetChildren() }
-        for index = 1, #children do StyleFrameFontStrings(children[index], visited) end
-    end
+    ForEachArg(StyleFontString, frame:GetRegions())
+    ForEachArg(StyleFrameFontStrings, frame:GetChildren())
 end
 
 function Skins:StyleAdventureGuideText()
@@ -190,18 +175,15 @@ function Skins:StyleAdventureGuideText()
     StyleVisibleLootMetadata()
 end
 
+local function RunQueuedStyle()
+    refreshQueued = nil
+    Skins:StyleAdventureGuideText()
+end
+
 function Skins:QueueAdventureGuideTextStyle()
     if refreshQueued then return end
     refreshQueued = true
-    local function Refresh()
-        refreshQueued = nil
-        self:StyleAdventureGuideText()
-    end
-    if C_Timer and C_Timer.NewTimer then
-        C_Timer.NewTimer(0, Refresh)
-    else
-        Refresh()
-    end
+    C_Timer.After(0, RunQueuedStyle)
 end
 
 local function InstallHooks()
@@ -237,8 +219,5 @@ function Skins:SetupAdventureGuideSkin()
     if self.adventureGuideSkinSetup then return end
     self.adventureGuideSkinSetup = true
 
-    InstallHooks()
-    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addonName)
-        if addonName == ENCOUNTER_ADDON then InstallHooks() end
-    end, COMPONENT_KEY .. ":ADDON_LOADED")
+    EventUtil.ContinueOnAddOnLoaded(ENCOUNTER_ADDON, InstallHooks)
 end

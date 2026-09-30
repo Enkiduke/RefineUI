@@ -358,68 +358,6 @@ local function ApplyPortraitCastSignalColor(borderTexture, signal)
     return true
 end
 
-local function ReadAccessibleSpellIdentifier(value)
-    if value == nil or IsSecret(value) then
-        return nil
-    end
-    if canaccessvalue and not canaccessvalue(value) then
-        return nil
-    end
-
-    local valueType = type(value)
-    if valueType == "number" or valueType == "string" then
-        return value
-    end
-
-    return nil
-end
-
-local function GetCastBarSpellIdentifier(castBar)
-    if not castBar then
-        return nil
-    end
-
-    local spellIdentifier = ReadAccessibleSpellIdentifier(castBar.spellID)
-    if spellIdentifier then
-        return spellIdentifier
-    end
-
-    spellIdentifier = ReadAccessibleSpellIdentifier(castBar.channelSpellID)
-    if spellIdentifier then
-        return spellIdentifier
-    end
-
-    spellIdentifier = ReadAccessibleSpellIdentifier(castBar.castingSpellID)
-    if spellIdentifier then
-        return spellIdentifier
-    end
-
-    return nil
-end
-
-local function GetActiveCastSpellIdentifier(unit, castBar)
-    local castBarSpellIdentifier = GetCastBarSpellIdentifier(castBar)
-    if castBarSpellIdentifier then
-        return castBarSpellIdentifier
-    end
-
-    if IsSecret(unit) or type(unit) ~= "string" then
-        return nil
-    end
-
-    local castName, _, _, _, _, _, _, _, castSpellID = UnitCastingInfo(unit)
-    if HasValue(castName) then
-        return ReadAccessibleSpellIdentifier(castSpellID)
-    end
-
-    local channelName, _, _, _, _, _, _, channelSpellID = UnitChannelInfo(unit)
-    if HasValue(channelName) then
-        return ReadAccessibleSpellIdentifier(channelSpellID)
-    end
-
-    return nil
-end
-
 local function ShouldSuppressQuestPortraits()
     return Nameplates:IsInGroupInstanceContent()
 end
@@ -443,44 +381,6 @@ local function InvalidateQuestPortraitCache()
     end
 
     RefineUI:Debounce(QUEST_REFRESH_KEY, QUEST_REFRESH_DELAY_SECONDS, RefreshAllQuestPortraits)
-end
-
-local function SafeIsSpellImportant(spellIdentifier)
-    if not spellIdentifier then
-        return false
-    end
-    if not C_Spell or type(C_Spell.IsSpellImportant) ~= "function" then
-        return false
-    end
-
-    local ok, result = pcall(C_Spell.IsSpellImportant, spellIdentifier)
-    if not ok then
-        return false
-    end
-
-    return ReadSafeBoolean(result) == true
-end
-
-local function IsImportantCastCached(data, spellIdentifier)
-    if not data or spellIdentifier == nil then
-        return nil
-    end
-
-    if data.LastImportantCastSpellIdentifier == spellIdentifier then
-        return data.LastImportantCastIsImportant == true
-    end
-
-    return nil
-end
-
-local function CacheImportantCastResult(data, spellIdentifier, isImportant)
-    if not data then
-        return isImportant == true
-    end
-
-    data.LastImportantCastSpellIdentifier = spellIdentifier
-    data.LastImportantCastIsImportant = isImportant == true
-    return data.LastImportantCastIsImportant
 end
 
 local function EnsurePortraitImportantCastGlow(data)
@@ -508,7 +408,8 @@ local function EnsurePortraitImportantCastGlow(data)
 
     RefineUI.SetOutside(glow, data.PortraitFrame, IMPORTANT_CAST_GLOW_PADDING, IMPORTANT_CAST_GLOW_PADDING)
     glow:SetBlendMode("ADD")
-    glow:SetAlpha(IMPORTANT_CAST_GLOW_ALPHA)
+    -- Alpha carries the important flag (see SetNameplateImportantCast); shown only while casting.
+    glow:SetAlpha(0)
     glow:Hide()
 
     local spin = glow:CreateAnimationGroup()
@@ -563,6 +464,14 @@ local function SetPortraitImportantCastGlow(data, enabled)
     end
 end
 
+-- Called from the cast bar's SetIsHighlightedImportantCast hook; the flag can be secret.
+function RefineUI:SetNameplateImportantCast(unitFrame, isImportant)
+    local glow = EnsurePortraitImportantCastGlow(unitFrame and RefineUI.NameplateData[unitFrame])
+    if glow then
+        glow:SetAlphaFromBoolean(isImportant, IMPORTANT_CAST_GLOW_ALPHA, 0)
+    end
+end
+
 local function ShouldProbeUnitCastState(event, data, previousPortraitMode)
     if event == nil then
         return true
@@ -594,7 +503,6 @@ function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
     local castColorR, castColorG, castColorB
     local hasActiveCast = false
     local castBarActive = false
-    local importantCastActive = false
     if forceCastCheck ~= false then
         castBarActive = IsCastBarActive(castBar)
 
@@ -629,24 +537,6 @@ function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
                 castColorG = fallbackCastColor[2]
                 castColorB = fallbackCastColor[3]
             end
-        end
-
-        if hasActiveCast then
-            local spellIdentifier = GetActiveCastSpellIdentifier(unit, castBar)
-            if spellIdentifier then
-                local cachedImportant = IsImportantCastCached(data, spellIdentifier)
-                if cachedImportant ~= nil then
-                    importantCastActive = cachedImportant
-                else
-                    importantCastActive = CacheImportantCastResult(data, spellIdentifier, SafeIsSpellImportant(spellIdentifier))
-                end
-            else
-                data.LastImportantCastSpellIdentifier = nil
-                data.LastImportantCastIsImportant = nil
-            end
-        else
-            data.LastImportantCastSpellIdentifier = nil
-            data.LastImportantCastIsImportant = nil
         end
     end
     
@@ -687,7 +577,7 @@ function RefineUI:UpdateBorderColors(unitFrame, forceCastCheck)
         )
     end
 
-    SetPortraitImportantCastGlow(data, importantCastActive)
+    SetPortraitImportantCastGlow(data, hasActiveCast)
     
     -- Apply to portrait border (Cast > CC > Target > Default)
     if data.PortraitBorder then
@@ -940,6 +830,20 @@ local function OnPortraitEvent(event)
     InvalidateQuestPortraitCache()
 end
 
+-- Portraits rendered during loading come out blank; the client fires PORTRAITS_UPDATED
+-- once they can be drawn, as Blizzard's UnitFrame handles.
+local function OnPortraitsUpdated()
+    for nameplate, unit in pairs(RefineUI.ActiveNameplates) do
+        local unitFrame = nameplate.UnitFrame
+        local data = unitFrame and RefineUI.NameplateData[unitFrame]
+        if data then
+            data.PortraitRendered = nil
+            Nameplates:QueuePortraitRefresh(unitFrame, unit, "PORTRAITS_UPDATED")
+        end
+    end
+end
+
 function Nameplates:RegisterPortraitEvents()
     RefineUI:OnEvents({ "QUEST_LOG_UPDATE", "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_ENABLED" }, OnPortraitEvent, PORTRAIT_EVENT_KEY_PREFIX)
+    RefineUI:RegisterEventCallback("PORTRAITS_UPDATED", OnPortraitsUpdated, "Nameplates:Portrait:PortraitsUpdated")
 end

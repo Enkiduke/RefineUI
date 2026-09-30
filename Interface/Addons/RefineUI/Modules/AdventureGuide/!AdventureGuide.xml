@@ -1,5 +1,4 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
     <Include file="Instances\!Instances.xml"/>
     <Include file="Planner\!Planner.xml"/>
-    <Include file="Opportunities\!Opportunities.xml"/>
 </Ui>

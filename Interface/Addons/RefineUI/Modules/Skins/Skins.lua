@@ -9,9 +9,6 @@ local Skins = RefineUI:RegisterModule("Skins", "Skins")
 -- Shared Aliases
 ----------------------------------------------------------------------------------------
 local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
 
 ----------------------------------------------------------------------------------------
 -- Config
@@ -29,31 +26,19 @@ end
 -- Lifecycle
 ----------------------------------------------------------------------------------------
 function Skins:OnEnable()
-    if self.SetupAdventureGuideSkin then
-        self:SetupAdventureGuideSkin()
-    end
-    if self:IsCharacterPanelEnabled() and self.SetupCharacterPanel then
+    self:SetupAdventureGuideSkin()
+    if self:IsCharacterPanelEnabled() then
         self:SetupCharacterPanel()
     end
-    if self.InitDamageMeterSkinner then
-        self:InitDamageMeterSkinner()
+    self:InitDamageMeterSkinner()
+    self:SetupGossipFrameSkin()
+    self:SetupItemTextFrameSkin()
+    self:SetupLootRollSkin()
+    self:SetupLSToastsSkin()
+    if Config.Skins.QueueTimer.Enable ~= false then
+        self:SetupQueueTimerSkin()
     end
-    if self.SetupGossipFrameSkin then
-        self:SetupGossipFrameSkin()
-    end
-    if self.SetupItemTextFrameSkin then
-        self:SetupItemTextFrameSkin()
-    end
-    if self.SetupLootRollSkin then
-        self:SetupLootRollSkin()
-    end
-    if self.SetupSCT then
-        self:SetupSCT()
-    end
-    if self.SetupStatusBars then
-        self:SetupStatusBars()
-    end
-    if self.SetupZoneTextSkin then
-        self:SetupZoneTextSkin()
-    end
+    self:SetupSCT()
+    self:SetupStatusBars()
+    self:SetupZoneTextSkin()
 end

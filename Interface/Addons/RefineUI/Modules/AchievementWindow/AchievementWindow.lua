@@ -276,9 +276,6 @@ function Window:Install()
 end
 
 function Window:OnEnable()
-    RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, name)
-        if name == "Blizzard_AchievementUI" then self:Install() end
-    end, "AchievementWindow:ADDON_LOADED")
     RefineUI:RegisterEventCallback("ITEM_DATA_LOAD_RESULT", function(_, itemID)
         if self.almostPendingItems and self.almostPendingItems[itemID] == true then
             self.almostPendingItems[itemID] = "requested"
@@ -309,5 +306,5 @@ function Window:OnEnable()
             end
         end, "AchievementWindow:" .. event)
     end
-    self:Install()
+    EventUtil.ContinueOnAddOnLoaded("Blizzard_AchievementUI", function() self:Install() end)
 end

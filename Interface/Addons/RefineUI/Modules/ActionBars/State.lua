@@ -279,7 +279,7 @@ local function GetButtonUsabilityState(button)
 end
 
 local function GetExplicitUsabilityState(button, isUsable, notEnoughMana)
-    if isUsable == nil and notEnoughMana == nil then
+    if isUsable == nil or notEnoughMana == nil then
         return GetButtonUsabilityState(button)
     end
 

@@ -12,10 +12,7 @@ end
 ----------------------------------------------------------------------------------------
 -- Shared Aliases
 ----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
 local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
@@ -23,14 +20,12 @@ local Locale = RefineUI.Locale
 local _G = _G
 local type = type
 local ipairs = ipairs
-local C_AddOns = C_AddOns
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
 local COMPONENT_KEY = "Skins:StatusBars"
 local STATE_REGISTRY = "SkinsStatusBarsState"
-local BLIZZARD_MIRROR_TIMER_ADDON = "Blizzard_MirrorTimer"
 local STATUS_BAR_TEXTURE = (Media and Media.Textures and (Media.Textures.Smooth or Media.Textures.Statusbar))
 
 local EVENT_KEY = {
@@ -176,25 +171,6 @@ local function SkinMirrorTimer(timerFrame, timerType)
     ApplyMirrorTimerDynamicSkin(timerFrame, timerType)
 end
 
-local function ResolveMirrorTimerFrame(container, timerType)
-    if not CanSkinObject(container) then
-        return nil
-    end
-
-    if timerType and container.GetActiveTimer then
-        local activeTimer = container:GetActiveTimer(timerType)
-        if activeTimer then
-            return activeTimer
-        end
-    end
-
-    if timerType and container.GetAvailableTimer then
-        return container:GetAvailableTimer(timerType)
-    end
-
-    return nil
-end
-
 local function SkinExistingMirrorTimers(container)
     if not CanSkinObject(container) then
         return
@@ -216,41 +192,17 @@ end
 -- Mirror Timer Integration
 ----------------------------------------------------------------------------------------
 local function InstallMirrorTimerSkin()
-    local container = _G.MirrorTimerContainer
-    if not CanSkinObject(container) then
-        return
-    end
+    local container = MirrorTimerContainer
 
+    -- SetupTimer stores the frame it set up as the active timer for that type.
     RefineUI:HookOnce(HOOK_KEY.MIRROR_TIMER_SETUP, container, "SetupTimer", function(hookedContainer, timerType)
-        local timerFrame = ResolveMirrorTimerFrame(hookedContainer, timerType)
+        local timerFrame = hookedContainer:GetActiveTimer(timerType)
         if timerFrame then
             SkinMirrorTimer(timerFrame, timerType)
         end
     end)
 
     SkinExistingMirrorTimers(container)
-end
-
-local function RegisterMirrorTimerSkin()
-    RefineUI.SkinFuncs = RefineUI.SkinFuncs or {}
-
-    local existingBucket = RefineUI.SkinFuncs[BLIZZARD_MIRROR_TIMER_ADDON]
-    if type(existingBucket) == "function" then
-        RefineUI.SkinFuncs[BLIZZARD_MIRROR_TIMER_ADDON] = {
-            existingBucket,
-            [COMPONENT_KEY] = InstallMirrorTimerSkin,
-        }
-    elseif type(existingBucket) == "table" then
-        existingBucket[COMPONENT_KEY] = InstallMirrorTimerSkin
-    else
-        RefineUI.SkinFuncs[BLIZZARD_MIRROR_TIMER_ADDON] = {
-            [COMPONENT_KEY] = InstallMirrorTimerSkin,
-        }
-    end
-
-    if C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded(BLIZZARD_MIRROR_TIMER_ADDON) then
-        InstallMirrorTimerSkin()
-    end
 end
 
 ----------------------------------------------------------------------------------------
@@ -260,15 +212,8 @@ function Skins:SetupStatusBars()
     SuppressBlizzardStatusTrackingBars()
 
     -- Re-assert suppression after the world is fully entered in case Blizzard initializes late.
-    if RefineUI.OnceEvent then
-        RefineUI:OnceEvent("PLAYER_ENTERING_WORLD", function()
-            SuppressBlizzardStatusTrackingBars()
-        end, EVENT_KEY.PLAYER_ENTERING_WORLD)
-    else
-        RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
-            SuppressBlizzardStatusTrackingBars()
-        end, EVENT_KEY.PLAYER_ENTERING_WORLD)
-    end
+    RefineUI:OnceEvent("PLAYER_ENTERING_WORLD", SuppressBlizzardStatusTrackingBars, EVENT_KEY.PLAYER_ENTERING_WORLD)
 
-    RegisterMirrorTimerSkin()
+    -- Blizzard_MirrorTimer is not load-on-demand, so it is loaded before RefineUI.
+    InstallMirrorTimerSkin()
 end

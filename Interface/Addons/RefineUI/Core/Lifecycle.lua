@@ -8,17 +8,13 @@ local _, RefineUI = ...
 local pairs, type, tostring = pairs, type, tostring
 local sort = table.sort
 local xpcall = xpcall
-local geterrorhandler = geterrorhandler
+local ErrorHandler = RefineUI.ErrorHandler
 
 RefineUI.StartupCallbacks = RefineUI.StartupCallbacks or {}
 RefineUI.StartupCallbackOrder = RefineUI.StartupCallbackOrder or 0
 
-local function RunStartupCallback(key, fn)
-    local handler = geterrorhandler and geterrorhandler() or function(err) return tostring(err) end
-    local ok, err = xpcall(fn, handler)
-    if not ok then
-        print("|cffff0000Refine|rUI Startup Error [" .. tostring(key) .. "]:", tostring(err))
-    end
+local function RunStartupCallback(fn)
+    xpcall(fn, ErrorHandler)
 end
 
 function RefineUI:RegisterStartupCallback(key, fn, priority)
@@ -42,7 +38,7 @@ function RefineUI:RegisterStartupCallback(key, fn, priority)
 
     -- Late registrations should still run on live sessions.
     if self._startupRan then
-        RunStartupCallback(key, fn)
+        RunStartupCallback(fn)
     end
 
     return key
@@ -66,7 +62,7 @@ function RefineUI:RunStartupCallbacks()
 
     for i = 1, #queue do
         local callback = queue[i]
-        RunStartupCallback(callback.key, callback.fn)
+        RunStartupCallback(callback.fn)
     end
 
     self._startupRunning = false

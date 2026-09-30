@@ -12,24 +12,16 @@ local AutoConfirm = RefineUI:RegisterModule("AutoConfirm", function(cfg)
 end)
 
 ----------------------------------------------------------------------------------------
--- Shared Aliases (Explicit)
-----------------------------------------------------------------------------------------
-local Config = RefineUI.Config
-local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
-
-----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
-local _G = _G
 local InCombatLockdown = InCombatLockdown
 local SellCursorItem = SellCursorItem
+local StaticPopup_FindVisible = StaticPopup_FindVisible
 
 ----------------------------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------------------------
-local DELETE_TEXT = _G.DELETE or "DELETE"
+local DELETE_TEXT = strupper(DELETE_ITEM_CONFIRM_STRING)
 
 local DELETE_DIALOG_LIST = {
 	["DELETE_ITEM"] = true,
@@ -56,65 +48,35 @@ local CONFIRM_LIST = {
 }
 
 ----------------------------------------------------------------------------------------
--- Private Helpers
+-- Lifecycle
 ----------------------------------------------------------------------------------------
-local function GetShownPopupIndexByWhich(which)
-	local numDialogs = _G.STATICPOPUP_NUMDIALOGS or 4
-	for i = 1, numDialogs do
-		local popup = _G["StaticPopup" .. i]
-		if popup and popup.which == which and popup:IsShown() then
-			return i
-		end
-	end
-end
-
-function AutoConfirm:FillDeleteDialog()
-	local numDialogs = _G.STATICPOPUP_NUMDIALOGS or 4
-	for i = 1, numDialogs do
-		local popup = _G["StaticPopup" .. i]
-		if popup and popup:IsShown() and DELETE_DIALOG_LIST[popup.which] then
-			local editBox = popup.editBox or _G["StaticPopup" .. i .. "EditBox"]
-			if editBox and editBox:IsShown() then
-				editBox:SetText(DELETE_TEXT)
-				if editBox.HighlightText then
-					editBox:HighlightText()
-				end
-			end
-
-			local button = popup.button1 or _G["StaticPopup" .. i .. "Button1"]
-			if button and button:IsShown() then
-				button:Enable()
-			end
-			return
-		end
-	end
-end
-
 function AutoConfirm:OnEnable()
-	if not RefineUI.Config.Loot.AutoConfirm or not RefineUI.Config.Loot.Enable then
-		return
-	end
-
-	RefineUI:HookOnce("AutoConfirm:StaticPopup_Show", "StaticPopup_Show", function(which)
-		if DELETE_DIALOG_LIST[which] then
-			AutoConfirm:FillDeleteDialog()
+	RefineUI:HookOnce("AutoConfirm:StaticPopup_Show", "StaticPopup_Show", function(which, _, _, data)
+		local isDelete = DELETE_DIALOG_LIST[which]
+		if not isDelete and (not CONFIRM_LIST[which] or InCombatLockdown()) then
 			return
 		end
 
-		if CONFIRM_LIST[which] and not InCombatLockdown() then
-			local popupIndex = GetShownPopupIndexByWhich(which)
-			if popupIndex then
-				local button = _G["StaticPopup" .. popupIndex .. "Button1"]
-				if button and button:IsShown() and button:IsEnabled() then
-					button:Click()
-				end
+		local dialog = StaticPopup_FindVisible(which, data)
+		if not dialog then
+			return
+		end
+
+		if isDelete then
+			-- Blizzard's EditBoxOnTextChanged enables Button1 once the text matches.
+			local editBox = dialog:GetEditBox()
+			if editBox:IsShown() then
+				editBox:SetText(DELETE_TEXT)
+				editBox:HighlightText()
 			end
+			return
+		end
+
+		local button = dialog:GetButton1()
+		if button:IsShown() and button:IsEnabled() then
+			button:Click()
 		end
 	end)
-
-	RefineUI:RegisterEventCallback("DELETE_ITEM_CONFIRM", function()
-		AutoConfirm:FillDeleteDialog()
-	end, "AutoConfirm:DELETE_ITEM_CONFIRM")
 
 	RefineUI:RegisterEventCallback("MERCHANT_CONFIRM_TRADE_TIMER_REMOVAL", function()
 		SellCursorItem()

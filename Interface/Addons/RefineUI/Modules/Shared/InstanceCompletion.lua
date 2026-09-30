@@ -36,7 +36,8 @@ function Data:GetCatalog(instanceID, difficultyID)
             if entry.used < oldest then oldestKey, oldest = id, entry.used end
         end
         if count >= LIMIT then self.catalogs[oldestKey] = nil end
-        catalog = RefineUI.JournalCache and RefineUI.JournalCache:Get("catalogs", key) or { batches = {} }
+        -- Session-only: manifests and summaries persist the compact results.
+        catalog = { batches = {} }
         self.catalogs[key] = catalog
     end
     catalog.used = self.clock
@@ -168,14 +169,6 @@ function Data:ReadLootBatch(instanceID, difficultyID, scan)
         for _, item in ipairs(items) do if not item.itemID or not item.link then ready = false end end
         if ready then
             catalog.batches[key] = { items = items, total = total }
-            -- Persist once the final boss pass is read, then only for late-resolved gaps,
-            -- instead of re-copying the growing catalog after every batch.
-            if not catalog.complete and scan.index + #items > total and pass >= #catalog.bosses then
-                catalog.complete = true
-            end
-            if catalog.complete and RefineUI.JournalCache then
-                RefineUI.JournalCache:Put("catalogs", instanceID .. ":" .. difficultyID, catalog)
-            end
         end
     end
     return items, total
@@ -183,9 +176,6 @@ end
 
 function Data:InvalidateCatalog(instanceID, difficultyID)
     self.catalogs[instanceID .. ":" .. difficultyID] = nil
-    if RefineUI.JournalCache then
-        RefineUI.JournalCache:Remove("catalogs", instanceID .. ":" .. difficultyID)
-    end
 end
 
 RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function()
@@ -207,7 +197,7 @@ function Data:SaveSummaryManifest(state, resolved)
     for _, item in ipairs(state.items) do
         if ValidID(item.itemID) and type(item.link) == "string" and item.link ~= "" then
             -- Completion needs the difficulty-specific link for transmog identity,
-            -- but not the larger boss/name/icon payload held by detail catalogs.
+            -- but not the larger boss/name/icon payload held by session catalogs.
             items[#items + 1] = { itemID = item.itemID, link = item.link }
         end
     end

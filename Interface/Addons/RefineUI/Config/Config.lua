@@ -9,7 +9,7 @@ local _, RefineUI = ...
 -- Local config table (assigned to RefineUI.Config at the end)
 -- Local config table (assigned to RefineUI.Config at the end)
 local C = {}
-C.Version = 1
+C.Version = 2
 C.AchievementWindow = {
     CharacterCompletion = false,
     Sort = "default",
@@ -252,9 +252,9 @@ C.Automation = {
 }
 
 ----------------------------------------------------------------------------------------
--- 4.5 ClickCasting
+-- 4.5 MouseoverCasting
 ----------------------------------------------------------------------------------------
-C.ClickCasting = {
+C.MouseoverCasting = {
     Enable = true,
     SchemaVersion = 1,
     TrackedEntries = {},
@@ -471,6 +471,13 @@ C.Skins = {
         ShowEmptySocketIndicators = true,
         ShowIndicatorText = false,
     },
+    QueueTimer = {
+        Enable = true,
+        Sound = true,           -- Alert through the Master channel when a queue pops
+        WarningSound = true,    -- Warning beeps when the ready check is about to expire
+        HideOtherTimers = true, -- Hide other addons' timer bars on the dungeon ready popup
+        AnnounceWaitTime = true,-- Print queue wait duration to chat
+    },
 }
 
 ----------------------------------------------------------------------------------------
@@ -587,7 +594,7 @@ C.Nameplates = {
     -- RefineUI owns the rendered nameplate text, so enemy buff/debuff rows need
     -- explicit post-Blizzard anchoring to stay stable above the visible name.
     EnemyAuras = {
-        BaseOffsetY = 20,
+        BaseOffsetY = 10,
         DebuffOffsetX = 0,
         DebuffOffsetY = 0,
         DebuffSpacing = 2,
@@ -724,6 +731,15 @@ C.Quests = {
 C.MythicPlus = {
     Enable = true,
     AutoInsertKeystone = true,
+}
+
+C.GroupFinder = {
+    Enable = true,
+    LeaderIcon = true,
+    RaidTooltipMembers = true,
+    RealmLocation = true, -- Color-coded datacenter (US) or language (EU) tag for the listing leader
+    QuickApply = false,
+    AutoAccept = false,
 }
 
 ----------------------------------------------------------------------------------------

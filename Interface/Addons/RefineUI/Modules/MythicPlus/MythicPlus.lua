@@ -232,14 +232,5 @@ function MythicPlus:OnInitialize()
         self:AutoInsertKeystone()
     end, "MythicPlus:AutoInsertKeystone")
 
-    if C_AddOns and C_AddOns.IsAddOnLoaded(CHALLENGES_ADDON) then
-        self:SetupChallengesFrame()
-    else
-        RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addonName)
-            if addonName == CHALLENGES_ADDON then
-                self:SetupChallengesFrame()
-                RefineUI:OffEvent("ADDON_LOADED", "MythicPlus:ChallengesUI")
-            end
-        end, "MythicPlus:ChallengesUI")
-    end
+    EventUtil.ContinueOnAddOnLoaded(CHALLENGES_ADDON, function() self:SetupChallengesFrame() end)
 end

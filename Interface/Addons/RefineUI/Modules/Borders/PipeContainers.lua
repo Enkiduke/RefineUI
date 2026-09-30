@@ -20,7 +20,6 @@ local EVENT_KEY = {
     PLAYERBANKSLOTS_CHANGED = "Borders_BankChange",
     BAG_UPDATE_DELAYED = "Borders_BankBagUpdate",
     ADDON_LOADED_BANK_PANELS = "Borders_BankPanelsLoad",
-    ADDON_LOADED_GBANK = "Borders_GBankLoad",
 }
 local DEBOUNCE_KEY = {
     BANK_REFRESH = "Borders:PipeContainers:BankRefresh",
@@ -192,15 +191,7 @@ local function SetupContainerPipe(self)
         end
     end
 
-    if GuildBankFrame then
-        HookGuildBank()
-    else
-        RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addon)
-            if addon == "Blizzard_GuildBankUI" then
-                HookGuildBank()
-            end
-        end, EVENT_KEY.ADDON_LOADED_GBANK)
-    end
+    EventUtil.ContinueOnAddOnLoaded("Blizzard_GuildBankUI", HookGuildBank)
 
     local function HookBags()
         local function UpdateContainer(frame)

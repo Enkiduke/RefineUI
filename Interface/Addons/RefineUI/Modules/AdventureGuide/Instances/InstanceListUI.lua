@@ -87,6 +87,7 @@ function Module:GetGuideBaseRows()
 
     if self.guideAllExpansions then
         -- The last tier can be a current-season alias. Deduplicate its instances.
+        self._guideSelectingTier = true
         local ok = pcall(function()
             for index = EJ_GetNumTiers(), 1, -1 do
                 EJ_SelectTier(index)
@@ -94,6 +95,7 @@ function Module:GetGuideBaseRows()
             end
         end)
         local restored = EJ_GetCurrentTier() == tier or pcall(EJ_SelectTier, tier)
+        self._guideSelectingTier = nil
         if not ok or not restored then return nil end
     else
         AddCurrentTier()
@@ -102,20 +104,24 @@ function Module:GetGuideBaseRows()
     return rows, scope
 end
 
-function Module:RefreshGuideInstanceList()
+-- nativeListed: Blizzard's EncounterJournal_ListInstances just installed its own provider.
+function Module:RefreshGuideInstanceList(nativeListed)
     if not self:IsGuideInstanceListVisible() then return end
     local list = _G.EncounterJournal.instanceSelect
+    if nativeListed then self._guideListCustom = nil end
     local custom = self.guideAllExpansions or self.guideSortKey or not self:AreAllGuideTypesSelected()
-    if not custom then
+    if not custom and not self._guideListCustom then
         self.guideListEmpty:Hide()
         return -- Blizzard's provider is already installed.
     end
     local baseRows = self:GetGuideBaseRows()
     if not baseRows then return end
+    -- Leaving custom mode keeps our provider, unfiltered, until Blizzard lists again:
+    -- calling EncounterJournal_ListInstances from addon code taints the tab state.
     local rows = {}
     for _, row in ipairs(baseRows) do
         local state = Data.summaries[row.instanceID]
-        if self:GuideInstancePassesFilter(state and state.summary) then
+        if not custom or self:GuideInstancePassesFilter(state and state.summary) then
             rows[#rows + 1] = row
         end
     end
@@ -139,6 +145,7 @@ function Module:RefreshGuideInstanceList()
     local provider = CreateDataProvider()
     for _, row in ipairs(rows) do provider:Insert(row) end
     list.ScrollBox:SetDataProvider(provider, ScrollBoxConstants and ScrollBoxConstants.RetainScrollPosition)
+    self._guideListCustom = true
     local emptyText = not next(self.guideCollectionTypes) and "Select a collection type to show instances."
         or "No instances have rewards in the selected types."
     self.guideListEmpty:SetText(emptyText)
@@ -184,9 +191,10 @@ function Module:UpdateGuideListControls()
     self.guideSortDropdown:SetShown(show == true)
     self.guideFilterDropdown:SetShown(show == true)
     if not show then self.guideListEmpty:Hide() end
-    if self.guideAllExpansions and show then
-        journal.instanceSelect.bg:Hide()
-        journal.instanceSelect.evergreenBg:Show()
+    if show then
+        -- Blizzard only restores the tier art on tab select, not after leaving All.
+        journal.instanceSelect.bg:SetShown(not self.guideAllExpansions)
+        journal.instanceSelect.evergreenBg:SetShown(self.guideAllExpansions == true)
     end
 end
 
@@ -200,10 +208,11 @@ function Module:GetGuideFilterDropdownText()
     for _, entry in ipairs(TYPES) do
         if self.guideCollectionTypes[entry.key] then count, label = count + 1, entry.label end
     end
-    return count == #TYPES and "Filter: All types"
-        or count == 0 and "Filter: None"
-        or count == 1 and "Filter: " .. label
-        or "Filter: " .. count .. " types"
+    local prefix = self.guideAllExpansions and "All Exp: " or "Filter: "
+    return prefix .. (count == #TYPES and "All types"
+        or count == 0 and "None"
+        or count == 1 and label
+        or count .. " types")
 end
 
 function Module:UpdateGuideListDropdownText()
@@ -215,7 +224,7 @@ function Module:GuideListSelectionChanged()
     self._guideSummarySortState = {}
     self:UpdateGuideListDropdownText()
     if self:IsGuideInstanceListVisible() then
-        EncounterJournal_ListInstances()
+        self:RefreshGuideInstanceList()
         local scroll = _G.EncounterJournal.instanceSelect.ScrollBox
         if scroll.GetFrames then
             for _, button in ipairs(scroll:GetFrames()) do
@@ -228,40 +237,28 @@ function Module:GuideListSelectionChanged()
 end
 
 function Module:SelectGuideAllAnchorTier()
-    -- Blizzard checks the selected tier before our All provider is installed.
+    -- Blizzard checks the selected tier when switching tabs in All mode.
     -- Keep both content tabs available even if the previous tier has only one.
     if EJ_GetInstanceByIndex(1, false) and EJ_GetInstanceByIndex(1, true) then return end
+    self._guideSelectingTier = true
     local previousTier = EJ_GetCurrentTier()
+    local found
     for tier = EJ_GetNumTiers(), 1, -1 do
         EJ_SelectTier(tier)
-        if EJ_GetInstanceByIndex(1, false) and EJ_GetInstanceByIndex(1, true) then return end
+        if EJ_GetInstanceByIndex(1, false) and EJ_GetInstanceByIndex(1, true) then found = true; break end
     end
-    EJ_SelectTier(previousTier)
+    if not found then EJ_SelectTier(previousTier) end
+    self._guideSelectingTier = nil
 end
 
-function Module:SetupGuideExpansionDropdown()
-    local journal = _G.EncounterJournal
-    if not journal or not self:IsSupportedContentTab(journal.selectedTab) then return end
-    local dropdown = journal.instanceSelect.ExpansionDropdown
-    dropdown:SetupMenu(function(_, root)
-        root:SetTag("MENU_EJ_EXPANSION")
-        root:CreateRadio("All", function() return self.guideAllExpansions end, function()
-            self.guideAllExpansions = true
-            self:SelectGuideAllAnchorTier()
-            self._guideBaseScope = nil
-            EncounterJournal_ListInstances()
-        end)
-        for tier = 1, EJ_GetNumTiers() do
-            local selectedTier = tier
-            root:CreateRadio(EJ_GetTierInfo(tier), function()
-                return not self.guideAllExpansions and EJ_GetCurrentTier() == selectedTier
-            end, function()
-                self.guideAllExpansions = false
-                self._guideBaseScope = nil
-                EncounterJournal_ExpansionDropdown_Select(journal, selectedTier)
-            end)
-        end
-    end)
+-- All lives in RefineUI's filter menu. Replacing Blizzard's expansion menu made every
+-- tier pick run ExpansionDropdown_SelectInternal from addon code, tainting the
+-- Dungeons/Raids tabs' isDisabled and with it every later native tab switch.
+function Module:SetGuideAllExpansions(enabled)
+    self.guideAllExpansions = enabled
+    self._guideBaseScope = nil
+    if enabled then self:SelectGuideAllAnchorTier() end
+    self:GuideListSelectionChanged()
 end
 
 function Module:InstallGuideInstanceList()
@@ -306,6 +303,10 @@ function Module:InstallGuideInstanceList()
     self.guideFilterDropdown:SetSelectionText(function() return self:GetGuideFilterDropdownText() end)
     self.guideFilterDropdown:SetupMenu(function(_, root)
         root:SetTag("MENU_REFINE_EJ_COLLECTION_FILTER")
+        root:CreateCheckbox("All expansions", function() return self.guideAllExpansions == true end, function()
+            self:SetGuideAllExpansions(not self.guideAllExpansions)
+        end)
+        root:CreateDivider()
         root:CreateTitle("Collection types")
         root:CreateButton("Select all types", function()
             for _, entry in ipairs(TYPES) do self.guideCollectionTypes[entry.key] = true end
@@ -332,14 +333,20 @@ function Module:InstallGuideInstanceList()
     self.guideListEmpty:SetPoint("CENTER", list.ScrollBox, "CENTER", 0, 0)
     self.guideListEmpty:Hide()
 
-    RefineUI:HookOnce(self:BuildKey("GuideList", "ExpansionMenu"), "EncounterJournal_SetupExpansionDropdown",
-        function() self:SetupGuideExpansionDropdown() end)
+    -- A tier picked in Blizzard's expansion dropdown is selected before it lists
+    -- instances, so leave All here. Skip RefineUI's own tier scans and restores.
+    RefineUI:HookOnce(self:BuildKey("GuideList", "SelectTier"), "EJ_SelectTier", function()
+        if self.guideAllExpansions and not self._guideSelectingTier and not Data.capturing then
+            self.guideAllExpansions = false
+            self._guideBaseScope = nil
+            self:UpdateGuideListDropdownText()
+        end
+    end)
     RefineUI:HookOnce(self:BuildKey("GuideList", "Instances"), "EncounterJournal_ListInstances",
-        function() self:UpdateGuideListControls(); self:RefreshGuideInstanceList() end)
+        function() self:UpdateGuideListControls(); self:RefreshGuideInstanceList(true) end)
     -- EncounterJournal.TabSet is handled by OnEncounterJournalTabSet; EventRegistry
     -- keeps one callback per owner, so a second registration would replace it.
     self:UpdateGuideListDropdownText()
     self:UpdateGuideListControls()
-    self:SetupGuideExpansionDropdown()
     self:RefreshGuideInstanceList()
 end

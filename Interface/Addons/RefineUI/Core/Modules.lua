@@ -12,12 +12,8 @@ local error = error
 local pairs, ipairs = pairs, ipairs
 local tinsert = table.insert
 local xpcall = xpcall
-local tostring = tostring
+local ErrorHandler = RefineUI.ErrorHandler
 local type = type
-
-local function ReportModuleError(module, phase, err)
-    print("|cffff0000Refine|rUI Module Error (" .. phase .. "):", module.Name or "Unknown", tostring(err))
-end
 
 ----------------------------------------------------------------------------------------
 -- Module State
@@ -148,14 +144,7 @@ function RefineUI:InitializeModules()
     -- Phase 1: Initialize (ADDON_LOADED) - Load settings, etc.
     for _, module in ipairs(RefineUI.ModuleRegistry) do
         if self:IsModuleStartupEnabled(module.Name) and not module._initialized and module.OnInitialize then
-            local ok, err = xpcall(function()
-                module:OnInitialize()
-            end, function(e)
-                return e
-            end)
-            if not ok then
-                ReportModuleError(module, "OnInitialize", err)
-            end
+            xpcall(module.OnInitialize, ErrorHandler, module)
         end
         if self:IsModuleStartupEnabled(module.Name) then
             module._initialized = true
@@ -176,14 +165,7 @@ function RefineUI:EnableModules()
 
     for _, module in ipairs(RefineUI.ModuleRegistry) do
         if self:IsModuleStartupEnabled(module.Name) and not module._enabled and module.OnEnable then
-            local ok, err = xpcall(function()
-                module:OnEnable()
-            end, function(e)
-                return e
-            end)
-            if not ok then
-                ReportModuleError(module, "OnEnable", err)
-            end
+            xpcall(module.OnEnable, ErrorHandler, module)
         end
         if self:IsModuleStartupEnabled(module.Name) then
             module._enabled = true

@@ -22,7 +22,6 @@ local CanGuildBankRepair = CanGuildBankRepair
 local CanMerchantRepair = CanMerchantRepair
 local GetMoney = GetMoney
 local GetRepairAllCost = GetRepairAllCost
-local IsInGuild = IsInGuild
 local RepairAllItems = RepairAllItems
 
 ----------------------------------------------------------------------------------------
@@ -36,26 +35,21 @@ local EVENT_KEY = {
 -- Event Handlers
 ----------------------------------------------------------------------------------------
 function AutoRepair:OnMerchantShow()
-    if not Config.Automation.AutoRepair then return end
     if not CanMerchantRepair() then return end
 
     local repairAllCost, canRepair = GetRepairAllCost()
+    if not canRepair or repairAllCost <= 0 then return end
 
-    if repairAllCost > 0 and canRepair then
-        if Config.Automation.GuildRepair and IsInGuild() and CanGuildBankRepair() then
-            RepairAllItems(true)
-            if GetRepairAllCost() == 0 then
-                RefineUI:Print("Auto Repaired using guild funds.")
-                return
-            end
-        end
-        
-        if repairAllCost <= GetMoney() then
-            RepairAllItems(false)
-            RefineUI:Print("Auto Repaired for: " .. C_CurrencyInfo.GetCoinTextureString(repairAllCost))
-        else
-            RefineUI:Print("Not enough money for repair. Required: " .. C_CurrencyInfo.GetCoinTextureString(repairAllCost))
-        end
+    local costText = C_CurrencyInfo.GetCoinTextureString(repairAllCost)
+    -- The server covers any guild shortfall from personal funds.
+    if Config.Automation.GuildRepair and CanGuildBankRepair() then
+        RepairAllItems(true)
+        RefineUI:Print("Auto Repaired using guild funds: " .. costText)
+    elseif repairAllCost <= GetMoney() then
+        RepairAllItems(false)
+        RefineUI:Print("Auto Repaired for: " .. costText)
+    else
+        RefineUI:Print("Not enough money for repair. Required: " .. costText)
     end
 end
 

@@ -181,15 +181,13 @@ local function QueueRefreshTabs()
     end)
 end
 
-local function RefreshDockWhenSafe()
-    if IsPlayerInCombat() then
-        RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", RefreshDockWhenSafe, TAB_DOCK_REFRESH_REGEN_KEY)
-        return
-    end
-
-    RefineUI:OffEvent("PLAYER_REGEN_ENABLED", TAB_DOCK_REFRESH_REGEN_KEY)
+local function RefreshDock()
     tabDockRefreshQueued = false
     FCF_DockUpdate()
+end
+
+local function RefreshDockWhenSafe()
+    RefineUI:RunAfterCombat(TAB_DOCK_REFRESH_REGEN_KEY, RefreshDock)
 end
 
 local function QueueDockRefresh()

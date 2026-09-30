@@ -17,9 +17,10 @@
     <Include file="Nameplates\!Nameplates.xml"/>
     <Include file="Misc\!Misc.xml"/>
     <Include file="MythicPlus\!MythicPlus.xml"/>
+    <Include file="GroupFinder\!GroupFinder.xml"/>
     <Include file="AutoItemBar\!AutoItemBar.xml"/>
     <Include file="AutoOpenBar\!AutoOpenBar.xml"/>
-    <Include file="ClickCasting\!ClickCasting.xml"/>
+    <Include file="MouseoverCasting\!MouseoverCasting.xml"/>
     <Include file="Tooltip\!Tooltip.xml"/>
     <Include file="Quests\!Quests.xml"/>
     <Include file="Loot\!Loot.xml"/>

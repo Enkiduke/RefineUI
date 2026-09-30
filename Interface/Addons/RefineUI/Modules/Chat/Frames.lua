@@ -205,29 +205,17 @@ local function QueueFramePointFix(frame, applyFn)
     end)
 end
 
+local function RunDockUpdate()
+    RefineUI:RunAfterCombat(CHAT_DOCK_UPDATE_REGEN_KEY, FCF_DockUpdate)
+end
+
 local function RequestDockUpdate()
     if IsPlayerInCombat() then
-        RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-            if not IsPlayerInCombat() then
-                FCF_DockUpdate()
-                RefineUI:OffEvent("PLAYER_REGEN_ENABLED", CHAT_DOCK_UPDATE_REGEN_KEY)
-            end
-        end, CHAT_DOCK_UPDATE_REGEN_KEY)
+        RunDockUpdate()
         return
     end
 
-    RefineUI:After(CHAT_DOCK_UPDATE_TIMER_KEY, 0, function()
-        if not IsPlayerInCombat() then
-            FCF_DockUpdate()
-        else
-            RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-                if not IsPlayerInCombat() then
-                    FCF_DockUpdate()
-                    RefineUI:OffEvent("PLAYER_REGEN_ENABLED", CHAT_DOCK_UPDATE_REGEN_KEY)
-                end
-            end, CHAT_DOCK_UPDATE_REGEN_KEY)
-        end
-    end)
+    RefineUI:After(CHAT_DOCK_UPDATE_TIMER_KEY, 0, RunDockUpdate)
 end
 
 local function ApplyChatFrameTypography(chatFrame, fontSize)
@@ -955,16 +943,7 @@ local function SetupChatVisualsOnly()
 end
 
 local function SetupChatPosAndFontSafe()
-    if SetupChatPosAndFont() then
-        RefineUI:OffEvent("PLAYER_REGEN_ENABLED", CHAT_REGEN_SETUP_KEY)
-        return
-    end
-
-    RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-        if SetupChatPosAndFont() then
-            RefineUI:OffEvent("PLAYER_REGEN_ENABLED", CHAT_REGEN_SETUP_KEY)
-        end
-    end, CHAT_REGEN_SETUP_KEY)
+    RefineUI:RunAfterCombat(CHAT_REGEN_SETUP_KEY, SetupChatPosAndFont)
 end
 
 local function SetupTempChat()
@@ -1055,7 +1034,6 @@ local function RunInitialChatSetup()
 
     _didInitialChatSetup = true
     _didCombatSafeChatVisualSetup = true
-    RefineUI:OffEvent("PLAYER_REGEN_ENABLED", CHAT_ENABLE_REGEN_SETUP_KEY)
     return true
 end
 
@@ -1114,9 +1092,7 @@ function Chat:OnEnable()
 
     if not RunInitialChatSetup() then
         RunCombatSafeChatVisualSetup()
-        RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-            RunInitialChatSetup()
-        end, CHAT_ENABLE_REGEN_SETUP_KEY)
+        RefineUI:RunAfterCombat(CHAT_ENABLE_REGEN_SETUP_KEY, RunInitialChatSetup)
     end
     
     -- Re-apply position/font rules when entering world, but only after initial chat setup has safely run.

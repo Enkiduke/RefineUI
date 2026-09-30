@@ -7,6 +7,7 @@
 	<Script file="ItemTextFrame.lua"/>
 	<Script file="LootRoll.lua"/>
 	<Script file="LSToasts.lua"/>
+	<Script file="QueueTimer.lua"/>
 	<Script file="SCT.lua"/>
 	<Script file="StatusBars.lua"/>
 	<Script file="ZoneText.lua"/>

@@ -501,7 +501,16 @@ function Module:CreatePlannerPage(journal)
     self.weeklyHub, page.rings, page.currencies = page, {}, {}
     page:SetPoint("TOPLEFT", journal.inset, "TOPLEFT")
     page:SetPoint("BOTTOMRIGHT", journal.inset, "BOTTOMRIGHT")
+    -- Overlay Blizzard's panels instead of hiding them: some (lore, loot, Traveler's Log) are HIGH strata.
+    -- Above the encounter Achievements panel (+40), which can stay up under the Planner.
+    page:SetFrameStrata("HIGH"); page:SetFrameLevel(journal:GetFrameLevel() + 100)
+    page:EnableMouse(true)
     page:Hide()
+    -- Blocks the nav bar and search box above the inset while the Planner is up.
+    page.HeaderShield = CreateFrame("Frame", nil, page)
+    page.HeaderShield:SetPoint("TOPLEFT", journal.navBar, "TOPLEFT")
+    page.HeaderShield:SetPoint("BOTTOMRIGHT", journal.inset, "TOPRIGHT")
+    page.HeaderShield:EnableMouse(true)
     page.Border = CreateFrame("Frame", nil, page, "QuestLogBorderFrameTemplate")
     page.Border:SetAllPoints(); page.Border:SetFrameLevel(page:GetFrameLevel() + 10)
     if page.Border.TopDetail then page.Border.TopDetail:Hide() end
@@ -548,7 +557,36 @@ end
 ------------------------------------------------------------------------------
 
 function Module:SelectWeeklyHub()
-    EJ_ContentTab_Select(self.weeklyHubTab:GetID())
+    self:SetWeeklyHubActive(true)
+end
+
+-- The Planner is an overlay with its own tab. Writing EncounterJournal.Tabs,
+-- numTabs, maxTabWidth or selectedTab, or calling EJ_ContentTab_Select, from
+-- addon code taints every native tab switch and the EncounterJournal.TabSet
+-- listeners (tutorial HelpTips). Only widget methods touch Blizzard's tabs here.
+function Module:SetWeeklyHubActive(active)
+    local journal, tab = EncounterJournal, self.weeklyHubTab
+    if active then
+        -- Also reapplied when already active: Blizzard re-selects its tab on reopen.
+        local selected = journal.selectedTab and journal.Tabs[journal.selectedTab]
+        if selected then PanelTemplates_DeselectTab(selected) end
+        PanelTemplates_SelectTab(tab)
+    end
+    if self.weeklyHubActive == active then return end
+    self.weeklyHubActive = active
+    journal.navBar:SetAlpha(active and 0 or 1)
+    journal.searchBox:SetAlpha(active and 0 or 1)
+    if active then
+        journal.searchBox:ClearFocus()
+        PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+    else
+        PanelTemplates_DeselectTab(tab)
+        PanelTemplates_UpdateTabs(journal)
+    end
+    self.weeklyHub:SetShown(active)
+    -- Instance cards stay live under the overlay; their completion scans pause while covered.
+    local instances = RefineUI:GetModule("AdventureGuideInstances")
+    if instances and instances._expansionCompletionInstalled then instances:RefreshExpansionCompletion() end
 end
 
 -- Planner first, then Blizzard's visible tabs in their native order.
@@ -558,12 +596,12 @@ function Module:LayoutWeeklyHubTabs()
     self.weeklyHubLayingOut = true
     local order = { tab }
     for _, button in ipairs(journal.Tabs) do
-        if button ~= tab and button:IsShown() then order[#order + 1] = button end
+        if button:IsShown() then order[#order + 1] = button end
     end
-    journal.maxTabWidth = (journal:GetWidth() - 22 - 3 * (#order - 1)) / #order
+    local maxTabWidth = (journal:GetWidth() - 22 - 3 * (#order - 1)) / #order
     local x = 11
     for _, button in ipairs(order) do
-        PanelTemplates_TabResize(button, 0, nil, nil, journal.maxTabWidth)
+        PanelTemplates_TabResize(button, 0, nil, nil, maxTabWidth)
         button:ClearAllPoints()
         -- Anchor to the journal so native ID-order anchoring cannot form a cycle.
         button:SetPoint("TOPLEFT", journal, "BOTTOMLEFT", x, 2)
@@ -575,41 +613,33 @@ end
 function Module:InstallPlanner()
     local journal = EncounterJournal
     if self.weeklyHub or not journal.Tabs or not journal.Tabs[1] then return end
-    local tab = CreateFrame("Button", "RefineUIWeeklyHubTab", journal, "BottomEncounterTierTabTemplate")
+    -- PanelTabButtonTemplate joins its parent's Tabs array; an addon-owned
+    -- parent keeps the tab out of EncounterJournal.Tabs.
+    local tab = CreateFrame("Button", "RefineUIWeeklyHubTab", CreateFrame("Frame", nil, journal), "BottomEncounterTierTabTemplate")
     self.weeklyHubTab = tab
-    -- Some client versions register template-created tabs during CreateFrame.
-    local tabID
-    for index, button in ipairs(journal.Tabs) do
-        if button == tab then tabID = index; break end
-    end
-    if not tabID then tabID = #journal.Tabs + 1; journal.Tabs[tabID] = tab end
-    tab:SetID(tabID); tab:SetText("Planner")
-    PanelTemplates_SetNumTabs(journal, #journal.Tabs)
-    -- Custom IDs stay local; never pass them to C_EncounterJournal.SetTab.
+    tab:SetText("Planner")
     tab:SetScript("OnClick", function() self:SelectWeeklyHub() end)
-    local page = self:CreatePlannerPage(journal)
+    self:CreatePlannerPage(journal)
+    self.weeklyHubActive = true
+    self:SetWeeklyHubActive(false)
     local function Layout() self:LayoutWeeklyHubTabs() end
     hooksecurefunc("PanelTemplates_AnchorTabs", function(frame) if frame == journal then Layout() end end)
     journal:HookScript("OnSizeChanged", Layout)
     for _, button in ipairs(journal.Tabs) do
         button:HookScript("OnShow", Layout); button:HookScript("OnHide", Layout)
     end
-    hooksecurefunc("EJ_ContentTab_Select", function(id)
-        Layout()
-        local active = id == tab:GetID()
-        if active then
-            -- The native selector runs no branch for a custom tab. Hiding the
-            -- Suggested Content panel re-shows the instance list, so hide it after.
-            EJ_HideNonInstancePanels()
-            EncounterJournal_HideGreatVaultButton()
-            local select = journal.instanceSelect
-            select.ScrollBox:Hide(); select.ScrollBar:Hide(); select.ExpansionDropdown:Hide(); select.Title:Hide()
-        end
-        page:SetShown(active)
+    -- Any native tab selection or instance navigation closes the overlay, except
+    -- Blizzard re-selecting its current tab while the journal reopens.
+    hooksecurefunc("EJ_ContentTab_Select", function()
+        if not self.weeklyHubReopening then self:SetWeeklyHubActive(false) end
     end)
+    journal.encounter:HookScript("OnShow", function() self:SetWeeklyHubActive(false) end)
+    journal:HookScript("OnHide", function() self.weeklyHubReopening = true end)
     -- Open on the Planner unless Blizzard navigated to an instance (for
     -- example while inside a dungeon) or a boss link is being followed.
     journal:HookScript("OnShow", function()
+        self.weeklyHubReopening = nil
+        Layout() -- Blizzard re-anchors its tabs in OnShow.
         if not journal.encounter:IsShown() then self:SelectWeeklyHub() end
     end)
     Layout()

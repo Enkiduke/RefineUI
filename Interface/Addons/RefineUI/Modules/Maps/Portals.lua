@@ -57,6 +57,7 @@ local PORTALS_CLICK_CATCHER_NAME = "RefineUI_MinimapPortalsClickCatcher"
 
 local ATLAS_PORTAL_BUTTON = "MagePortalAlliance"
 local ATLAS_PIN_ICON = "friendslist-recentallies-Pin-yellow"
+local ATLAS_FAVORITE_ICON = "friends-icon-favorites"
 local FALLBACK_BUTTON_SPELL_ID = 10059
 local ICON_QUESTION_MARK = 134400
 
@@ -312,6 +313,8 @@ local FACTION_RESTRICTED_SPELLS = {
 ----------------------------------------------------------------------------------------
 local portalsButton
 local portalsButtonIcon
+local portalsButtonCooldown
+local favoriteEntry
 local portalsMenu
 local portalsSubmenu
 local clickCatcher
@@ -336,6 +339,7 @@ local RequestFullRefresh
 local RebuildPortalEntries
 local ClosePortalsMenus
 local OpenSubmenu
+local UpdatePortalsButtonIcon
 
 ----------------------------------------------------------------------------------------
 -- Helpers
@@ -564,6 +568,11 @@ local function BuildEntryPinKey(entry)
     end
 
     return actionType .. ":" .. tostring(actionID)
+end
+
+local function IsEntryFavorited(entry)
+    local key = BuildEntryPinKey(entry)
+    return key ~= nil and key == Maps.db.Portals.FavoriteAction
 end
 
 local function IsHearthstoneToyPinKey(pinKey)
@@ -1247,6 +1256,58 @@ local function ConfigureRowAction(row, entry)
     end
 end
 
+local function UpdatePortalsButtonCooldown()
+    if not portalsButtonCooldown then
+        return
+    end
+    if not favoriteEntry then
+        portalsButtonCooldown:Clear()
+        return
+    end
+
+    if favoriteEntry.actionType == ACTION_TYPE_SPELL then
+        local duration = C_Spell.GetSpellCooldownDuration(favoriteEntry.spellID or favoriteEntry.actionID, true)
+        if duration then
+            portalsButtonCooldown:SetCooldownFromDurationObject(duration)
+        else
+            portalsButtonCooldown:Clear()
+        end
+    else
+        local startTime, duration = GetEntryCooldown(favoriteEntry)
+        if duration > 1.5 and startTime > 0 then
+            portalsButtonCooldown:SetCooldown(startTime, duration)
+        else
+            portalsButtonCooldown:Clear()
+        end
+    end
+end
+
+local function UpdatePortalsButtonAction()
+    if InCombatLockdown() then
+        return
+    end
+
+    ClearActionAttributes(portalsButton)
+    favoriteEntry = nil
+
+    local key = Maps.db.Portals.FavoriteAction
+    if type(key) == "string" then
+        local actionType, actionIDText = key:match("^([^:]+):(%d+)$")
+        local actionID = tonumber(actionIDText)
+        if actionType == ACTION_TYPE_SPELL then
+            favoriteEntry = BuildSpellActionEntry(actionID)
+        elseif actionType == ACTION_TYPE_ITEM or actionType == ACTION_TYPE_TOY then
+            favoriteEntry = BuildItemOrToyActionEntry(actionID)
+        end
+    end
+
+    if favoriteEntry then
+        ConfigureRowAction(portalsButton, favoriteEntry)
+    end
+    UpdatePortalsButtonIcon()
+    UpdatePortalsButtonCooldown()
+end
+
 local function UpdatePinButtonForRow(row, entry)
     if not row or not row.pinButton or not row.pinIcon then
         return
@@ -1276,6 +1337,26 @@ local function UpdatePinButtonForRow(row, entry)
     end
 
     row.pinButton:Show()
+end
+
+local function UpdateFavoriteButtonForRow(row, entry)
+    if not row.favoriteButton then
+        return
+    end
+    if entry.kind ~= ROW_KIND_ACTION then
+        row.favoriteButton:Hide()
+        return
+    end
+
+    row.favoriteButton:SetPoint("RIGHT", row, "RIGHT", entry.isPinnedRoot and -24 or -4, 0)
+    if IsEntryFavorited(entry) then
+        row.favoriteIcon:SetDesaturated(false)
+        row.favoriteIcon:SetVertexColor(PIN_PINNED_R, PIN_PINNED_G, PIN_PINNED_B, PIN_PINNED_A)
+    else
+        row.favoriteIcon:SetDesaturated(true)
+        row.favoriteIcon:SetVertexColor(PIN_UNPINNED_R, PIN_UNPINNED_G, PIN_UNPINNED_B, PIN_UNPINNED_A)
+    end
+    row.favoriteButton:Show()
 end
 
 local function OnPinButtonEnter(self)
@@ -1317,6 +1398,34 @@ local function OnPinButtonClick(self, button)
     RequestFullRefresh(true)
 end
 
+local function OnFavoriteButtonEnter(self)
+    local state = RowState[self:GetParent()]
+    local entry = state and state.entry
+    if not entry then
+        return
+    end
+
+    GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+    GameTooltip:SetText(IsEntryFavorited(entry) and "Remove favorite" or "Favorite for left-click", 1, 1, 1)
+    GameTooltip:Show()
+end
+
+local function OnFavoriteButtonClick(self, button)
+    if button ~= "LeftButton" or InCombatLockdown() then
+        return
+    end
+
+    local state = RowState[self:GetParent()]
+    local entry = state and state.entry
+    if not entry or entry.kind ~= ROW_KIND_ACTION then
+        return
+    end
+
+    Maps.db.Portals.FavoriteAction = not IsEntryFavorited(entry) and BuildEntryPinKey(entry) or nil
+    GameTooltip:Hide()
+    RequestFullRefresh(true)
+end
+
 local function ApplyEntryToRow(row, entry)
     local state = EnsureRowState(row)
     state.entry = entry
@@ -1329,6 +1438,7 @@ local function ApplyEntryToRow(row, entry)
     if row.pinButton then
         row.pinButton:Hide()
     end
+    UpdateFavoriteButtonForRow(row, entry)
 
     local highlight = row:GetHighlightTexture()
     if highlight then
@@ -1355,7 +1465,9 @@ local function ApplyEntryToRow(row, entry)
 
     row.text:ClearAllPoints()
     row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
-    if row.isSubmenuRow or entry.isPinnedRoot == true then
+    if not row.isSubmenuRow and entry.kind == ROW_KIND_ACTION then
+        row.text:SetPoint("RIGHT", row, "RIGHT", entry.isPinnedRoot and -46 or -26, 0)
+    elseif row.isSubmenuRow then
         row.text:SetPoint("RIGHT", row, "RIGHT", -26, 0)
     else
         row.text:SetPoint("RIGHT", row, "RIGHT", -18, 0)
@@ -1480,6 +1592,25 @@ local function CreateMenuRow(parent, isSubmenuRow)
     end
     row.pinIcon:SetVertexColor(PIN_UNPINNED_R, PIN_UNPINNED_G, PIN_UNPINNED_B, PIN_UNPINNED_A)
 
+    if not row.isSubmenuRow then
+        row.favoriteButton = CreateFrame("Button", nil, row)
+        row.favoriteButton:SetSize(PIN_ICON_SIZE, PIN_ICON_SIZE)
+        row.favoriteButton:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+        row.favoriteButton:SetFrameStrata(row:GetFrameStrata())
+        row.favoriteButton:SetFrameLevel(row:GetFrameLevel() + 4)
+        row.favoriteButton:RegisterForClicks("LeftButtonUp")
+        row.favoriteButton:SetPropagateMouseClicks(false)
+        row.favoriteButton:SetScript("OnEnter", OnFavoriteButtonEnter)
+        row.favoriteButton:SetScript("OnLeave", OnPinButtonLeave)
+        row.favoriteButton:SetScript("OnClick", OnFavoriteButtonClick)
+        row.favoriteButton:Hide()
+
+        row.favoriteIcon = row.favoriteButton:CreateTexture(nil, "ARTWORK")
+        row.favoriteIcon:SetAllPoints(row.favoriteButton)
+        row.favoriteIcon:SetAtlas(ATLAS_FAVORITE_ICON)
+        row.favoriteIcon:SetVertexColor(PIN_UNPINNED_R, PIN_UNPINNED_G, PIN_UNPINNED_B, PIN_UNPINNED_A)
+    end
+
     row.headerSeparator = row:CreateTexture(nil, "ARTWORK")
     row.headerSeparator:SetHeight(1)
     row.headerSeparator:SetColorTexture(0.55, 0.55, 0.55, 0.7)
@@ -1509,14 +1640,20 @@ end
 ----------------------------------------------------------------------------------------
 -- Menu Rendering
 ----------------------------------------------------------------------------------------
-local function UpdatePortalsButtonIcon()
+UpdatePortalsButtonIcon = function()
     if not portalsButtonIcon then
+        return
+    end
+
+    if favoriteEntry then
+        portalsButtonIcon:SetTexture(favoriteEntry.iconID or ICON_QUESTION_MARK)
+        portalsButtonIcon:SetTexCoord(0.1, 0.9, 0.1, 0.9)
         return
     end
 
     local atlasInfo = C_Texture and type(C_Texture.GetAtlasInfo) == "function" and C_Texture.GetAtlasInfo(ATLAS_PORTAL_BUTTON)
     if atlasInfo and portalsButtonIcon.SetAtlas then
-        portalsButtonIcon:SetAtlas(ATLAS_PORTAL_BUTTON, true)
+        portalsButtonIcon:SetAtlas(ATLAS_PORTAL_BUTTON, true, nil, true)
         return
     end
 
@@ -1633,6 +1770,9 @@ local function UpdatePortalsButtonLayout()
 end
 
 local function RefreshVisibleCooldowns()
+    if favoriteEntry then
+        UpdatePortalsButtonCooldown()
+    end
     if not portalsMenu then
         return
     end
@@ -1880,10 +2020,12 @@ local function CreatePortalsButton()
     end
 
     local cfg = portalsConfig
-    portalsButton = CreateFrame("Button", PORTALS_BUTTON_NAME, Minimap)
+    portalsButton = CreateFrame("Button", PORTALS_BUTTON_NAME, Minimap, "SecureActionButtonTemplate")
     portalsButton:SetFrameStrata(Minimap:GetFrameStrata())
     portalsButton:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 30)
-    portalsButton:RegisterForClicks("LeftButtonUp")
+    portalsButton:RegisterForClicks("LeftButtonUp", "LeftButtonDown", "RightButtonUp", "RightButtonDown")
+    portalsButton:SetAttribute("useOnKeyDown", false)
+    portalsButton:SetAttribute("type2", "")
 
     RefineUI.Size(portalsButton, cfg.ButtonSize, cfg.ButtonSize)
     RefineUI.Point(portalsButton, "BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", cfg.ButtonOffsetX, cfg.ButtonOffsetY)
@@ -1893,12 +2035,24 @@ local function CreatePortalsButton()
     portalsButtonIcon:SetPoint("TOPLEFT", portalsButton, "TOPLEFT", BUTTON_ICON_INSET, -BUTTON_ICON_INSET)
     portalsButtonIcon:SetPoint("BOTTOMRIGHT", portalsButton, "BOTTOMRIGHT", -BUTTON_ICON_INSET, BUTTON_ICON_INSET)
 
+    portalsButtonCooldown = CreateFrame("Cooldown", nil, portalsButton, "CooldownFrameTemplate")
+    portalsButtonCooldown:SetAllPoints(portalsButtonIcon)
+    portalsButtonCooldown:SetDrawEdge(false)
+    portalsButtonCooldown:SetSwipeColor(0, 0, 0, 0.7)
+    portalsButtonCooldown:SetHideCountdownNumbers(false)
+    RefineUI.Font(portalsButtonCooldown:GetCountdownFontString(), 10, Media.Fonts.Default, "OUTLINE")
+
     UpdatePortalsButtonIcon()
 
     portalsButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Portals", 1, 1, 1)
-        GameTooltip:AddLine("Left-click to open.", 0.8, 0.8, 0.8)
+        if favoriteEntry then
+            GameTooltip:AddLine("Left-click to use " .. favoriteEntry.label .. ".", 0.8, 0.8, 0.8)
+        else
+            GameTooltip:AddLine("Left-click to open.", 0.8, 0.8, 0.8)
+        end
+        GameTooltip:AddLine("Right-click to open.", 0.8, 0.8, 0.8)
         GameTooltip:Show()
         SetBorderColor(self, GOLD_R, GOLD_G, GOLD_B, 1)
         UpdatePortalsButtonVisibilityFromHover()
@@ -1911,8 +2065,11 @@ local function CreatePortalsButton()
         UpdatePortalsButtonVisibilityFromHover()
     end)
 
-    portalsButton:SetScript("OnClick", function(_, button)
-        if button == "LeftButton" then
+    portalsButton:HookScript("OnClick", function(_, button, down)
+        if down then
+            return
+        end
+        if button == "RightButton" or (button == "LeftButton" and not favoriteEntry) then
             ToggleRootMenu()
         end
     end)
@@ -2030,6 +2187,7 @@ RebuildPortalEntries = function()
     rootEntries = newRootEntries
     submenuEntriesByCategory = newSubmenuEntriesByCategory
 
+    UpdatePortalsButtonAction()
     RefreshRootRows()
 
     if activeSubmenuCategory and submenuEntriesByCategory[activeSubmenuCategory] then
@@ -2047,10 +2205,14 @@ RebuildPortalEntries = function()
 end
 
 -- Entries are rebuilt only while the menu is open; otherwise they are marked
--- dirty and rebuilt when the menu is next opened.
+-- dirty and rebuilt when the menu is next opened. Only the favorite is refreshed
+-- while the menu is closed.
 RequestFullRefresh = function(immediate)
     portalsDirty = true
     if InCombatLockdown() or not IsPortalsMenuShown() then
+        if Maps.db.Portals.FavoriteAction then
+            RefineUI:RunAfterCombat("Maps:Portals:FavoriteAction", UpdatePortalsButtonAction)
+        end
         return
     end
 
@@ -2119,6 +2281,7 @@ function Maps:SetupPortals()
     end
 
     CreatePortalsButton()
+    UpdatePortalsButtonAction()
     CreateMenus()
     RegisterPortalsEvents()
 end

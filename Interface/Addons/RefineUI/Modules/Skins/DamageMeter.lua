@@ -14,14 +14,11 @@ end
 ----------------------------------------------------------------------------------------
 local Config = RefineUI.Config
 local Media = RefineUI.Media
-local Colors = RefineUI.Colors
-local Locale = RefineUI.Locale
 
 ----------------------------------------------------------------------------------------
 -- Lua / WoW Upvalues
 ----------------------------------------------------------------------------------------
 local _G = _G
-local C_AddOns = C_AddOns
 local CreateFrame = CreateFrame
 local hooksecurefunc = hooksecurefunc
 local type = type
@@ -36,7 +33,6 @@ local DAMAGE_METER_TEXT_SIZE = 11
 local DAMAGE_METER_BAR_TEXTURE = (Media and Media.Textures and Media.Textures.Smooth) or (Media and Media.Textures and Media.Textures.Statusbar)
 
 local EVENT_KEY = {
-    ADDON_LOADED = COMPONENT_KEY .. ":ADDON_LOADED",
     PLAYER_ENTERING_WORLD = COMPONENT_KEY .. ":PLAYER_ENTERING_WORLD",
     RESET = COMPONENT_KEY .. ":DAMAGE_METER_RESET",
     COMBAT_START = COMPONENT_KEY .. ":PLAYER_REGEN_DISABLED",
@@ -47,20 +43,7 @@ local HOOK_KEY = {
     SETUP_SESSION_WINDOW = COMPONENT_KEY .. ":DamageMeter:SetupSessionWindow",
 }
 
-local STATE_KEY = {
-    SKIN_PASS_QUEUED = COMPONENT_KEY .. ":skinPassQueued",
-    UPDATE_EVENTS_REGISTERED = COMPONENT_KEY .. ":updateEventsRegistered",
-    SKINNER_STARTED = COMPONENT_KEY .. ":skinnerStarted",
-}
-
-local TIMER_KEY = {
-    SKIN_PASS = COMPONENT_KEY .. ":Timer:SkinPass",
-    START_RETRY_025 = COMPONENT_KEY .. ":Timer:StartRetry025",
-    START_RETRY_1 = COMPONENT_KEY .. ":Timer:StartRetry1",
-    START_RETRY_2 = COMPONENT_KEY .. ":Timer:StartRetry2",
-    WORLD_RETRY_01 = COMPONENT_KEY .. ":Timer:WorldRetry01",
-    WORLD_RETRY_06 = COMPONENT_KEY .. ":Timer:WorldRetry06",
-}
+local TIMER_KEY_SKIN_PASS = COMPONENT_KEY .. ":Timer:SkinPass"
 
 RefineUI:CreateDataRegistry(DAMAGE_METER_SKIN_STATE_REGISTRY, "k")
 
@@ -76,6 +59,7 @@ local function SetState(owner, key, value)
 end
 
 local QueueSkinPass
+local skinPassQueued = false
 local lastInstanceID
 local lastInstanceDifficulty
 
@@ -172,19 +156,22 @@ local function UpdateEntryNameColor(frame)
     end
 end
 
+-- Combat values can be secret; leave Blizzard's native text intact in that case.
+local function HasSecretValues(frame)
+    return issecretvalue(frame.value) or issecretvalue(frame.valuePerSecond) or issecretvalue(frame.sessionTotalValue)
+end
+
+-- Runs after every Blizzard UpdateValue. Blizzard's Complete format already shows the
+-- percentage, and with the option off Blizzard's text is left untouched.
 local function UpdateEntryValueText(frame)
-    local showPercentage = Config.Skins.DamageMeter.ShowPercentage
-    SetState(frame, "showPercentage", showPercentage)
-    if frame.deathRecapID and frame.deathRecapID ~= 0 then
+    if not Config.Skins.DamageMeter.ShowPercentage
+        or frame:GetNumberDisplayType() == Enum.DamageMeterNumbers.Complete
+        or (frame.deathRecapID and frame.deathRecapID ~= 0)
+        or HasSecretValues(frame) then
         return
     end
 
     local value, perSecond, total = frame.value, frame.valuePerSecond, frame.sessionTotalValue
-    -- Combat values can be secret; leave Blizzard's native text intact in that case.
-    if issecretvalue(value) or issecretvalue(perSecond) or issecretvalue(total) then
-        return
-    end
-
     local mainValue = value or 0
     local secondaryValue
     local perSecondIsPrimary = frame:ShowsValuePerSecondAsPrimary()
@@ -205,11 +192,8 @@ local function UpdateEntryValueText(frame)
     else
         text = DAMAGE_METER_ENTRY_FORMAT_MINIMAL:format(AbbreviateLargeNumbers(mainValue))
     end
-    if showPercentage then
-        local percentage = total and total > 0 and Round((value or 0) / total * 100) or 0
-        text = ("%s [%d%%]"):format(text, percentage)
-    end
-    frame.StatusBar.Value:SetText(text)
+    local percentage = total and total > 0 and Round((value or 0) / total * 100) or 0
+    frame.StatusBar.Value:SetText(("%s [%d%%]"):format(text, percentage))
 end
 
 local function LayoutEntry(frame, statusBar)
@@ -304,14 +288,22 @@ local function SkinDamageMeterEntry(frame)
         end
         SetState(frame, "entrySkinned", true)
         SetState(frame, "layoutDirty", true)
+        SetState(frame, "showPercentage", false)
     end
 
     if GetState(frame, "layoutDirty", false) then
         SetState(frame, "layoutDirty", false)
         LayoutEntry(frame, statusBar)
     end
-    if frame.SetSuppressIcon and GetState(frame, "showPercentage") ~= Config.Skins.DamageMeter.ShowPercentage then
-        UpdateEntryValueText(frame)
+
+    -- Re-render after the option changes; Blizzard's UpdateValue restores its own text and
+    -- the hook above re-applies the percentage when enabled.
+    local showPercentage = Config.Skins.DamageMeter.ShowPercentage
+    if frame.SetSuppressIcon and GetState(frame, "showPercentage") ~= showPercentage then
+        SetState(frame, "showPercentage", showPercentage)
+        if not HasSecretValues(frame) then
+            frame:UpdateValue()
+        end
     end
 end
 
@@ -337,8 +329,9 @@ local function HookWindow(window)
         return
     end
 
+    -- Refresh is not hooked: it runs on every combat session update. New rows arrive through
+    -- the acquired-frame callback and style resets through each entry's UpdateStyle hook.
     window:HookScript("OnShow", QueueSkinPass)
-    hooksecurefunc(window, "Refresh", QueueSkinPass)
     ScrollUtil.AddAcquiredFrameCallback(window:GetScrollBox(), QueueSkinPass, Skins)
     SetState(window, "windowHooked", true)
 end
@@ -414,30 +407,21 @@ local function SkinExistingWindows()
     end
 end
 
-local function ForceSkinPass()
+local function RunSkinPass()
+    skinPassQueued = false
     SkinExistingWindows()
 end
 
 QueueSkinPass = function()
-    if GetState(Skins, STATE_KEY.SKIN_PASS_QUEUED, false) then
+    if skinPassQueued then
         return
     end
 
-    SetState(Skins, STATE_KEY.SKIN_PASS_QUEUED, true)
-    RefineUI:After(TIMER_KEY.SKIN_PASS, 0, function()
-        SetState(Skins, STATE_KEY.SKIN_PASS_QUEUED, false)
-        ForceSkinPass()
-    end)
+    skinPassQueued = true
+    RefineUI:After(TIMER_KEY_SKIN_PASS, 0, RunSkinPass)
 end
 
 local function RegisterDamageMeterUpdateEvents()
-    if GetState(Skins, STATE_KEY.UPDATE_EVENTS_REGISTERED, false) then
-        return
-    end
-    SetState(Skins, STATE_KEY.UPDATE_EVENTS_REGISTERED, true)
-
-    -- Session update events need no handler: Blizzard answers them by calling the window's
-    -- Refresh, which is hooked above.
     RefineUI:RegisterEventCallback("DAMAGE_METER_RESET", QueueSkinPass, EVENT_KEY.RESET)
     RefineUI:RegisterEventCallback("PLAYER_REGEN_DISABLED", function()
         if Config.Skins.DamageMeter.AutoResetCombat then
@@ -514,39 +498,20 @@ end
 ----------------------------------------------------------------------------------------
 -- Public Methods
 ----------------------------------------------------------------------------------------
-function Skins:StartDamageMeterSkinner()
-    if GetState(Skins, STATE_KEY.SKINNER_STARTED, false) then
-        return
-    end
-
-    SetState(Skins, STATE_KEY.SKINNER_STARTED, true)
-    RefineUI:OffEvent("ADDON_LOADED", EVENT_KEY.ADDON_LOADED)
-
+local function StartDamageMeterSkinner()
+    -- Windows created later pass through SetupSessionWindow; existing ones are hooked by
+    -- the first pass and restyle themselves on show.
     RefineUI:HookOnce(HOOK_KEY.SETUP_SESSION_WINDOW, _G.DamageMeter, "SetupSessionWindow", QueueSkinPass)
     RegisterDamageMeterUpdateEvents()
     RegisterDamageMeterSettings()
     UpdateInstanceReset(true, false)
-
     QueueSkinPass()
-    RefineUI:After(TIMER_KEY.START_RETRY_025, 0.25, QueueSkinPass)
-    RefineUI:After(TIMER_KEY.START_RETRY_1, 1, QueueSkinPass)
-    RefineUI:After(TIMER_KEY.START_RETRY_2, 2, QueueSkinPass)
 
     RefineUI:RegisterEventCallback("PLAYER_ENTERING_WORLD", function(_, isInitialLogin, isReloadingUi)
         UpdateInstanceReset(isInitialLogin, isReloadingUi)
-        RefineUI:After(TIMER_KEY.WORLD_RETRY_01, 0.1, QueueSkinPass)
-        RefineUI:After(TIMER_KEY.WORLD_RETRY_06, 0.6, QueueSkinPass)
     end, EVENT_KEY.PLAYER_ENTERING_WORLD)
 end
 
 function Skins:InitDamageMeterSkinner()
-    if C_AddOns.IsAddOnLoaded("Blizzard_DamageMeter") then
-        self:StartDamageMeterSkinner()
-    else
-        RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addon)
-            if addon == "Blizzard_DamageMeter" then
-                self:StartDamageMeterSkinner()
-            end
-        end, EVENT_KEY.ADDON_LOADED)
-    end
+    EventUtil.ContinueOnAddOnLoaded("Blizzard_DamageMeter", StartDamageMeterSkinner)
 end

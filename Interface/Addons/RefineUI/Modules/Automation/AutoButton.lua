@@ -23,37 +23,32 @@ function AutoButton:UpdateButtonCooldown()
 	CooldownFrame_Set(self.frame.cd, startTime or 0, duration or 0, enabled or 0)
 end
 
+-- Hide and Show share one key so only the latest state applies after combat.
+local COMBAT_STATE_KEY = "AutoButton:CombatState"
+
+local function ApplyHidden()
+	AutoButton.frame:EnableMouse(false)
+end
+
+local function ApplyShown()
+	AutoButton.frame:EnableMouse(true)
+	if AutoButton.shownItem then
+		AutoButton.frame:SetAttribute("item", AutoButton.shownItem)
+	end
+end
+
 function AutoButton:HideButton()
 	self.activeBag = nil
 	self.activeSlot = nil
 	self.frame:SetAlpha(0)
 	CooldownFrame_Set(self.frame.cd, 0, 0, 0)
-	if not InCombatLockdown() then
-		self.frame:EnableMouse(false)
-	else
-		RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-			self.frame:EnableMouse(false)
-			RefineUI:OffEvent("PLAYER_REGEN_ENABLED", "AutoButton:HideOnExitCombat")
-		end, "AutoButton:HideOnExitCombat")
-	end
+	RefineUI:RunAfterCombat(COMBAT_STATE_KEY, ApplyHidden)
 end
 
 function AutoButton:ShowButton(item)
 	self.frame:SetAlpha(1)
-	if not InCombatLockdown() then
-		self.frame:EnableMouse(true)
-		if item then
-			self.frame:SetAttribute("item", item)
-		end
-	else
-		RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-			self.frame:EnableMouse(true)
-			if item then
-				self.frame:SetAttribute("item", item)
-			end
-			RefineUI:OffEvent("PLAYER_REGEN_ENABLED", "AutoButton:ShowOnExitCombat")
-		end, "AutoButton:ShowOnExitCombat")
-	end
+	self.shownItem = item
+	RefineUI:RunAfterCombat(COMBAT_STATE_KEY, ApplyShown)
 end
 
 function AutoButton:UpdateBindings()

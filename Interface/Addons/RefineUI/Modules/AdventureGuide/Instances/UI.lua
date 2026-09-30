@@ -17,7 +17,6 @@ local PlaySound = PlaySound
 local SOUNDKIT = SOUNDKIT
 local format = string.format
 local ipairs = ipairs
-local select = select
 local type = type
 
 ----------------------------------------------------------------------------------------
@@ -104,10 +103,14 @@ function AdventureGuideInstances:CreateCustomPanel(infoFrame)
 
     local panel = CreateFrame("Frame", nil, infoFrame)
     local panelAnchorFrame = infoFrame.model or infoFrame.detailsScroll
-    panel:SetPoint("TOPLEFT", panelAnchorFrame, "TOPLEFT", 0, 0)
-    panel:SetPoint("BOTTOMRIGHT", panelAnchorFrame, "BOTTOMRIGHT", 0, 0)
-    -- Stay in the journal's strata so other windows can still cover the panel.
+    -- Covers the right page, including the slightly larger instance lore frame.
+    panel:SetPoint("TOPLEFT", panelAnchorFrame, "TOPLEFT", 0, 1)
+    panel:SetPoint("BOTTOMRIGHT", infoFrame, "BOTTOMRIGHT", 0, 0)
+    -- Overlay Blizzard's page instead of hiding it (hiding from addon code taints
+    -- the encounter frames); loot and lore are HIGH strata, so match them.
+    panel:SetFrameStrata("HIGH")
     panel:SetFrameLevel(infoFrame:GetFrameLevel() + 40)
+    panel:EnableMouse(true)
     panel:Hide()
 
     panel.Bg = panel:CreateTexture(nil, "BACKGROUND")
@@ -162,37 +165,6 @@ function AdventureGuideInstances:CreateCustomPanel(infoFrame)
     self.customPanel = panel
 end
 
-function AdventureGuideInstances:InstallNativeVisibilityGuards(infoFrame)
-    if self.nativeVisibilityGuardsInstalled or not infoFrame then
-        return
-    end
-
-    local function GuardFrame(nativeFrame)
-        if not nativeFrame or not nativeFrame.HookScript then
-            return
-        end
-
-        nativeFrame:HookScript("OnShow", function(frame)
-            if self.customTabActive then
-                frame:Hide()
-            end
-        end)
-    end
-
-    GuardFrame(infoFrame.overviewScroll)
-    GuardFrame(infoFrame.LootContainer)
-    GuardFrame(infoFrame.detailsScroll)
-    GuardFrame(infoFrame.model)
-    GuardFrame(infoFrame.overviewScroll and infoFrame.overviewScroll.child)
-    GuardFrame(infoFrame.detailsScroll and infoFrame.detailsScroll.child)
-
-    local _, encounterFrame = GetEncounterFrames()
-    GuardFrame(encounterFrame and encounterFrame.overviewFrame)
-    GuardFrame(encounterFrame and encounterFrame.infoFrame)
-
-    self.nativeVisibilityGuardsInstalled = true
-end
-
 function AdventureGuideInstances:EnsureUI()
     if self.uiInitialized then
         return
@@ -205,7 +177,6 @@ function AdventureGuideInstances:EnsureUI()
 
     self:CreateCustomSideTab(infoFrame)
     self:CreateCustomPanel(infoFrame)
-    self:InstallNativeVisibilityGuards(infoFrame)
 
     self.uiInitialized = self.customTabButton ~= nil and self.customPanel ~= nil
 end
@@ -378,19 +349,6 @@ function AdventureGuideInstances:ResetBossFilterSelection()
 end
 
 ----------------------------------------------------------------------------------------
--- UI Helpers
-----------------------------------------------------------------------------------------
-function AdventureGuideInstances:ShowNativeDifficultyByCurrentTab()
-    local _, _, infoFrame = GetEncounterFrames()
-    if not infoFrame or not infoFrame.difficulty then
-        return
-    end
-
-    local shouldDisplayDifficulty = select(9, EJ_GetInstanceInfo()) and (infoFrame.tab ~= 4)
-    infoFrame.difficulty:SetShown(shouldDisplayDifficulty)
-end
-
-----------------------------------------------------------------------------------------
 -- Panel State
 ----------------------------------------------------------------------------------------
 local function SetTabSelected(tab, selected)
@@ -400,16 +358,6 @@ local function SetTabSelected(tab, selected)
         tab:LockHighlight()
     else
         tab:UnlockHighlight()
-    end
-end
-
--- Accepts nil entries so optional native frames can be listed inline.
-local function SetFramesShown(shown, ...)
-    for index = 1, select("#", ...) do
-        local frame = select(index, ...)
-        if frame then
-            frame:SetShown(shown)
-        end
     end
 end
 
@@ -433,50 +381,18 @@ function AdventureGuideInstances:ClearNativeTabSelection()
     end
 end
 
-function AdventureGuideInstances:HideNativeEncounterContent()
-    local _, encounterFrame, infoFrame = GetEncounterFrames()
+-- Native side tab IDs are EncounterJournal_SetTab's tab types, and info.tab is the selected one.
+function AdventureGuideInstances:RestoreNativeTabSelection()
+    local _, _, infoFrame = GetEncounterFrames()
     if not infoFrame then
         return
     end
 
-    local model, overview, details, loot = infoFrame.model, infoFrame.overviewScroll, infoFrame.detailsScroll, infoFrame.LootContainer
-    SetFramesShown(false,
-        infoFrame.BG, infoFrame.leftShadow, infoFrame.rightShadow, infoFrame.encounterTitle, infoFrame.difficulty,
-        model, model and model.dungeonBG, overview, overview and overview.child, details, details and details.child,
-        loot, loot and loot.classClearFilter, encounterFrame.overviewFrame, encounterFrame.infoFrame,
-        -- Instance lore sits on Blizzard's HIGH strata, above this panel, so it must be hidden.
-        encounterFrame.instance)
-    _G.EncounterJournal_HideCreatures()
-end
-
-function AdventureGuideInstances:ShowNativeEncounterContent()
-    local journal, encounterFrame, infoFrame = GetEncounterFrames()
-    if not infoFrame then
-        return
-    end
-
-    -- Blizzard shows the lore on instance pages (DisplayInstance) and hides it on boss
-    -- pages (ClearDetails). Restore that even while hidden, so reopening is correct.
-    if encounterFrame.instance then
-        encounterFrame.instance:SetShown(journal.encounterID == nil)
-    end
-
-    if not journal:IsShown() or not encounterFrame:IsShown() then
-        return
-    end
-
-    self:ShowNativeDifficultyByCurrentTab()
-
-    local model, overview, details = infoFrame.model, infoFrame.overviewScroll, infoFrame.detailsScroll
-    SetFramesShown(true,
-        infoFrame.BG, infoFrame.leftShadow, model and model.dungeonBG, overview and overview.child,
-        details and details.child, encounterFrame.overviewFrame, encounterFrame.infoFrame)
-
-    -- Blizzard's SetTab restores the selected tab's own frames, title and shadows.
-    local hasVisibleNativeFrame = (overview and overview:IsShown()) or (details and details:IsShown())
-        or (infoFrame.LootContainer and infoFrame.LootContainer:IsShown()) or (model and model:IsShown())
-    if not hasVisibleNativeFrame then
-        _G.EncounterJournal_SetTab(infoFrame.tab or infoFrame.overviewTab:GetID())
+    for _, tabKey in ipairs(NATIVE_TAB_KEYS) do
+        local tab = infoFrame[tabKey]
+        if tab then
+            SetTabSelected(tab, tab:GetID() == infoFrame.tab)
+        end
     end
 end
 
@@ -659,7 +575,6 @@ function AdventureGuideInstances:ActivateCustomTab()
 
     self:SetCustomTabSelected(true)
     self:ClearNativeTabSelection()
-    self:HideNativeEncounterContent()
 
     self.customPanel:Show()
     self:RefreshCustomTabContent()
@@ -686,7 +601,7 @@ function AdventureGuideInstances:DeactivateCustomTab()
         self:CancelPendingInstanceRowBuilds()
     end
 
-    self:ShowNativeEncounterContent()
+    self:RestoreNativeTabSelection()
 end
 
 function AdventureGuideInstances:RefreshCustomTabContent()
@@ -701,7 +616,6 @@ function AdventureGuideInstances:RefreshCustomTabContent()
     end
 
     self:SetCustomTabSelected(true)
-    self:HideNativeEncounterContent()
 
     local instanceID = self.currentInstanceID or self:GetCurrentJournalInstanceID()
     if not IsValidInstanceID(instanceID) then

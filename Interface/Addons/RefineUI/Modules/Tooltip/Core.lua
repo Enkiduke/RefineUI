@@ -194,6 +194,10 @@ function Tooltip:ResolveTooltipItemQuality(tooltip, data)
         end
     end
 
+    if not tooltip.GetItem then
+        return nil
+    end
+
     local _, itemLink, itemID = tooltip:GetItem()
     return GetItemQuality(ReadSafeString(itemLink)) or GetItemQuality(ReadSafeNumber(itemID))
 end
@@ -265,15 +269,15 @@ local function ResolveMouseFocusUnit()
 end
 
 function Tooltip:ResolveTooltipUnitToken(tooltip, data)
+    -- SharedTooltipTemplate frames (e.g. SettingsTooltip) lack the tooltip data mixin.
+    if not tooltip.GetUnit then
+        return nil
+    end
+
     local _, unitToken = tooltip:GetUnit()
     unitToken = ValidateUnitToken(unitToken)
     if unitToken then
         return unitToken
-    end
-
-    -- SharedTooltipTemplate frames lack the tooltip data mixin.
-    if not tooltip.GetPrimaryTooltipData then
-        return nil
     end
 
     data = data or tooltip:GetPrimaryTooltipData()

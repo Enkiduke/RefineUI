@@ -1147,7 +1147,26 @@ function RefineUI:StyleNameplateCastBar(castBar)
 
     -- Border
     RefineUI.CreateBorder(castBar, 6, 6, 12)
-    
+
+    -- Important casts: Blizzard's indicator art spans the bar and its icon slot. Blank it
+    -- and drive the RefineUI bar glow and the portrait glow from its flag, which can be
+    -- secret, so it is only ever passed to SetAlphaFromBoolean.
+    if castBar.ImportantCastIndicator then
+        castBar.ImportantCastIndicator:SetTexture(nil)
+        local importantGlow = RefineUI.CreateGlow(castBar)
+        importantGlow:SetAlpha(0)
+        importantGlow:Show()
+        RefineUI:HookOnce(
+            BuildNameplateCastHookKey(castBar, "SetIsHighlightedImportantCast"),
+            castBar,
+            "SetIsHighlightedImportantCast",
+            function(self, isImportant)
+                importantGlow:SetAlphaFromBoolean(isImportant, 1, 0)
+                RefineUI:SetNameplateImportantCast(GetCastBarUnitFrame(self), isImportant)
+            end
+        )
+    end
+
     -- Icon
     if castBar.Icon then
          castBar.Icon:SetAlpha(0)

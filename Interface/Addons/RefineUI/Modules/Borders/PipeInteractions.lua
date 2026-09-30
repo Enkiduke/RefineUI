@@ -49,17 +49,16 @@ local EVENT_KEY = {
     TRADE_SHOW = "Borders_TradeShow",
     TRADE_PLAYER_ITEM_CHANGED = "Borders_TradePlayer",
     TRADE_TARGET_ITEM_CHANGED = "Borders_TradeTarget",
-    ADDON_LOADED_PROF = "Borders_PROFLoad",
     MAIL_SHOW = "Borders_MailShow",
     MAIL_SEND_INFO_UPDATE = "Borders_MailInfo",
     MAIL_SEND_SUCCESS = "Borders_MailSuccess",
-    ADDON_LOADED_ENCOUNTER_JOURNAL = "Borders_EncounterJournalLoad",
     EJ_LOOT_DATA_RECIEVED = "Borders_EncounterJournalLootData",
     EJ_DIFFICULTY_UPDATE = "Borders_EncounterJournalDifficulty",
 }
 
 local HOOK_KEY = {
-    TRADESKILLFRAME_RECIPELIST_SET_SELECTED = "Borders:TradeSkillFrame:RecipeList:SetSelectedRecipeID",
+    PROFESSIONS_SETUP_OUTPUT_ICON = "Borders:Professions:SetupOutputIcon",
+    PROFESSIONS_REAGENT_BUTTON_UPDATE = "Borders:ProfessionsReagentSlotButtonMixin:Update",
     OPENMAIL_UPDATE = "Borders:OpenMail_Update",
     INBOXFRAME_UPDATE = "Borders:InboxFrame_Update",
     LOOTFRAME_ELEMENT_MIXIN_INIT = "Borders:LootFrameElementMixin:Init",
@@ -116,30 +115,6 @@ function Borders:UpdateTradeFrame()
         local targetLink = GetTradeTargetItemLink(i)
         if targetFrame then
             self:ApplyItemBorder(targetFrame, targetLink)
-        end
-    end
-end
-
-function Borders:UpdateTradeSkillFrame(recipeID)
-    if not TradeSkillFrame or not TradeSkillFrame:IsShown() then return end
-    if not recipeID and C_TradeSkillUI.GetSelectedRecipeID then
-        recipeID = C_TradeSkillUI.GetSelectedRecipeID()
-    end
-    if not recipeID then return end
-
-    if TradeSkillFrame.DetailsFrame and TradeSkillFrame.DetailsFrame.Contents and TradeSkillFrame.DetailsFrame.Contents.ResultIcon then
-        local resultLink = C_TradeSkillUI.GetRecipeItemLink(recipeID)
-        local resultFrame = TradeSkillFrame.DetailsFrame.Contents.ResultIcon
-        self:ApplyItemBorder(resultFrame, resultLink)
-    end
-
-    if TradeSkillFrame.DetailsFrame and TradeSkillFrame.DetailsFrame.Contents and TradeSkillFrame.DetailsFrame.Contents.Reagents then
-        for i = 1, C_TradeSkillUI.GetRecipeNumReagents(recipeID) do
-            local reagentFrame = TradeSkillFrame.DetailsFrame.Contents.Reagents[i] and TradeSkillFrame.DetailsFrame.Contents.Reagents[i].Icon
-            local reagentLink = C_TradeSkillUI.GetRecipeReagentItemLink(recipeID, i)
-            if reagentFrame then
-                self:ApplyItemBorder(reagentFrame, reagentLink)
-            end
         end
     end
 end
@@ -560,23 +535,17 @@ local function SetupInteractionPipe(self)
     RefineUI:RegisterEventCallback("TRADE_PLAYER_ITEM_CHANGED", function() self:UpdateTradeFrame() end, EVENT_KEY.TRADE_PLAYER_ITEM_CHANGED)
     RefineUI:RegisterEventCallback("TRADE_TARGET_ITEM_CHANGED", function() self:UpdateTradeFrame() end, EVENT_KEY.TRADE_TARGET_ITEM_CHANGED)
 
-    local function HookTradeSkill()
-        if TradeSkillFrame and TradeSkillFrame.RecipeList then
-            RefineUI:HookOnce(HOOK_KEY.TRADESKILLFRAME_RECIPELIST_SET_SELECTED, TradeSkillFrame.RecipeList, "SetSelectedRecipeID", function()
-                self:UpdateTradeSkillFrame()
-            end)
-        end
+    -- Hooked on the templates addon: reagent buttons copy the mixin when the slot pool creates them.
+    local function HookProfessions()
+        RefineUI:HookOnce(HOOK_KEY.PROFESSIONS_SETUP_OUTPUT_ICON, Professions, "SetupOutputIcon", function(outputIcon, _, outputItemInfo)
+            self:ApplyItemBorder(outputIcon, outputItemInfo.hyperlink)
+        end)
+        RefineUI:HookOnce(HOOK_KEY.PROFESSIONS_REAGENT_BUTTON_UPDATE, ProfessionsReagentSlotButtonMixin, "Update", function(button)
+            local reagent = button:GetReagent()
+            self:ApplyItemBorder(button, nil, reagent and reagent.itemID)
+        end)
     end
-
-    if TradeSkillFrame then
-        HookTradeSkill()
-    else
-        RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addon)
-            if addon == "Blizzard_TradeSkillUI" then
-                HookTradeSkill()
-            end
-        end, EVENT_KEY.ADDON_LOADED_PROF)
-    end
+    EventUtil.ContinueOnAddOnLoaded("Blizzard_ProfessionsTemplates", HookProfessions)
 
     RefineUI:RegisterEventCallback("MAIL_SHOW", function() self:UpdateMailSend() end, EVENT_KEY.MAIL_SHOW)
     RefineUI:RegisterEventCallback("MAIL_SEND_INFO_UPDATE", function() self:UpdateMailSend() end, EVENT_KEY.MAIL_SEND_INFO_UPDATE)
@@ -658,15 +627,7 @@ local function SetupInteractionPipe(self)
         end
     end
 
-    if _G.EncounterJournal then
-        HookEncounterJournal()
-    else
-        RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addon)
-            if addon == "Blizzard_EncounterJournal" then
-                HookEncounterJournal()
-            end
-        end, EVENT_KEY.ADDON_LOADED_ENCOUNTER_JOURNAL)
-    end
+    EventUtil.ContinueOnAddOnLoaded("Blizzard_EncounterJournal", HookEncounterJournal)
 
     RefineUI:RegisterEventCallback("EJ_LOOT_DATA_RECIEVED", QueueEncounterRefresh, EVENT_KEY.EJ_LOOT_DATA_RECIEVED)
     RefineUI:RegisterEventCallback("EJ_DIFFICULTY_UPDATE", QueueEncounterRefresh, EVENT_KEY.EJ_DIFFICULTY_UPDATE)

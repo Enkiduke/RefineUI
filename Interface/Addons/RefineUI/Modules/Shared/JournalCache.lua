@@ -4,7 +4,6 @@ local Cache = {}
 RefineUI.JournalCache = Cache
 local VERSION = 1
 local TTL = {
-    catalogs = 30 * 86400,
     manifests = 30 * 86400,
     rows = 30 * 86400,
     summaries = 7 * 86400,
@@ -45,6 +44,10 @@ function Cache:Store()
     else
         db.build, db.interface = build, interface
         db.buckets, db.ownership = db.buckets or {}, db.ownership or {}
+        -- Drop buckets of kinds that are no longer persisted (e.g. loot catalogs).
+        for key in pairs(db.buckets) do
+            if not TTL[key:match("^(.-):")] then db.buckets[key] = nil end
+        end
     end
     store = db
     return db
@@ -123,8 +126,8 @@ function Cache:InvalidateOwnership(kind)
     if kind == true then kind = "achievements" end
     self:BumpOwnership(kind)
     if kind ~= "achievements" then
-        -- Detail snapshots predate revision stamps and must be dropped. Their
-        -- journal catalogs remain available, so rebuilding them is inexpensive.
+        -- Detail snapshots predate revision stamps and must be dropped. A detail
+        -- view rebuilds only its own instance and difficulty when next opened.
         local db = self:Store()
         for key in pairs(db.buckets) do
             if key:match("^details:") then db.buckets[key] = nil end

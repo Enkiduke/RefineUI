@@ -310,8 +310,6 @@ local function ResetPooledNameplateFrameState(unitFrame)
     data.isCasting = nil
     data.isPlayer = nil
     data.inCombat = nil
-    data.LastImportantCastSpellIdentifier = nil
-    data.LastImportantCastIsImportant = nil
     data.PortraitRendered = nil
     data.lastPortraitMode = nil
     data.wasCasting = nil
@@ -412,6 +410,11 @@ function Nameplates:EnsureSimplifiedNameplatesDisabled()
 
     pcall(C_NamePlateManager.SetNamePlateSimplified, nameplateType.Friendly, false)
     pcall(C_NamePlateManager.SetNamePlateSimplified, nameplateType.Enemy, false)
+end
+
+-- RefineUI's layout is built on the Block style; its Options row is shielded (EditMode.lua).
+function Nameplates:ApplyPinnedNameplateStyle()
+    SetCVarIfChanged("nameplateStyle", Enum.NamePlateStyle.Block)
 end
 
 function Nameplates:IsInGroupInstanceContent()
@@ -915,6 +918,7 @@ function Nameplates:EnableRuntime()
         SetCVarIfChanged("nameplateMinAlpha", cfg.Alpha)
     end
     SetCVarIfChanged("nameplateMaxAlpha", 1.0)
+    self:ApplyPinnedNameplateStyle()
 
     self:ApplyThreatDisplayCVarFromConfig()
     self:RegisterRuntimeEvents()
@@ -926,6 +930,7 @@ function Nameplates:EnableRuntime()
 
     self:RegisterEditModeFrame()
     self:RegisterEditModeCallbacks()
+    self:RegisterBlizzardSettingsShields()
 end
 
 ----------------------------------------------------------------------------------------

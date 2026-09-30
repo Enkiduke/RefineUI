@@ -1013,14 +1013,7 @@ RefineUI.AddAPI = AddAPI
 -- Safe Error Handling Wrapper
 ----------------------------------------------------------------------------------------
 local function SafeCall(func)
-    return xpcall(func, function(err)
-        local msg = "|cffff5555RefineUI skin error:|r " .. tostring(err)
-        if DEFAULT_CHAT_FRAME then
-            DEFAULT_CHAT_FRAME:AddMessage(msg)
-        else
-            print(msg)
-        end
-    end)
+    return xpcall(func, RefineUI.ErrorHandler)
 end
 
 RefineUI.SafeCall = SafeCall

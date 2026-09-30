@@ -15,6 +15,7 @@ local Config = RefineUI.Config
 ----------------------------------------------------------------------------------------
 local _G = _G
 local floor = math.floor
+local max = math.max
 local tonumber = tonumber
 local unpack = unpack
 local type = type
@@ -33,6 +34,11 @@ local SetPortraitTexture = SetPortraitTexture
 local UnitExists = UnitExists
 local UnitCanAttack = UnitCanAttack
 local hooksecurefunc = hooksecurefunc
+local GameTooltip = GameTooltip
+local GameTooltip_Hide = GameTooltip_Hide
+local SettingsPanel = SettingsPanel
+local ScrollUtil = ScrollUtil
+local EventRegistry = EventRegistry
 
 ----------------------------------------------------------------------------------------
 -- Locals
@@ -99,8 +105,28 @@ local WORLD_TEXT_SCALE_MIN = 0.05
 local WORLD_TEXT_SCALE_MAX = 2.0
 local WORLD_TEXT_SCALE_STEP = 0.05
 local PREVIEW_NAME_FONT_SIZE = 12
-local PREVIEW_HEALTH_FONT_SIZE = 14
+local PREVIEW_HEALTH_FONT_SIZE = 18
 local PREVIEW_PORTRAIT_BASE_SIZE = 36
+local PREVIEW_ARROW_SIZE = 24
+local PREVIEW_AURA_SIZE = 20
+local PREVIEW_PADDING = 8
+local PREVIEW_FRIENDLY_GAP = 16
+local PREVIEW_STATE_SECONDS = 2.5
+local PREVIEW_STATE_CAST = 1
+local PREVIEW_STATE_CAST_LOCKED = 2
+local PREVIEW_STATE_CC = 3
+local PREVIEW_STATE_IDLE = 4
+local PREVIEW_CAST_ICON = "Interface\\Icons\\Spell_Shadow_ShadowBolt"
+local PREVIEW_CC_ICON = "Interface\\Icons\\Spell_Nature_Polymorph"
+local PREVIEW_DEBUFF_ICONS = {
+    "Interface\\Icons\\Spell_Shadow_ShadowWordPain",
+    "Interface\\Icons\\Spell_Fire_Immolation",
+    "Interface\\Icons\\Spell_Nature_Slow",
+}
+local PREVIEW_BUFF_ICONS = {
+    "Interface\\Icons\\Spell_Holy_PowerWordShield",
+    "Interface\\Icons\\Spell_Nature_Rejuvenation",
+}
 local EDITMODE_DEFAULT_POINT = "TOPLEFT"
 local EDITMODE_DEFAULT_X = 500
 local EDITMODE_DEFAULT_Y = -250
@@ -563,8 +589,23 @@ local function RefreshLiveNameplates()
     end
 end
 
+-- Enemy aura lists grow outward from the health bar corners; spacing is a visual inset
+-- per item, matching Nameplates:SkinNamePlateAura.
+local function LayoutPreviewAuras(auras, health, point, relativePoint, x, y, size, step, spacing)
+    local inset = max(0, RefineUI:Scale(spacing) * 0.5)
+    for i = 1, #auras do
+        local aura = auras[i]
+        aura:SetSize(size, size)
+        aura:ClearAllPoints()
+        aura:SetPoint(point, health, relativePoint, x + ((i - 1) * step), y)
+        RefineUI.SetInside(aura.Icon, aura, 1 + inset, 1 + inset)
+        RefineUI.CreateBorder(aura, 6 - inset, 6 - inset, 14)
+    end
+end
+
 local function RefreshPreviewFrame()
-    if not editModeFrame then
+    local frame = editModeFrame
+    if not frame then
         return
     end
 
@@ -573,43 +614,53 @@ local function RefreshPreviewFrame()
     local castColors = castConfig.Colors or {}
     local threatConfig = config.Threat or {}
     local ccConfig = config.CrowdControl or {}
+    local auraConfig = config.EnemyAuras
     local reactionColors = (RefineUI.Colors and RefineUI.Colors.Reaction) or {}
     local hostileReaction = reactionColors[2] or reactionColors[1] or { r = 1, g = 0.25, b = 0.25 }
+    local friendlyReaction = reactionColors[5] or { r = 0.25, g = 1, b = 0.25 }
     local borderColor = config.TargetBorderColor or { 0.8, 0.8, 0.8 }
     local defaultBorderColor = (Config.General and Config.General.BorderColor) or { 0.35, 0.35, 0.35 }
-    local castColor = castColors.Interruptible or DEFAULT_CAST_COLORS.Interruptible
-    local castNonInterruptibleColor = castColors.NonInterruptible or DEFAULT_CAST_COLORS.NonInterruptible
     local threatWarningColor = threatConfig.WarningColor or DEFAULT_THREAT_COLORS.WarningColor
     local threatEnabled = threatConfig.Enable ~= false
     local ccEnabled = ccConfig.Enable ~= false
     local showNpcTitles = config.ShowNPCTitles ~= false
+    local targetIndicator = config.TargetIndicator ~= false
     local ccColor = ccConfig.Color or DEFAULT_CC_COLORS.Color
 
-    local scale = ClampNumber(config.Scale, NAMEPLATE_SCALE_MIN, NAMEPLATE_SCALE_MAX, DEFAULT_TEXT_SCALE)
-    local unitNameScale = scale
-    local healthTextScale = scale
-    local dynamicPortraitScale = scale
+    local state = frame.previewState
+    if state == PREVIEW_STATE_CC and not ccEnabled then
+        state = PREVIEW_STATE_IDLE
+    end
+    local isCasting = state == PREVIEW_STATE_CAST or state == PREVIEW_STATE_CAST_LOCKED
+    local castColor = castColors.Interruptible or DEFAULT_CAST_COLORS.Interruptible
+    if state == PREVIEW_STATE_CAST_LOCKED then
+        castColor = castColors.NonInterruptible or DEFAULT_CAST_COLORS.NonInterruptible
+    end
 
-    local plateWidth = DEFAULT_PLATE_SIZE[1] * scale
-    local plateHeight = DEFAULT_PLATE_SIZE[2] * scale
-    local castHeight = ClampNumber(castConfig.Height, 8, 48, 20)
-    local ccHeight = 10
-    local portraitSize = RefineUI:Scale(PREVIEW_PORTRAIT_BASE_SIZE * dynamicPortraitScale)
-    local nameFontSize = floor((PREVIEW_NAME_FONT_SIZE * unitNameScale) + 0.5)
-    local healthFontSize = floor((PREVIEW_HEALTH_FONT_SIZE * healthTextScale) + 0.5)
+    local scale = ClampNumber(config.Scale, NAMEPLATE_SCALE_MIN, NAMEPLATE_SCALE_MAX, DEFAULT_TEXT_SCALE)
+    local plateWidth = RefineUI:Scale(DEFAULT_PLATE_SIZE[1] * scale)
+    local plateHeight = RefineUI:Scale(DEFAULT_PLATE_SIZE[2] * scale)
+    local castHeight = RefineUI:Scale(ClampNumber(castConfig.Height, 8, 48, 20))
+    local portraitSize = RefineUI:Scale(PREVIEW_PORTRAIT_BASE_SIZE * scale)
+    local arrowSize = RefineUI:Scale(PREVIEW_ARROW_SIZE)
+    local auraSize = RefineUI:Scale(PREVIEW_AURA_SIZE)
+    local padding = RefineUI:Scale(PREVIEW_PADDING)
+    local friendlyGap = RefineUI:Scale(PREVIEW_FRIENDLY_GAP)
+    local nameFontSize = max(1, floor((PREVIEW_NAME_FONT_SIZE * scale) + 0.5))
+    local healthFontSize = max(1, floor((PREVIEW_HEALTH_FONT_SIZE * scale) + 0.5))
 
     local borderR = ClampNumber(borderColor[1], 0, 1, 0.8)
     local borderG = ClampNumber(borderColor[2], 0, 1, 0.8)
     local borderB = ClampNumber(borderColor[3], 0, 1, 0.8)
-    local defaultBorderR = ClampNumber(defaultBorderColor[1], 0, 1, 0.35)
-    local defaultBorderG = ClampNumber(defaultBorderColor[2], 0, 1, 0.35)
-    local defaultBorderB = ClampNumber(defaultBorderColor[3], 0, 1, 0.35)
+    local plateBorderR, plateBorderG, plateBorderB = borderR, borderG, borderB
+    if not targetIndicator then
+        plateBorderR = ClampNumber(defaultBorderColor[1], 0, 1, 0.35)
+        plateBorderG = ClampNumber(defaultBorderColor[2], 0, 1, 0.35)
+        plateBorderB = ClampNumber(defaultBorderColor[3], 0, 1, 0.35)
+    end
     local castR = ClampNumber(castColor[1], 0, 1, 1)
     local castG = ClampNumber(castColor[2], 0, 1, 0.7)
     local castB = ClampNumber(castColor[3], 0, 1, 0)
-    local castShieldR = ClampNumber(castNonInterruptibleColor[1], 0, 1, 0.5)
-    local castShieldG = ClampNumber(castNonInterruptibleColor[2], 0, 1, 0.5)
-    local castShieldB = ClampNumber(castNonInterruptibleColor[3], 0, 1, 0.5)
     local threatR = ClampNumber(hostileReaction.r or hostileReaction[1], 0, 1, 1)
     local threatG = ClampNumber(hostileReaction.g or hostileReaction[2], 0, 1, 0.25)
     local threatB = ClampNumber(hostileReaction.b or hostileReaction[3], 0, 1, 0.25)
@@ -621,144 +672,118 @@ local function RefreshPreviewFrame()
     local ccR = ClampNumber(ccColor[1], 0, 1, 0.2)
     local ccG = ClampNumber(ccColor[2], 0, 1, 0.6)
     local ccB = ClampNumber(ccColor[3], 0, 1, 1.0)
-    local ccBorderR = ccR
-    local ccBorderG = ccG
-    local ccBorderB = ccB
 
-    local extraHeight = ccEnabled and (ccHeight + 10) or 0
-    editModeFrame:SetSize(plateWidth + portraitSize + 94, plateHeight + castHeight + 62 + extraHeight)
+    local health = frame.Health
+    health:SetSize(plateWidth, plateHeight)
+    health:SetStatusBarColor(threatR, threatG, threatB)
+    health.border:SetBackdropBorderColor(plateBorderR, plateBorderG, plateBorderB, 1)
+    RefineUI.Font(frame.HealthText, healthFontSize, nil, "OUTLINE")
 
-    if editModeFrame.Plate then
-        editModeFrame.Plate:SetSize(plateWidth, plateHeight)
-        if editModeFrame.Plate.border and editModeFrame.Plate.border.SetBackdropBorderColor then
-            if config.TargetIndicator == false then
-                editModeFrame.Plate.border:SetBackdropBorderColor(defaultBorderR, defaultBorderG, defaultBorderB, 1)
-            else
-                editModeFrame.Plate.border:SetBackdropBorderColor(borderR, borderG, borderB, 1)
-            end
-        end
+    RefineUI.Font(frame.NameText, nameFontSize)
+    if threatEnabled then
+        frame.NameText:SetTextColor(threatR, threatG, threatB)
+    else
+        frame.NameText:SetTextColor(1, 1, 1)
     end
 
-    if editModeFrame.Health then
-        editModeFrame.Health:SetStatusBarTexture(RefineUI.Media.Textures.HealthBar)
-        editModeFrame.Health:SetStatusBarDesaturated(true)
-        editModeFrame.Health:SetMinMaxValues(0, 100)
-        editModeFrame.Health:SetValue(67)
-        editModeFrame.Health:SetStatusBarColor(threatR, threatG, threatB)
+    -- Portrait: cast icon > CC icon > unit portrait, border colored to match (Portrait.lua).
+    local portraitR, portraitG, portraitB = plateBorderR, plateBorderG, plateBorderB
+    if isCasting then
+        frame.PortraitIcon:SetTexture(PREVIEW_CAST_ICON)
+        portraitR, portraitG, portraitB = castR, castG, castB
+    elseif state == PREVIEW_STATE_CC then
+        frame.PortraitIcon:SetTexture(PREVIEW_CC_ICON)
+        portraitR, portraitG, portraitB = ccR, ccG, ccB
+    else
+        SetPreviewPortraitTexture(frame.Portrait)
     end
-    if editModeFrame.HealthBG then
-        editModeFrame.HealthBG:SetTexture(RefineUI.Media.Textures.HealthBar)
-        editModeFrame.HealthBG:SetVertexColor(0.22, 0.22, 0.22, 0.95)
-    end
-    if editModeFrame.NameText then
-        RefineUI.Font(editModeFrame.NameText, nameFontSize, nil, "OUTLINE")
-        editModeFrame.NameText:SetText("Raging Marauder")
-        if threatEnabled then
-            editModeFrame.NameText:SetTextColor(threatR, threatG, threatB)
-        else
-            editModeFrame.NameText:SetTextColor(1, 1, 1)
-        end
-    end
-    if editModeFrame.TitleText then
-        editModeFrame.TitleText:SetText("<Innkeeper>")
-        if showNpcTitles then
-            editModeFrame.TitleText:Show()
-        else
-            editModeFrame.TitleText:Hide()
-        end
-    end
-    if editModeFrame.HealthText then
-        RefineUI.Font(editModeFrame.HealthText, healthFontSize, nil, "OUTLINE")
-        editModeFrame.HealthText:SetText("67")
-        editModeFrame.HealthText:SetTextColor(1, 1, 1)
+    frame.PortraitFrame:SetSize(portraitSize, portraitSize)
+    frame.PortraitIcon:SetShown(state ~= PREVIEW_STATE_IDLE)
+    frame.Portrait:SetShown(state == PREVIEW_STATE_IDLE)
+    frame.PortraitBorder:SetVertexColor(portraitR, portraitG, portraitB)
+
+    frame.TargetArrow:SetSize(arrowSize, arrowSize)
+    frame.TargetArrow:SetVertexColor(borderR, borderG, borderB)
+    frame.TargetArrow:SetShown(targetIndicator)
+
+    local castBar = frame.CastBar
+    castBar:SetHeight(castHeight)
+    castBar:SetStatusBarColor(castR, castG, castB)
+    castBar.border:SetBackdropBorderColor(castR, castG, castB, 1)
+    frame.CastBarBG:SetVertexColor(castR * 0.24, castG * 0.24, castB * 0.24, 0.95)
+    castBar:SetShown(isCasting)
+
+    local ccBar = frame.CrowdControlBar
+    ccBar:SetStatusBarColor(ccR, ccG, ccB)
+    ccBar.border:SetBackdropBorderColor(ccR, ccG, ccB, 1)
+    frame.CrowdControlBG:SetVertexColor(ccR * 0.25, ccG * 0.25, ccB * 0.25, 1)
+    ccBar:SetShown(state == PREVIEW_STATE_CC)
+
+    RefineUI.Font(frame.FriendlyName, nameFontSize)
+    frame.FriendlyName:SetTextColor(
+        ClampNumber(friendlyReaction.r or friendlyReaction[1], 0, 1, 0.25),
+        ClampNumber(friendlyReaction.g or friendlyReaction[2], 0, 1, 1),
+        ClampNumber(friendlyReaction.b or friendlyReaction[3], 0, 1, 0.25)
+    )
+    frame.FriendlyTitle:SetShown(showNpcTitles)
+
+    local nameHeight = frame.NameText:GetStringHeight()
+    local baseY = nameHeight + RefineUI:Scale(auraConfig.BaseOffsetY)
+    local debuffY = baseY + RefineUI:Scale(auraConfig.DebuffOffsetY)
+    local buffY = baseY + RefineUI:Scale(auraConfig.BuffOffsetY)
+    LayoutPreviewAuras(frame.Debuffs, health, "BOTTOMLEFT", "TOPLEFT",
+        RefineUI:Scale(auraConfig.DebuffOffsetX), debuffY, auraSize, auraSize, auraConfig.DebuffSpacing)
+    LayoutPreviewAuras(frame.Buffs, health, "BOTTOMRIGHT", "TOPRIGHT",
+        RefineUI:Scale(auraConfig.BuffOffsetX), buffY, auraSize, -auraSize, auraConfig.BuffSpacing)
+
+    -- Size the Edit Mode box around everything the plate can draw.
+    local portraitOverhang = (portraitSize - plateHeight) * 0.5
+    local topExtent = max(nameHeight + RefineUI:Scale(4), max(debuffY, buffY) + auraSize, portraitOverhang)
+    local bottomExtent = max(castHeight - RefineUI:Scale(4), portraitOverhang)
+    local sideExtent = max(portraitSize - RefineUI:Scale(8), RefineUI:Scale(4) + arrowSize)
+    local friendlyHeight = friendlyGap + frame.FriendlyName:GetStringHeight()
+    if showNpcTitles then
+        friendlyHeight = friendlyHeight + RefineUI:Scale(1) + frame.FriendlyTitle:GetStringHeight()
     end
 
-    if editModeFrame.PortraitFrame then
-        editModeFrame.PortraitFrame:SetSize(portraitSize, portraitSize)
-    end
-    if editModeFrame.PortraitBorder then
-        editModeFrame.PortraitBorder:SetTexture(RefineUI.Media.Textures.PortraitBorder)
-        editModeFrame.PortraitBorder:SetVertexColor(borderR, borderG, borderB)
-    end
-    if editModeFrame.PortraitBG then
-        editModeFrame.PortraitBG:SetTexture(RefineUI.Media.Textures.PortraitBG)
-    end
-    if editModeFrame.Portrait then
-        SetPreviewPortraitTexture(editModeFrame.Portrait)
-    end
+    frame:SetSize(
+        plateWidth + ((sideExtent + padding) * 2),
+        topExtent + plateHeight + bottomExtent + friendlyHeight + (padding * 2)
+    )
+    health:SetPoint("TOP", frame, "TOP", 0, -(padding + topExtent))
+    frame.FriendlyName:SetPoint("TOP", health, "BOTTOM", 0, -(bottomExtent + friendlyGap))
+end
 
-    if editModeFrame.CastBar then
-        editModeFrame.CastBar:SetSize(plateWidth, castHeight)
-        editModeFrame.CastBar:SetStatusBarTexture(RefineUI.Media.Textures.HealthBar)
-        editModeFrame.CastBar:SetStatusBarDesaturated(true)
-        editModeFrame.CastBar:SetMinMaxValues(0, 100)
-        editModeFrame.CastBar:SetValue(48)
-        editModeFrame.CastBar:SetStatusBarColor(castR, castG, castB)
-        if editModeFrame.CastBar.border and editModeFrame.CastBar.border.SetBackdropBorderColor then
-            editModeFrame.CastBar.border:SetBackdropBorderColor(castR, castG, castB, 1)
-        end
+local function AdvancePreviewState(frame, elapsed)
+    frame.previewElapsed = frame.previewElapsed + elapsed
+    if frame.previewElapsed < PREVIEW_STATE_SECONDS then
+        return
     end
-    if editModeFrame.CastBarBG then
-        editModeFrame.CastBarBG:SetTexture(RefineUI.Media.Textures.HealthBar)
-        editModeFrame.CastBarBG:SetVertexColor(castR * 0.24, castG * 0.24, castB * 0.24, 0.95)
+    frame.previewElapsed = 0
+
+    local state = frame.previewState + 1
+    if state == PREVIEW_STATE_CC and GetNameplatesConfig().CrowdControl.Enable == false then
+        state = state + 1
     end
-    if editModeFrame.CastText then
-        editModeFrame.CastText:SetText("Shadow Bolt")
+    if state > PREVIEW_STATE_IDLE then
+        state = PREVIEW_STATE_CAST
     end
-    if editModeFrame.CastTime then
-        editModeFrame.CastTime:SetText("1.4")
-        editModeFrame.CastTime:SetTextColor(castShieldR, castShieldG, castShieldB)
-    end
+    frame.previewState = state
+    RefreshPreviewFrame()
+end
 
-    if editModeFrame.CrowdControlBar then
-        if ccEnabled then
-            editModeFrame.CrowdControlBar:Show()
-            editModeFrame.CrowdControlBar:SetSize(plateWidth, ccHeight)
-            editModeFrame.CrowdControlBar:SetStatusBarTexture(RefineUI.Media.Textures.HealthBar)
-            editModeFrame.CrowdControlBar:SetStatusBarDesaturated(true)
-            editModeFrame.CrowdControlBar:SetMinMaxValues(0, 100)
-            editModeFrame.CrowdControlBar:SetValue(74)
-            editModeFrame.CrowdControlBar:SetStatusBarColor(ccR, ccG, ccB)
+local function CreatePreviewAura(parent, level, texture, r, g, b)
+    local aura = CreateFrame("Frame", nil, parent)
+    aura:SetFrameLevel(level)
 
-            if editModeFrame.CrowdControlBar.border and editModeFrame.CrowdControlBar.border.SetBackdropBorderColor then
-                editModeFrame.CrowdControlBar.border:SetBackdropBorderColor(ccBorderR, ccBorderG, ccBorderB, 1)
-            end
+    local icon = aura:CreateTexture(nil, "ARTWORK")
+    icon:SetTexture(texture)
+    icon:SetTexCoord(0.1, 0.9, 0.1, 0.9)
+    aura.Icon = icon
 
-            if editModeFrame.CrowdControlBG then
-                editModeFrame.CrowdControlBG:SetTexture(RefineUI.Media.Textures.HealthBar)
-                editModeFrame.CrowdControlBG:SetVertexColor(ccR * 0.24, ccG * 0.24, ccB * 0.24, 0.95)
-            end
-
-            if editModeFrame.CrowdControlText then
-                editModeFrame.CrowdControlText:SetText("Stunned")
-            end
-            if editModeFrame.CrowdControlTime then
-                editModeFrame.CrowdControlTime:SetText("3.2")
-            end
-        else
-            editModeFrame.CrowdControlBar:Hide()
-        end
-    end
-
-    if editModeFrame.Label then
-        editModeFrame.Label:ClearAllPoints()
-        local anchor = editModeFrame.CastBar
-        if ccEnabled and editModeFrame.CrowdControlBar and editModeFrame.CrowdControlBar:IsShown() then
-            anchor = editModeFrame.CrowdControlBar
-        end
-        editModeFrame.Label:SetPoint("TOP", anchor, "BOTTOM", 0, -8)
-    end
-
-    if editModeFrame.TargetArrows then
-        editModeFrame.TargetArrows.Left:SetVertexColor(borderR, borderG, borderB)
-        editModeFrame.TargetArrows.Right:SetVertexColor(borderR, borderG, borderB)
-
-        if config.TargetIndicator == false then
-            editModeFrame.TargetArrows:Hide()
-        else
-            editModeFrame.TargetArrows:Show()
-        end
-    end
+    RefineUI.CreateBorder(aura, 6, 6, 14)
+    aura.border:SetBackdropBorderColor(r, g, b, 1)
+    return aura
 end
 
 local function EnsureEditModeFrame()
@@ -775,141 +800,153 @@ local function EnsureEditModeFrame()
     end)
     frame:Hide()
     ApplyStoredAnchor(frame)
+    frame.previewState = PREVIEW_STATE_CAST
+    frame.previewElapsed = 0
+    -- Cycles cast / uninterruptible cast / CC / idle; runs only while the preview is shown.
+    frame:SetScript("OnUpdate", AdvancePreviewState)
 
-    local plate = CreateFrame("Frame", nil, frame)
-    plate:SetPoint("TOP", frame, "TOP", 0, -8)
-    plate:EnableMouse(false)
-    RefineUI.SetTemplate(plate, "Transparent")
-    RefineUI.CreateBorder(plate, 6, 6, 12)
-    frame.Plate = plate
+    -- Frame levels mirror the live plate: cast and CC bars tuck under the health bar,
+    -- auras and the portrait sit above it.
+    local level = frame:GetFrameLevel()
+    local barTexture = RefineUI.Media.Textures.HealthBar
 
-    local health = CreateFrame("StatusBar", nil, plate)
-    health:EnableMouse(false)
-    RefineUI.SetInside(health, plate, 1, 1)
+    local health = CreateFrame("StatusBar", nil, frame)
+    health:SetFrameLevel(level + 5)
+    health:SetStatusBarTexture(barTexture)
+    health:SetStatusBarDesaturated(true)
+    health:SetMinMaxValues(0, 100)
+    health:SetValue(67)
+    RefineUI.CreateBorder(health, 6, 6, 12)
     frame.Health = health
 
     local healthBG = health:CreateTexture(nil, "BACKGROUND")
     healthBG:SetAllPoints()
-    healthBG:SetTexture(RefineUI.Media.Textures.HealthBar)
-    healthBG:SetVertexColor(0.22, 0.22, 0.22, 0.95)
-    frame.HealthBG = healthBG
+    healthBG:SetTexture(barTexture)
+    healthBG:SetVertexColor(0.25, 0.25, 0.25, 1)
 
-    local nameText = plate:CreateFontString(nil, "OVERLAY")
-    RefineUI.Font(nameText, PREVIEW_NAME_FONT_SIZE, nil, "OUTLINE")
-    nameText:SetPoint("BOTTOM", plate, "TOP", 0, 4)
-    nameText:SetText("Training Dummy")
-    frame.NameText = nameText
-
-    local titleText = plate:CreateFontString(nil, "OVERLAY")
-    RefineUI.Font(titleText, 10, nil, "OUTLINE")
-    titleText:SetPoint("TOP", nameText, "BOTTOM", 0, -1)
-    titleText:SetText("<Innkeeper>")
-    titleText:SetTextColor(1, 0.82, 0)
-    frame.TitleText = titleText
-
-    local healthText = plate:CreateFontString(nil, "OVERLAY")
+    local healthText = health.border:CreateFontString(nil, "OVERLAY")
     RefineUI.Font(healthText, PREVIEW_HEALTH_FONT_SIZE, nil, "OUTLINE")
-    healthText:SetPoint("CENTER", plate, "CENTER", 0, -1)
+    RefineUI.Point(healthText, "CENTER", health, "CENTER", 0, -2)
     healthText:SetText("67")
     frame.HealthText = healthText
 
-    local portraitFrame = CreateFrame("Frame", nil, frame)
-    portraitFrame:SetPoint("RIGHT", plate, "LEFT", 6, 0)
-    portraitFrame:EnableMouse(false)
-    frame.PortraitFrame = portraitFrame
+    local nameText = frame:CreateFontString(nil, "OVERLAY")
+    RefineUI.Font(nameText, PREVIEW_NAME_FONT_SIZE)
+    RefineUI.Point(nameText, "BOTTOM", health, "TOP", 0, 4)
+    nameText:SetText("Raging Marauder")
+    frame.NameText = nameText
 
-    local portrait = portraitFrame:CreateTexture(nil, "ARTWORK")
-    RefineUI.SetInside(portrait, portraitFrame, 0, 0)
-    frame.Portrait = portrait
+    local portraitFrame = CreateFrame("Frame", nil, health)
+    portraitFrame:SetFrameLevel(level + 16)
+    RefineUI.Point(portraitFrame, "RIGHT", health, "LEFT", 8, 0)
+    frame.PortraitFrame = portraitFrame
 
     local mask = portraitFrame:CreateMaskTexture()
     mask:SetTexture(RefineUI.Media.Textures.PortraitMask)
     RefineUI.SetInside(mask, portraitFrame, 0, 0)
+
+    local portrait = portraitFrame:CreateTexture(nil, "ARTWORK")
+    RefineUI.SetInside(portrait, portraitFrame, 0, 0)
     portrait:AddMaskTexture(mask)
-    frame.PortraitMask = mask
+    frame.Portrait = portrait
+
+    local portraitIcon = portraitFrame:CreateTexture(nil, "ARTWORK", nil, 1)
+    RefineUI.SetInside(portraitIcon, portraitFrame, 0, 0)
+    portraitIcon:AddMaskTexture(mask)
+    frame.PortraitIcon = portraitIcon
 
     local portraitBG = portraitFrame:CreateTexture(nil, "BACKGROUND")
     portraitBG:SetTexture(RefineUI.Media.Textures.PortraitBG)
     RefineUI.SetInside(portraitBG, portraitFrame, 0, 0)
     portraitBG:AddMaskTexture(mask)
-    frame.PortraitBG = portraitBG
 
     local portraitBorder = portraitFrame:CreateTexture(nil, "OVERLAY")
     portraitBorder:SetTexture(RefineUI.Media.Textures.PortraitBorder)
-    RefineUI.SetOutside(portraitBorder, portraitFrame, 0, 0)
+    RefineUI.SetOutside(portraitBorder, portraitFrame)
     frame.PortraitBorder = portraitBorder
 
-    local arrows = CreateFrame("Frame", nil, plate)
-    arrows:SetAllPoints()
-    arrows:EnableMouse(false)
-    frame.TargetArrows = arrows
-
-    local leftArrow = arrows:CreateTexture(nil, "OVERLAY")
-    leftArrow:SetTexture(RefineUI.Media.Textures.TargetArrowLeft)
-    leftArrow:SetSize(20, 20)
-    leftArrow:SetPoint("RIGHT", plate, "LEFT", -4, 0)
-    arrows.Left = leftArrow
-
-    local rightArrow = arrows:CreateTexture(nil, "OVERLAY")
-    rightArrow:SetTexture(RefineUI.Media.Textures.TargetArrowRight)
-    rightArrow:SetSize(20, 20)
-    rightArrow:SetPoint("LEFT", plate, "RIGHT", 4, 0)
-    arrows.Right = rightArrow
+    -- Non-name-only plates show only the right arrow (Targeting.lua).
+    local targetArrow = health:CreateTexture(nil, "OVERLAY")
+    targetArrow:SetTexture(RefineUI.Media.Textures.TargetArrowRight)
+    RefineUI.Point(targetArrow, "LEFT", health, "RIGHT", 4, 0)
+    frame.TargetArrow = targetArrow
 
     local castBar = CreateFrame("StatusBar", nil, frame)
-    castBar:SetPoint("TOP", plate, "BOTTOM", 0, -8)
-    castBar:EnableMouse(false)
+    castBar:SetFrameLevel(level + 1)
+    RefineUI.Point(castBar, "TOPLEFT", health, "BOTTOMLEFT", 0, 4)
+    RefineUI.Point(castBar, "TOPRIGHT", health, "BOTTOMRIGHT", 0, 4)
+    castBar:SetStatusBarTexture(barTexture)
+    castBar:SetStatusBarDesaturated(true)
+    castBar:SetMinMaxValues(0, 100)
+    castBar:SetValue(48)
     RefineUI.CreateBorder(castBar, 6, 6, 12)
     frame.CastBar = castBar
 
     local castBarBG = castBar:CreateTexture(nil, "BACKGROUND")
     castBarBG:SetAllPoints()
-    castBarBG:SetTexture(RefineUI.Media.Textures.HealthBar)
-    castBarBG:SetVertexColor(0.18, 0.18, 0.18, 0.95)
+    castBarBG:SetTexture(barTexture)
     frame.CastBarBG = castBarBG
 
     local castText = castBar:CreateFontString(nil, "OVERLAY")
     RefineUI.Font(castText, 10, nil, "OUTLINE")
-    castText:SetPoint("BOTTOMLEFT", castBar, "BOTTOMLEFT", 4, 0)
+    RefineUI.Point(castText, "BOTTOMLEFT", castBar, "BOTTOMLEFT", 4, 0)
     castText:SetText("Shadow Bolt")
-    frame.CastText = castText
 
     local castTime = castBar:CreateFontString(nil, "OVERLAY")
-    RefineUI.Font(castTime, 10, nil, "OUTLINE")
-    castTime:SetPoint("BOTTOMRIGHT", castBar, "BOTTOMRIGHT", -4, 0)
+    RefineUI.Font(castTime, 12, nil, "OUTLINE")
+    RefineUI.Point(castTime, "BOTTOMRIGHT", castBar, "BOTTOMRIGHT", -2, 0)
     castTime:SetText("1.4")
-    frame.CastTime = castTime
 
+    -- The CC bar occupies the cast bar's rect (CrowdControl.lua).
     local crowdControlBar = CreateFrame("StatusBar", nil, frame)
-    crowdControlBar:SetPoint("TOP", castBar, "BOTTOM", 0, -6)
-    crowdControlBar:EnableMouse(false)
+    crowdControlBar:SetFrameLevel(level + 3)
+    crowdControlBar:SetAllPoints(castBar)
+    crowdControlBar:SetStatusBarTexture(barTexture)
+    crowdControlBar:SetStatusBarDesaturated(true)
+    crowdControlBar:SetMinMaxValues(0, 100)
+    crowdControlBar:SetValue(74)
     RefineUI.CreateBorder(crowdControlBar, 6, 6, 12)
     frame.CrowdControlBar = crowdControlBar
 
     local crowdControlBG = crowdControlBar:CreateTexture(nil, "BACKGROUND")
     crowdControlBG:SetAllPoints()
-    crowdControlBG:SetTexture(RefineUI.Media.Textures.HealthBar)
-    crowdControlBG:SetVertexColor(0.1, 0.3, 0.5, 0.95)
+    crowdControlBG:SetTexture(barTexture)
     frame.CrowdControlBG = crowdControlBG
 
     local crowdControlText = crowdControlBar:CreateFontString(nil, "OVERLAY")
     RefineUI.Font(crowdControlText, 10, nil, "OUTLINE")
-    crowdControlText:SetPoint("BOTTOMLEFT", crowdControlBar, "BOTTOMLEFT", 4, 0)
-    crowdControlText:SetText("Stunned")
-    frame.CrowdControlText = crowdControlText
+    RefineUI.Point(crowdControlText, "BOTTOMLEFT", crowdControlBar, "BOTTOMLEFT", 4, 0)
+    crowdControlText:SetText("Polymorph")
 
     local crowdControlTime = crowdControlBar:CreateFontString(nil, "OVERLAY")
-    RefineUI.Font(crowdControlTime, 10, nil, "OUTLINE")
-    crowdControlTime:SetPoint("BOTTOMRIGHT", crowdControlBar, "BOTTOMRIGHT", -4, 0)
+    RefineUI.Font(crowdControlTime, 12, nil, "OUTLINE")
+    RefineUI.Point(crowdControlTime, "BOTTOMRIGHT", crowdControlBar, "BOTTOMRIGHT", -2, 0)
     crowdControlTime:SetText("3.2")
-    frame.CrowdControlTime = crowdControlTime
 
-    local label = frame:CreateFontString(nil, "OVERLAY")
-    RefineUI.Font(label, 11, nil, "OUTLINE")
-    label:SetPoint("TOP", crowdControlBar, "BOTTOM", 0, -8)
-    label:SetText("Nameplates")
-    label:SetTextColor(1, 0.82, 0)
-    frame.Label = label
+    local defaultBorderColor = (Config.General and Config.General.BorderColor) or { 0.35, 0.35, 0.35 }
+    local debuffs, buffs = {}, {}
+    for i = 1, #PREVIEW_DEBUFF_ICONS do
+        debuffs[i] = CreatePreviewAura(frame, level + 7, PREVIEW_DEBUFF_ICONS[i], 0.8, 0.1, 0.1)
+    end
+    for i = 1, #PREVIEW_BUFF_ICONS do
+        buffs[i] = CreatePreviewAura(frame, level + 7, PREVIEW_BUFF_ICONS[i],
+            defaultBorderColor[1], defaultBorderColor[2], defaultBorderColor[3])
+    end
+    frame.Debuffs = debuffs
+    frame.Buffs = buffs
+
+    -- NPC titles only render on friendly name-only plates, so preview one below.
+    local friendlyName = frame:CreateFontString(nil, "OVERLAY")
+    RefineUI.Font(friendlyName, PREVIEW_NAME_FONT_SIZE)
+    friendlyName:SetText("Innkeeper Allison")
+    frame.FriendlyName = friendlyName
+
+    local friendlyTitle = frame:CreateFontString(nil, "OVERLAY")
+    RefineUI.Font(friendlyTitle, 9, nil, "OUTLINE")
+    RefineUI.Point(friendlyTitle, "TOP", friendlyName, "BOTTOM", 0, -1)
+    friendlyTitle:SetTextColor(0.9, 0.9, 0.9)
+    friendlyTitle:SetText("<Innkeeper>")
+    frame.FriendlyTitle = friendlyTitle
 
     editModeFrame = frame
     RefreshPreviewFrame()
@@ -1066,6 +1103,7 @@ local function RegisterEditModeSettings()
         set = function(_, value)
             local enemyAuras = GetNameplatesConfig().EnemyAuras
             enemyAuras.BaseOffsetY = RoundToStep(ClampNumber(value, -20, 40, DEFAULT_ENEMY_AURA_LAYOUT.BaseOffsetY), 1)
+            RefreshPreviewFrame()
             RefreshLiveNameplates()
         end,
     }
@@ -1084,6 +1122,7 @@ local function RegisterEditModeSettings()
         set = function(_, value)
             local enemyAuras = GetNameplatesConfig().EnemyAuras
             enemyAuras.DebuffOffsetX = RoundToStep(ClampNumber(value, -80, 80, DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetX), 1)
+            RefreshPreviewFrame()
             RefreshLiveNameplates()
         end,
     }
@@ -1102,6 +1141,7 @@ local function RegisterEditModeSettings()
         set = function(_, value)
             local enemyAuras = GetNameplatesConfig().EnemyAuras
             enemyAuras.DebuffOffsetY = RoundToStep(ClampNumber(value, -40, 80, DEFAULT_ENEMY_AURA_LAYOUT.DebuffOffsetY), 1)
+            RefreshPreviewFrame()
             RefreshLiveNameplates()
         end,
     }
@@ -1120,6 +1160,7 @@ local function RegisterEditModeSettings()
         set = function(_, value)
             local enemyAuras = GetNameplatesConfig().EnemyAuras
             enemyAuras.BuffOffsetX = RoundToStep(ClampNumber(value, -80, 80, DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetX), 1)
+            RefreshPreviewFrame()
             RefreshLiveNameplates()
         end,
     }
@@ -1138,6 +1179,7 @@ local function RegisterEditModeSettings()
         set = function(_, value)
             local enemyAuras = GetNameplatesConfig().EnemyAuras
             enemyAuras.BuffOffsetY = RoundToStep(ClampNumber(value, -40, 80, DEFAULT_ENEMY_AURA_LAYOUT.BuffOffsetY), 1)
+            RefreshPreviewFrame()
             RefreshLiveNameplates()
         end,
     }
@@ -1415,4 +1457,107 @@ function Nameplates:RegisterEditModeCallbacks()
     end
 
     editModeCallbacksRegistered = true
+end
+
+----------------------------------------------------------------------------------------
+-- Blizzard Settings Shields
+----------------------------------------------------------------------------------------
+-- Blizzard Options rows RefineUI owns, keyed by setting variable. Addon-owned shields cover
+-- them on the category page and in search results; Blizzard frames and tables are never
+-- modified, and Blizzard dispatches these callbacks securely.
+local MANAGED_BLIZZARD_SETTINGS = {
+    nameplateSize = "Set by Scale on the RefineUI Nameplates frame in Edit Mode.",
+    nameplateDebuffPadding = "Set by the aura sliders on the RefineUI Nameplates frame in Edit Mode.",
+    nameplateShowFriendlyPlayers = "RefineUI shows friendly nameplates outside combat and group content.",
+    nameplateShowFriendlyPlayerMinions = "RefineUI shows friendly nameplates outside combat and group content.",
+    nameplateShowFriendlyNpcs = "RefineUI shows friendly nameplates outside combat and group content.",
+    UNIT_NAMEPLATES_THREAT_DISPLAY = "RefineUI colors nameplate health bars by threat.",
+    nameplateStyle = "RefineUI nameplates are built on the Block style.",
+    UNIT_NAMEPLATES_INFO_DISPLAY = "RefineUI shows its own health text and hides these elements.",
+    UNIT_NAMEPLATES_CLASS_COLOR = "RefineUI always class-colors player health bars.",
+    nameplateUseClassColorForFriendlyPlayerUnitNames = "RefineUI always class-colors player names.",
+}
+local SETTINGS_DEFAULTED_TIMER_KEY = "Nameplates:BlizzardSettingsDefaulted"
+local settingsShields = {}
+local settingsShieldOwner = {}
+local settingsShieldsRegistered = false
+
+local function OnSettingsShieldEnter(shield)
+    GameTooltip:SetOwner(shield, "ANCHOR_TOP")
+    GameTooltip:SetText("Managed by RefineUI")
+    GameTooltip:AddLine(shield.managedText, 1, 1, 1, true)
+    GameTooltip:Show()
+end
+
+local function GetManagedSettingText(elementData)
+    local getSetting = elementData and elementData.GetSetting
+    local setting = getSetting and getSetting(elementData)
+    local variable = setting and setting:GetVariable()
+    return variable and MANAGED_BLIZZARD_SETTINGS[variable]
+end
+
+local function UpdateSettingsShield(_, frame, elementData)
+    local shield = settingsShields[frame]
+    local managedText = GetManagedSettingText(elementData)
+    if not managedText then
+        if shield then
+            shield:Hide()
+        end
+        return
+    end
+
+    if not shield then
+        shield = CreateFrame("Frame", nil, frame)
+        shield:SetAllPoints(frame)
+        shield:EnableMouse(true)
+        shield:SetScript("OnEnter", OnSettingsShieldEnter)
+        shield:SetScript("OnLeave", GameTooltip_Hide)
+        local overlay = shield:CreateTexture(nil, "OVERLAY")
+        overlay:SetAllPoints()
+        overlay:SetColorTexture(0, 0, 0, 0.6)
+        local logo = shield:CreateTexture(nil, "OVERLAY", nil, 1)
+        logo:SetPoint("LEFT")
+        logo:SetTexture(RefineUI.Media.Logo)
+        shield.Logo = logo
+        settingsShields[frame] = shield
+    end
+
+    -- Rows are laid out before OnInitializedFrame, so the height is final here.
+    local rowHeight = frame:GetHeight()
+    shield.Logo:SetSize(rowHeight, rowHeight)
+    shield.managedText = managedText
+    shield:SetFrameLevel(frame:GetFrameLevel() + 20)
+    shield:Show()
+end
+
+local function HideSettingsShield(_, frame)
+    local shield = settingsShields[frame]
+    if shield then
+        shield:Hide()
+    end
+end
+
+local function ReapplyManagedBlizzardSettings()
+    Nameplates:ApplyPinnedNameplateStyle()
+    Nameplates:UpdateNameplateCVars(true)
+    Nameplates:ApplyConfiguredBlizzardNameplateSize(true)
+end
+
+-- Defaults buttons still reset the covered settings; restore RefineUI's values afterwards.
+local function OnBlizzardSettingsDefaulted()
+    RefineUI:After(SETTINGS_DEFAULTED_TIMER_KEY, 0, ReapplyManagedBlizzardSettings)
+end
+
+function Nameplates:RegisterBlizzardSettingsShields()
+    if settingsShieldsRegistered then
+        return
+    end
+
+    local scrollBox = SettingsPanel:GetSettingsList().ScrollBox
+    ScrollUtil.AddInitializedFrameCallback(scrollBox, UpdateSettingsShield, settingsShieldOwner)
+    ScrollUtil.AddReleasedFrameCallback(scrollBox, HideSettingsShield, settingsShieldOwner)
+    EventRegistry:RegisterCallback("Settings.CategoryDefaulted", OnBlizzardSettingsDefaulted, settingsShieldOwner)
+    EventRegistry:RegisterCallback("Settings.Defaulted", OnBlizzardSettingsDefaulted, settingsShieldOwner)
+
+    settingsShieldsRegistered = true
 end

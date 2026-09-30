@@ -12,11 +12,17 @@ end
 local BADGES = Module.COMPLETION_BADGES
 -- Per-render scratch: whether each category is shown on the card being rendered.
 local shownCategories = {}
+-- The Planner overlays the list without hiding it; card scans pause underneath.
+local function PlannerCoversList()
+    local planner = RefineUI:GetModule("AdventureGuidePlanner")
+    return planner and planner.weeklyHubActive
+end
 function Module:IsExpansionCompletionVisible()
     local journal = _G.EncounterJournal
     local list = journal and journal.instanceSelect
     return journal and journal:IsShown() and list and list:IsShown()
         and list.ScrollBox and list.ScrollBox:IsShown() and self:IsSupportedContentTab(journal.selectedTab) and Enabled("Cards")
+        and not PlannerCoversList()
 end
 
 function Module:ShowExpansionCompletionTooltip(button, owner, kind)
@@ -242,7 +248,7 @@ end
 function Module:RequestExpansionCompletion()
     local cardsVisible = self:IsExpansionCompletionVisible()
     local needsSummaries = self:GuideListNeedsSummaries()
-    if not self:IsGuideInstanceListVisible() or (not cardsVisible and not needsSummaries) then
+    if not self:IsGuideInstanceListVisible() or PlannerCoversList() or (not cardsVisible and not needsSummaries) then
         self:ReleaseExpansionCompletionRequests()
         return
     end
@@ -267,6 +273,14 @@ function Module:RequestExpansionCompletion()
     end
 end
 
+function Module:RefreshExpansionCompletion()
+    local scrollBox = _G.EncounterJournal.instanceSelect.ScrollBox
+    if scrollBox.GetFrames then
+        for _, button in ipairs(scrollBox:GetFrames()) do self:DecorateExpansionCompletion(button) end
+    end
+    self:RequestExpansionCompletion()
+end
+
 function Module:InstallExpansionCompletionUI()
     if self._expansionCompletionInstalled then return end
     local journal = _G.EncounterJournal
@@ -276,12 +290,7 @@ function Module:InstallExpansionCompletionUI()
     -- Distinct owner: the ScrollBox keeps one callback per owner, and Lockouts shares this list.
     ScrollUtil.AddInitializedFrameCallback(scrollBox, function(_, button) self:DecorateExpansionCompletion(button) end,
         self:BuildKey("ExpansionCompletion", "Init"))
-    local function Refresh()
-        if scrollBox.GetFrames then
-            for _, button in ipairs(scrollBox:GetFrames()) do self:DecorateExpansionCompletion(button) end
-        end
-        self:RequestExpansionCompletion()
-    end
+    local function Refresh() self:RefreshExpansionCompletion() end
     scrollBox:HookScript("OnShow", Refresh)
     scrollBox:HookScript("OnHide", function() self:ReleaseExpansionCompletionRequests() end)
     -- Frame initialization can precede the tab/visibility update.

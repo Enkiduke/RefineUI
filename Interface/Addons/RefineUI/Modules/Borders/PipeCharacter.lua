@@ -22,7 +22,6 @@ local EVENT_KEY = {
     PLAYER_ENTERING_WORLD = "Borders_PEW",
     PLAYER_EQUIPMENT_CHANGED = "Borders_PEC",
     INSPECT_READY = "Borders_Inspect",
-    ADDON_LOADED_INSPECT = "Borders:InspectUI:Load",
 }
 
 local HOOK_KEY = {
@@ -162,19 +161,7 @@ local function SetupCharacterPipe(self)
         return ok or reason == "already_hooked"
     end
 
-    if InspectFrame then
-        HookInspect()
-    else
-        local loadKey = EVENT_KEY.ADDON_LOADED_INSPECT
-        RefineUI:RegisterEventCallback("ADDON_LOADED", function(_, addon)
-            if addon == "Blizzard_InspectUI" then
-                local hooked = HookInspect()
-                if hooked then
-                    RefineUI:OffEvent("ADDON_LOADED", loadKey)
-                end
-            end
-        end, loadKey)
-    end
+    EventUtil.ContinueOnAddOnLoaded("Blizzard_InspectUI", HookInspect)
 
     RefineUI:HookOnce(HOOK_KEY.EQUIPMENT_FLYOUT_DISPLAY_BUTTON, "EquipmentFlyout_DisplayButton", function(button)
         self:UpdateFlyout(button)

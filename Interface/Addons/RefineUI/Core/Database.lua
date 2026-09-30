@@ -11,7 +11,7 @@ local _, RefineUI = ...
 local _G = _G
 local GetRealmName = GetRealmName
 local UnitName = UnitName
-local type, pairs = type, pairs
+local type, pairs, next = type, pairs, next
 local ReloadUI = ReloadUI
 local wipe = wipe
 
@@ -157,6 +157,75 @@ function RefineUI:CopyDefaults(src, dest)
     end
 end
 
+----------------------------------------------------------------------------------------
+-- Default Stripping
+----------------------------------------------------------------------------------------
+-- Profiles are saved with only the values that differ from code defaults.
+-- InitializeDatabase refills the rest on load, so default changes reach every character.
+local function IsDeepEqual(a, b)
+    if a == b then return true end
+    if type(a) ~= "table" or type(b) ~= "table" then return false end
+
+    for k, v in pairs(a) do
+        if not IsDeepEqual(v, b[k]) then return false end
+    end
+    for k in pairs(b) do
+        if a[k] == nil then return false end
+    end
+    return true
+end
+
+-- Sequence defaults (colors, offsets, positions) are compared whole so a partial
+-- tuple is never saved; keyed tables are stripped per key.
+local function StripDefaults(saved, defaults)
+    for k, v in pairs(saved) do
+        local default = defaults[k]
+        if type(v) == "table" and type(default) == "table" and default[1] == nil then
+            StripDefaults(v, default)
+            if next(v) == nil then
+                saved[k] = nil
+            end
+        elseif IsDeepEqual(v, default) then
+            saved[k] = nil
+        end
+    end
+end
+
+-- Strips a copy so the live runtime config stays whole for code that runs after logout.
+local function StripProfileDefaults()
+    if type(RefineUI.DB) ~= "table" or type(RefineUI.DefaultConfig) ~= "table" then return end
+    local profile = DeepCopy(RefineUI.DB)
+    _G.RefineDB[GetRealmName()][UnitName("player")] = profile
+
+    -- MigrateProfile reads Version before defaults are merged, so it must stay saved.
+    local version = profile.Version
+    StripDefaults(profile, RefineUI.DefaultConfig)
+    profile.Version = version
+
+    -- BindActiveLayoutProfile rebuilds the runtime Positions copy from the active tier.
+    profile.Positions = nil
+
+    local layoutProfiles = profile.LayoutProfiles
+    if type(layoutProfiles) ~= "table" then return end
+
+    for tierKey, tierProfile in pairs(layoutProfiles) do
+        local defaultPositions = RefineUI.DefaultPositionsByTier and RefineUI.DefaultPositionsByTier[tierKey]
+        if type(tierProfile) == "table" and type(tierProfile.Positions) == "table" and type(defaultPositions) == "table" then
+            StripDefaults(tierProfile.Positions, defaultPositions)
+            if next(tierProfile.Positions) == nil then
+                tierProfile.Positions = nil
+            end
+            if next(tierProfile) == nil then
+                layoutProfiles[tierKey] = nil
+            end
+        end
+    end
+
+    if next(layoutProfiles) == nil then
+        profile.LayoutProfiles = nil
+    end
+end
+
 function RefineUI:ResetProfile()
     local realm = GetRealmName()
     local name = UnitName("player")
@@ -173,13 +242,23 @@ end
 -- Migrations
 ----------------------------------------------------------------------------------------
 -- Keyed by the config version (C.Version) they upgrade a profile to. Each runs once,
--- in order, on the saved profile before defaults are merged. To change a saved
--- setting's shape or default, bump C.Version and add a migration here instead of
--- resetting the profile.
+-- in order, on the saved profile before defaults are merged. Default changes need no
+-- migration (profiles only save overrides); to change a saved setting's shape, bump
+-- C.Version and add a migration here instead of resetting the profile.
 local MIGRATIONS = {
     -- Profiles saved before versioning existed have no known shape.
     [1] = function(profile)
         wipe(profile)
+    end,
+    -- ClickCasting was renamed MouseoverCasting.
+    [2] = function(profile)
+        profile.MouseoverCasting = profile.ClickCasting
+        profile.ClickCasting = nil
+        local moduleState = profile.ModuleState
+        if moduleState then
+            moduleState.MouseoverCasting = moduleState.ClickCasting
+            moduleState.ClickCasting = nil
+        end
     end,
 }
 
@@ -244,5 +323,8 @@ function RefineUI:InitializeDatabase()
     
     -- Runtime profile object + stable RefineUI.Config proxy.
     BindRuntimeConfig(profile)
+
+    -- PLAYER_LOGOUT also fires on /reload, just before SavedVariables are written.
+    RefineUI:RegisterEventCallback("PLAYER_LOGOUT", StripProfileDefaults, "Core:Database:StripDefaults")
 end
 

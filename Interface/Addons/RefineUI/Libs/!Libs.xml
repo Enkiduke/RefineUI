@@ -5,9 +5,6 @@
     <!-- SharedMedia -->
     <Script file="LibSharedMedia-3.0\LibSharedMedia-3.0.lua"/>
 
-    <!-- CustomGlow -->
-    <Include file="LibCustomGlow-1.0\LibCustomGlow-1.0.xml"/>
-
     <!-- EditMode -->
     <Include file="LibEditMode\embed.xml"/>
     <Include file="LibEditModeOverride\LibEditModeOverride.xml"/>

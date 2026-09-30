@@ -568,6 +568,74 @@ function RefineUI.GetLinearCurve()
 end
 
 ----------------------------------------------------------------------------------------
+-- Copy Window
+----------------------------------------------------------------------------------------
+local copyFrame, copyTitle, copyScroll, copyEditBox
+
+local function SelectCopyText()
+    if not copyEditBox:IsShown() then
+        return
+    end
+
+    copyEditBox:SetFocus()
+    copyEditBox:HighlightText()
+    copyScroll:SetVerticalScroll(0)
+end
+
+local function CreateCopyFrame()
+    copyFrame = CreateFrame("Frame", "RefineUI_CopyWindow", UIParent)
+    RefineUI.SetTemplate(copyFrame, "Transparent")
+    RefineUI.Size(copyFrame, 600, 400)
+    RefineUI.Point(copyFrame, "CENTER", UIParent, "CENTER")
+    copyFrame:SetFrameStrata("DIALOG")
+    copyFrame:Hide()
+
+    copyTitle = copyFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    copyTitle:SetPoint("TOPLEFT", copyFrame, "TOPLEFT", 12, -10)
+
+    copyScroll = CreateFrame("ScrollFrame", "RefineUI_CopyWindowScroll", copyFrame, "UIPanelScrollFrameTemplate")
+    RefineUI.Point(copyScroll, "TOPLEFT", copyFrame, "TOPLEFT", 10, -30)
+    RefineUI.Point(copyScroll, "BOTTOMRIGHT", copyFrame, "BOTTOMRIGHT", -30, 10)
+
+    copyEditBox = CreateFrame("EditBox", "RefineUI_CopyWindowEditBox", copyScroll)
+    copyEditBox:SetMultiLine(true)
+    copyEditBox:SetMaxLetters(0)
+    copyEditBox:EnableMouse(true)
+    copyEditBox:SetAutoFocus(false)
+    copyEditBox:SetFontObject("ChatFontNormal")
+    copyEditBox:SetJustifyH("LEFT")
+    copyEditBox:SetJustifyV("TOP")
+    copyEditBox:SetWidth(copyScroll:GetWidth() - 25)
+    copyEditBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+        copyFrame:Hide()
+    end)
+    copyScroll:SetScrollChild(copyEditBox)
+
+    local close = CreateFrame("Button", nil, copyFrame, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", copyFrame, "TOPRIGHT")
+    RefineUI.AddAPI(close)
+end
+
+--- Show text in a shared window with the text selected for Ctrl+C.
+function RefineUI:ShowCopyWindow(title, text)
+    if not copyFrame then
+        CreateCopyFrame()
+    end
+
+    copyTitle:SetText(title)
+    copyEditBox:SetText(text)
+    copyFrame:Show()
+    C_Timer.After(0, SelectCopyText)
+end
+
+function RefineUI:HideCopyWindow()
+    if copyFrame then
+        copyFrame:Hide()
+    end
+end
+
+----------------------------------------------------------------------------------------
 -- Chat Commands
 ----------------------------------------------------------------------------------------
 function RefineUI:RegisterChatCommand(command, func)

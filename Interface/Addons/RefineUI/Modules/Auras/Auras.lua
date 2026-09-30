@@ -308,7 +308,6 @@ local function RegisterDebuffEditModeSettings()
     local ok = pcall(lib.AddFrameSettings, lib, debuffFrame, Auras._debuffEditModeSettings)
     if ok then
         Auras._debuffEditModeSettingsAttached = true
-        RefineUI:OffEvent("PLAYER_REGEN_ENABLED", HOOK_KEY.DEBUFF_EDITMODE_SETTINGS_RETRY)
         return true
     end
 
@@ -569,13 +568,7 @@ function Auras:OnEnable()
         end
     end
 
-    if InCombatLockdown and InCombatLockdown() then
-        RefineUI:RegisterEventCallback("PLAYER_REGEN_ENABLED", function()
-            RegisterDebuffEditModeSettings()
-        end, HOOK_KEY.DEBUFF_EDITMODE_SETTINGS_RETRY)
-    else
-        RegisterDebuffEditModeSettings()
-    end
+    RefineUI:RunAfterCombat(HOOK_KEY.DEBUFF_EDITMODE_SETTINGS_RETRY, RegisterDebuffEditModeSettings)
     
     if _G.BuffFrame and not managedPlayerBuffs then
         if type(_G.BuffFrame.UpdateAuraButtons) == "function" then
